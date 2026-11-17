@@ -1145,3 +1145,13 @@ Premier sous-jalon de M2.4 (correction de E5), limité au cœur pur. `paging.c` 
 - **Ordre de `vmm_unmap()`** : l'analyse montre que `pmm_unref()` ne peut pas échouer dans un état valide (hypothèse documentée dans la conception, section 15). Aucune modification nécessaire.
 - **Validation :** `make clean && make test` donne 101 `[PASS]`, 0 `[FAIL]`, 26 cas QEMU sur 26 (RAM de 16 MiB à 4 GiB, autotests à 128 et 512 MiB, fautes de page, débordement de pile, production) ; compilation parallèle propre réussie.
 - **E5 corrigé et démontré.** E3 reste ouvert (M2.5).
+
+### K0.7-M2.5a — Audit des alias inscriptibles (E3), sans changement de code
+
+- **Document :** `docs/design/K0.7-M2.5-writable-aliases.md`. Il contient la carte physique de l'image de production (symboles du linker), les droits réellement installés lus **depuis l'extérieur du noyau** par le moniteur QEMU (`info mem` ; CR0 = `0x80010011`, CR3 = `0x00191000`), l'analyse par catégorie de cadres, les chemins P1-P6 vers `kmain` et les tables de pages, les invariants A1-A6 et la stratégie M2.5b-d.
+- **Constats principaux :**
+  - `.text` et `.rodata` sont en lecture seule dans l'identité : refuser les nouveaux alias inscriptibles suffit pour eux ;
+  - **les tables de pages ont déjà un alias inscriptible : l'identité.** Le répertoire (CR3 = `0x00191000`) est dans la plage `-rw`, donc refuser une projection dynamique ne fermera pas ce chemin (P4). E3 ne pourra être déclaré corrigé que pour P2 et P3 ;
+  - le type `FRAME_KERNEL` ne distingue pas code, constantes et données ; la politique proposée (seul `ALLOCATED` est projetable dynamiquement) n'a pas besoin de cette distinction.
+- **Constat supplémentaire C1 (non corrigé) :** `map_page()` accepte tous les bits bas de PTE, y compris `PTE_USER` : un correctif dédié est proposé en M2.5c.
+- Vérification : `make clean && make test` donne 101 `[PASS]`, 0 `[FAIL]`, 26 cas QEMU sur 26. **E3 reste ouvert.**
