@@ -74,7 +74,9 @@ samos_err_t pmm_core_reserve_as(struct pmm *p, uint64_t base, uint64_t len,
 /* Équivalent à pmm_core_reserve_as(..., FRAME_RESERVED, ...). */
 samos_err_t pmm_core_reserve(struct pmm *p, uint64_t base, uint64_t len, const char *name);
 
-uint32_t pmm_core_alloc(struct pmm *p);                 /* numéro de cadre ou PMM_NO_FRAME */
+uint32_t pmm_core_alloc(struct pmm *p);                 /* FRAME_ALLOCATED ; numéro de cadre ou PMM_NO_FRAME */
+/* K0.7-M2.3 : type = FRAME_ALLOCATED ou FRAME_PAGETABLE (sinon PMM_NO_FRAME). */
+uint32_t pmm_core_alloc_as(struct pmm *p, enum frame_type type);
 samos_err_t pmm_core_free(struct pmm *p, uint32_t frame);
 bool pmm_core_is_used(const struct pmm *p, uint32_t frame);       /* type != FREE, ou hors limites */
 bool pmm_core_is_reserved(const struct pmm *p, uint32_t frame);   /* RESERVED ou KERNEL */
@@ -89,6 +91,9 @@ samos_err_t pmm_init(const struct memmap *m, uint32_t limit_bytes);
 /* Retourne l'adresse physique d'un cadre REMIS À ZÉRO, ou 0 si la mémoire est
  * épuisée (le cadre 0 étant toujours réservé, 0 n'est jamais un cadre valide). */
 uint32_t pmm_alloc_frame(void);
+/* K0.7-M2.3 : cadre FRAME_PAGETABLE remis à zéro, pour le VMM uniquement.
+ * Jamais libérable par pmm_free_frame(). Retourne 0 si épuisé. */
+uint32_t pmm_alloc_pagetable(void);
 samos_err_t pmm_free_frame(uint32_t phys);
 const struct pmm *pmm_state(void);
 void pmm_print(void);

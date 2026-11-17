@@ -43,7 +43,9 @@ static uint32_t *get_table(uint32_t va, bool create)
     if (!create) {
         return 0;
     }
-    uint32_t pt = pmm_alloc_frame();           /* remise à zéro : 1024 PTE non présentes */
+    /* K0.7-M2.3 : cadre typé FRAME_PAGETABLE (non libérable par pmm_free_frame),
+     * remis à zéro par le PMM : 1024 PTE non présentes. */
+    uint32_t pt = pmm_alloc_pagetable();
     if (pt == 0) {
         return 0;
     }
@@ -197,7 +199,7 @@ samos_err_t paging_init(uint32_t idmap_top)
     idmap_top &= PTE_FRAME;
     g_idmap_top = idmap_top;
 
-    uint32_t pd = pmm_alloc_frame();
+    uint32_t pd = pmm_alloc_pagetable();        /* K0.7-M2.3 : répertoire typé FRAME_PAGETABLE */
     if (pd == 0) {
         return SAMOS_ENOMEM;
     }

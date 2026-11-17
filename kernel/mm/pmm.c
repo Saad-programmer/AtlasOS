@@ -52,9 +52,12 @@ samos_err_t pmm_init(const struct memmap *m, uint32_t limit_bytes)
     return e;
 }
 
-uint32_t pmm_alloc_frame(void)
+/* K0.7-M2.3 : allocation typée commune ; le type est fixé AVANT que le cadre
+ * ne quitte le PMM, il n'existe donc aucun instant où une table de pages
+ * serait vue comme un cadre ALLOCATED libérable. */
+static uint32_t alloc_zeroed(enum frame_type type)
 {
-    uint32_t f = pmm_core_alloc(&g_pmm);
+    uint32_t f = pmm_core_alloc_as(&g_pmm, type);
     if (f == PMM_NO_FRAME) {
         return 0;
     }
@@ -65,6 +68,18 @@ uint32_t pmm_alloc_frame(void)
      * bornée à la zone projetée en identité (paging.c). */
     memset((void *)(uintptr_t)phys, 0, PAGE_SIZE);
     return phys;
+}
+
+uint32_t pmm_alloc_frame(void)
+{
+    return alloc_zeroed(FRAME_ALLOCATED);
+}
+
+/* Réservé au VMM (paging.c). Le cadre reçoit le type FRAME_PAGETABLE :
+ * pmm_free_frame() le refusera toujours (SAMOS_EINVAL). */
+uint32_t pmm_alloc_pagetable(void)
+{
+    return alloc_zeroed(FRAME_PAGETABLE);
 }
 
 samos_err_t pmm_free_frame(uint32_t phys)

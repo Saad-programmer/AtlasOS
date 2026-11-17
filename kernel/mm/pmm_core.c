@@ -207,6 +207,17 @@ uint32_t pmm_core_check(const struct pmm *p)
 
 uint32_t pmm_core_alloc(struct pmm *p)
 {
+    return pmm_core_alloc_as(p, FRAME_ALLOCATED);
+}
+
+/* K0.7-M2.3 : allocation TYPÉE. Seuls deux types peuvent naître d'une
+ * allocation : ALLOCATED (usage général) et PAGETABLE (structures de
+ * pagination, propriété du VMM). Tout autre type est refusé. */
+uint32_t pmm_core_alloc_as(struct pmm *p, enum frame_type type)
+{
+    if (type != FRAME_ALLOCATED && type != FRAME_PAGETABLE) {
+        return PMM_NO_FRAME;
+    }
     if (p->free_count == 0) {
         return PMM_NO_FRAME;
     }
@@ -220,7 +231,7 @@ uint32_t pmm_core_alloc(struct pmm *p)
             f -= p->nframes;
         }
         if (frame_desc_type(p->meta[f]) == FRAME_FREE) {
-            set_type(p, f, FRAME_ALLOCATED);
+            set_type(p, f, type);
             p->hint = f;
             return f;
         }

@@ -1040,3 +1040,13 @@ Résultat : `make test` réussi, avec 25 cas QEMU sur 25.
 
 - `make clean && make test` : statut 0, **99 `[PASS]`, 0 `[FAIL]`**, 26 cas QEMU sur 26, `host pmm_core` à 1986 vérifications. Compilation parallèle depuis zéro réussie.
 - Injection de défauts, dans une copie isolée, sur 6 mutants (substitution vérifiée à 1 occurrence) : **6 sur 6 détectés** (rétrogradation `KERNEL`, refus non atomique, dérive de `free_count`, vérificateur aveugle, E1/E2 désactivés, double libération acceptée).
+
+### K0.7-M2.3 (partie 1) — Allocation typée des tables de pages
+
+**Statut : partiel.** Le code est en place et la régression passe, mais les tests dédiés à E4 et la contre-épreuve n'ont **pas** encore été écrits (session interrompue). E4 n'est donc pas encore *démontré* corrigé.
+
+- `pmm_core_alloc_as()` (types `ALLOCATED` ou `PAGETABLE` seulement) ; `pmm_alloc_pagetable()` côté noyau.
+- `paging.c` : le répertoire et les tables de pages sont alloués avec le type `FRAME_PAGETABLE`. `pmm_core_free()` refusant tout cadre non `ALLOCATED`, ils ne sont plus libérables par `pmm_free_frame()`.
+- Aucune structure de pagination statique n'existe. Politique de destruction : aucune en K0 (aucun chemin ne retire une table) ; à revoir en K1.
+- Vérification : `make clean && make test` donne 99 `[PASS]`, 0 `[FAIL]`, 26 cas QEMU sur 26 ; compilation parallèle propre réussie.
+- Reste à faire : les tests E4 (type, refus, contenu et compteurs inchangés, pagination intacte, scénario E4 rejoué), la contre-épreuve isolée et la mise à jour du document de conception.
