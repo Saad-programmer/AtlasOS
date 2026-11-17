@@ -968,3 +968,5 @@ Tests ajoutés :
 - démarrage `test=nested` : `NESTED CPU exception 6 (Invalid Opcode (#UD)) ... while handling exception 3 (Breakpoint (#BP))`, puis panique, sans panique récursive.
 
 Résultat : `make test` réussi, avec 25 cas QEMU sur 25.
+
+**Défaut de construction trouvé après coup (corrigé dans un commit séparé).** Le `Makefile` de l'étape K0.7.1 contenait une règle à motifs à deux cibles (`$(BUILD)/prod/%.o $(BUILD)/test/%.o: %.asm`). Pour GNU Make, une telle règle signifie qu'une **seule** exécution produit les **deux** cibles. Après `make clean`, les objets assembleur de l'image de test n'étaient donc jamais produits (`ld: cannot find build/test/kernel/arch/i386/boot/entry.o`). Les compilations incrémentales masquaient le défaut ; une compilation depuis un arbre propre l'a révélé. La règle a été scindée en deux. Résultat vérifié depuis `make clean` : `make test` donne 97 lignes `[PASS]` et aucun `[FAIL]` ; `make -j8` réussit aussi.

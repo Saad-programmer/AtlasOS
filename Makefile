@@ -143,7 +143,15 @@ $(BUILD)/test/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(TEST_DEFS) -c $< -o $@
 
-$(BUILD)/prod/%.o $(BUILD)/test/%.o: %.asm
+# Deux règles distinctes : une règle à motifs à PLUSIEURS cibles signifie,
+# pour GNU Make, qu'une seule exécution produit toutes les cibles ; après
+# « make clean », les objets de l'image de test n'étaient alors jamais
+# assemblés (défaut constaté en K0.7, masqué par les compilations incrémentales).
+$(BUILD)/prod/%.o: %.asm
+	@mkdir -p $(dir $@)
+	$(AS) $(ASFLAGS) $< -o $@
+
+$(BUILD)/test/%.o: %.asm
 	@mkdir -p $(dir $@)
 	$(AS) $(ASFLAGS) $< -o $@
 
