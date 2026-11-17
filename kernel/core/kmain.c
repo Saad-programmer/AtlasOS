@@ -9,10 +9,11 @@
  *   1. Journalisation (K0.3) : VGA + COM1 + debugcon. Ne dépend d'aucune
  *      information de démarrage : on l'initialise d'abord pour pouvoir
  *      signaler toute erreur ultérieure.
- *   2. Validation Multiboot (K0.1) : en cas d'échec -> panic().
- *   3. Disposition mémoire (K0.2) : affichage et vérification -> panic().
- *   4. Mode test (`test` sur la ligne de commande) : autotests sous QEMU.
- *   5. Sinon : rapport final et arrêt sûr.
+ *   2. GDT + IDT (K0.4) : toute exception devient diagnosticable.
+ *   3. Validation Multiboot (K0.1) : en cas d'échec -> panic().
+ *   4. Disposition mémoire (K0.2) : affichage et vérification -> panic().
+ *   5. Mode test (`test` sur la ligne de commande) : autotests sous QEMU.
+ *   6. Sinon : rapport final et arrêt sûr.
  */
 #include <samos/bootinfo.h>
 #include <samos/kernel.h>
@@ -22,6 +23,8 @@
 #include <samos/panic.h>
 #include <samos/serial.h>
 #include <arch/cpu.h>
+#include <arch/gdt.h>
+#include <arch/interrupt.h>
 
 uintptr_t kmain_frame_address;
 
@@ -34,6 +37,13 @@ void kmain(uint32_t magic, uint32_t mbi_phys)
     klog(LOG_INFO, "console: debugcon%s%s\n",
          (sinks & LOG_SINK_SERIAL) ? " + serial COM1 115200 8N1" : " (serial absent)",
          (sinks & LOG_SINK_VGA) ? " + VGA 80x25" : "");
+
+    /* K0.4 : GDT propre au noyau puis IDT. Avant ce point, toute exception
+     * provoquait un triple fault ; après, elle produit un rapport et panic(). */
+    gdt_init();
+    idt_init();
+    klog(LOG_INFO, "cpu: GDT loaded (flat 4 GiB, TSS main + double-fault task)\n");
+    klog(LOG_INFO, "cpu: IDT loaded (%u exception gates, #DF task gate)\n", (unsigned)EXC_COUNT);
 
     samos_err_t err = bootinfo_init(magic, mbi_phys);
     if (err == SAMOS_EINVAL) {
@@ -60,6 +70,6 @@ void kmain(uint32_t magic, uint32_t mbi_phys)
 
     kprintf("SAMOS: boot stack high-water %zu bytes, guard %s\n",
             boot_stack_high_water(), boot_stack_guard_intact() ? "intact" : "CORRUPTED");
-    kprintf("SAMOS: K0.3 boot complete, halting\n");
+    kprintf("SAMOS: K0.4 boot complete, halting\n");
     cpu_halt_forever();
 }

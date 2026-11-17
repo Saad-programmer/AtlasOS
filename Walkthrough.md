@@ -492,3 +492,147 @@ Résultat observé : **39 lignes `[PASS]`, aucune `[FAIL]`**, statut 0.
 make clean && make test    # 39 lignes [PASS], aucune [FAIL]
 make run                   # sortie de la section F sur le terminal
 ```
+
+---
+
+## Jalon K0.4 — GDT, TSS, IDT et exceptions processeur
+
+### A. Objectif
+
+Remplacer les tables héritées du chargeur par des tables propres au noyau, et faire en sorte que **toute exception processeur** soit :
+
+- soit traitée par un gestionnaire enregistré (exception récupérable) ;
+- soit transformée en un rapport complet suivi d'une panique.
+
+Le noyau doit aussi survivre à une double faute, y compris quand la pile noyau est inutilisable.
+
+### B. État de départ
+
+Le GDTR du chargeur pouvait être invalide, et l'IDTR était indéfini. Toute exception provoquait un triple fault, donc un redémarrage sans aucun diagnostic.
+
+### C. Fichiers créés et modifiés
+
+| Fichier | Changement |
+|---|---|
+| `kernel/arch/i386/include/arch/gdt.h`, `gdt.c` | **nouveaux** : 5 descripteurs (nul, code, données, TSS principal, TSS #DF), TSS, pile de 4 KiB pour la double faute |
+| `kernel/arch/i386/gdt_flush.asm` | **nouveau** : `gdt_load` (LGDT, saut lointain, rechargement des segments), `tss_load` (LTR) |
+| `kernel/arch/i386/include/arch/idt.h`, `idt.c` | **nouveaux** : 256 portes ; 0-31 portes d'interruption, 8 porte de tâche, 32-47 préparées mais non présentes |
+| `kernel/arch/i386/include/arch/interrupt.h` | **nouveau** : `struct interrupt_frame`, enregistrement des gestionnaires, noms des exceptions |
+| `kernel/arch/i386/isr_stubs.asm` | **nouveau** : 48 stubs générés par macro, `isr_common`, table des stubs |
+| `kernel/arch/i386/exceptions.c` | **nouveau** : `isr_dispatch`, décodage des codes d'erreur, rapport, `double_fault_task` |
+| `kernel/arch/i386/include/arch/cpu.h` | `sgdt`, `sidt`, `str`, lecture des registres de segment |
+| `kernel/core/kmain.c` | `gdt_init()` + `idt_init()` juste après le journal |
+| `kernel/tests/test_cpu.c` | **nouveau** : suite K0.4 (40 vérifications) |
+| `kernel/tests/test_faults.c` | **nouveau** : modes fatals `ud`, `de`, `gp`, `np`, `intbad`, `df`, `triple` |
+| `kernel/tests/ktest.c`, `ktest.h` | suite et modes fatals |
+| `tests/qemu/run.sh` | **correction** de la détection de triple fault ; `EXPECT_TRIPLE` |
+| `tests/qemu/cases.sh` | 7 nouveaux cas fatals |
+| `tests/qemu/gdb_checks.sh` | motif VGA indépendant du numéro de jalon |
+| `Makefile` | nouvelles sources C et ASM |
+
+### D. Séquence d'implémentation
+
+1. **GDT et TSS** (`gdt.h`, `gdt.c`, `gdt_flush.asm`). Les structures sont vérifiées par `_Static_assert` (8 et 104 octets). Le TSS principal est chargé dans TR, ce qui est obligatoire pour qu'une commutation de tâche matérielle puisse sauvegarder l'état courant. Le TSS de double faute reçoit un état initial complet.
+2. **Stubs** (`isr_stubs.asm`). Les macros `ISR_NOERR`/`ISR_ERR` et `%rep` génèrent 48 points d'entrée. Une vérification par `nm` (48 symboles) et par désassemblage (`isr_stub_13` : `push $0xd ; jmp isr_common`, sans code d'erreur factice) confirme le résultat.
+3. **IDT** (`idt.c`) et **répartiteur** (`exceptions.c`).
+4. **Intégration** dans `kmain`, avant la validation Multiboot, pour que même ces erreurs soient diagnostiquées.
+5. **Tests.** La suite récupérable est exécutée dans le noyau. Les modes fatals sont exécutés chacun dans un démarrage QEMU séparé.
+
+### E. Compilation
+
+`make`. Deux fichiers NASM s'ajoutent. `nm -u` reste vide.
+
+### F. Exécution
+
+`make run`. Nouvelles lignes au démarrage :
+
+```text
+[info ] cpu: GDT loaded (flat 4 GiB, TSS main + double-fault task)
+[info ] cpu: IDT loaded (32 exception gates, #DF task gate)
+```
+
+Exemple de rapport d'exception (`-append test=gp`) :
+
+```text
+*** CPU exception 13: General Protection (#GP), error code 0x00000f00
+    selector error: GDT index 480
+    EAX=0x00000f00 EBX=0x00106d70 ECX=0x00000000 EDX=0x0010ffa7
+    ESI=0x0010ffa4 EDI=0x2badb002 EBP=0x0010ff88 ESP=0x0010ff70
+    EIP=0x00104838 CS=0008 EFLAGS=0x00000046
+    DS=0010 ES=0010 FS=0010 GS=0010
+    CR0=0x00000011 CR2=0x00000000 CR3=0x00000000
+*** KERNEL PANIC: unhandled General Protection (#GP) at EIP 0x00104838
+```
+
+`addr2line -f -e build/samos.elf 0x00104838` donne `ktest_fatal_mode`, la fonction qui contient le `mov %ax, %ds` fautif.
+
+Double faute (`-append test=df`) :
+
+```text
+*** DOUBLE FAULT (#DF) caught by task gate, running on dedicated stack
+    interrupted task: EIP=0x00104850 ESP=0x0010ff70 EBP=0x0010ff88 EFLAGS=0x00000002
+    EAX=0x0000000e EBX=0x00106d70 ECX=0x0000000b EDX=0x0000000e CR3=0x00000000
+*** KERNEL PANIC: double fault
+```
+
+### G. Tests
+
+```bash
+make clean && make test
+```
+
+Résultat observé : **46 lignes `[PASS]`, aucune `[FAIL]`**, statut 0.
+
+| Test | Attendu | Observé |
+|---|---|---|
+| GDTR (base, limite), CS = 0x08, DS/ES/FS/SS = 0x10, TR = 0x18 | conforme | **PASS** |
+| Octets d'accès : `0x9B`, `0x93`, TSS principal `0x8B` (occupé), TSS #DF `0x89` | conforme | **PASS** |
+| IDTR ; portes 0-31 = `0x8E`/sel. 0x08 ; porte 8 = `0x85`/sel. 0x20 ; 32 et 255 non présentes | conforme | **PASS** |
+| `int3` : trappe (EIP après), EAX préservé, DF = 1 → 0 dans le gestionnaire → 1 après IRETD, IF = 0, pile alignée | conforme | **PASS** |
+| `ud2`, `div` par 0 : faute (EIP sur l'instruction, octets `0F 0B`/`F7 F1`), reprise après correction d'EIP | conforme | **PASS** |
+| Enregistrement : nul refusé, double enregistrement refusé, désenregistrement effectif | conforme | **PASS** |
+| Total des autotests noyau | statut 33 | **PASS** (127 vérifications, 0 échec) |
+| `exc_ud`, `exc_de` | rapport + panique, statut 37 | **PASS** |
+| `exc_gp` : `#GP`, code `0xf00`, « GDT index 480 » | conforme | **PASS** |
+| `exc_np` : `INT 0x20` → `#NP`, code `0x102`, « IDT index 32 » | conforme | **PASS** |
+| `exc_int_invalid` : `INT 0x80` → `#GP`, code `0x402`, « IDT index 128 » | conforme | **PASS** |
+| `exc_df` : double faute par porte de tâche, aucun gestionnaire #NP exécuté, pas de triple fault | conforme | **PASS** |
+| `exc_triple` : triple fault **détecté** par le banc | conforme | **PASS** |
+| Régressions K0.1 à K0.3 | inchangées | **PASS** |
+
+### H. Débogage : trois constats et un défaut du banc de test
+
+Premier passage : `selftest`, `exc_np`, `exc_df` et `exc_triple` en échec.
+
+1. **`g[2].access == 0x92` faux.** La valeur lue était `0x93`. Le CPU positionne le bit *Accessed* du descripteur de données en écrivant dans la GDT quand DS est chargé. Pour CS, QEMU ne l'a pas positionné. **Correction :** le bit est pré-positionné (`0x9B`/`0x93`) ; le CPU n'écrit plus jamais dans la table, qui pourra être protégée en écriture (Details §22.3).
+2. **`INT 0x80` a produit #GP et non #NP.** L'entrée 128 est entièrement nulle, donc de type invalide, et le type est vérifié avant le bit de présence. **Correction :** le test #NP utilise le vecteur 32 (type valide, P = 0). Le comportement #GP de l'entrée nulle est conservé comme cas de test distinct (`intbad`). Le commentaire de `idt.c`, qui annonçait à tort #NP, a été corrigé.
+3. **Pas de double faute.** Conséquence directe du point 2 : `INT 0x80` produisait une #GP, traitée normalement. Avec `INT 0x20`, on obtient #NP pendant la livraison de #NP, donc #DF.
+4. **Défaut du banc de test : un triple fault n'était pas détecté.** Le cas `exc_triple` a bien provoqué un arrêt de QEMU (statut 0), mais `run.sh` n'a compté que 2 `CPU Reset`. L'exécution manuelle avec `-d cpu_reset,int` montre `check_exception old: 0x8 new 0xd` puis `Triple fault`. **Avec `-no-reboot`, QEMU s'arrête au lieu de réinitialiser le CPU** : aucune ligne `CPU Reset` supplémentaire. L'hypothèse de K0.1 (« un triple fault ajoute un reset ») était fausse. **Correction :** détection de la chaîne `Triple fault`. **Validation :** `exc_triple` l'exige et passe, et les 11 autres cas l'interdisent et passent. Les verdicts antérieurs restent valides, car le contrôle du statut QEMU aurait révélé un triple fault.
+5. **Régression d'un test GDB** au passage à K0.4 : le contrôle VGA cherchait le texte littéral `K0.3 boot complete`. Il cherche désormais `boot complete, halting`, indépendant du jalon.
+
+### I. Intégration
+
+- `panic` (K0.3) est le point d'aboutissement de toute exception non gérée.
+- K0.5 rendra présents les vecteurs 32-47 et y enregistrera les gestionnaires d'IRQ via `interrupt_register`.
+- En K0.6 :
+  - le gestionnaire #PF (vecteur 14) sera enregistré ;
+  - la page de garde rendra un débordement de pile détectable par #PF, puis #DF, attrapée par la porte de tâche ;
+  - le CR3 de la tâche #DF devra être mis à jour (`gdt_set_double_fault_cr3`).
+
+### J. Critères d'achèvement
+
+- [x] GDT et TSS propres chargés, segments rechargés, vérifiés dans les registres réels.
+- [x] IDT complète, chaque type de porte vérifié.
+- [x] Fautes et trappes distinguées et démontrées ; reprise après faute démontrée.
+- [x] Registres, DF, IF et alignement corrects dans les gestionnaires.
+- [x] Exceptions fatales : rapport décodé et panique, pour 5 types distincts.
+- [x] Double faute attrapée sur une pile dédiée.
+- [x] Triple fault effectivement détectable par le banc de test.
+- [x] Aucune régression ; documentation à jour (Details §22 à 27).
+
+### K. Reproduction
+
+```bash
+make clean && make test    # 46 lignes [PASS], aucune [FAIL]
+qemu-system-i386 -kernel build/samos.elf -append test=df -serial stdio -display none -device isa-debug-exit,iobase=0xf4,iosize=0x04
+```

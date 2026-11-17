@@ -1,0 +1,51 @@
+/*
+ * SAMOS / AtlasOS — kernel/tests/test_faults.c
+ * ---------------------------------------------------------------------------
+ * Fautes FATALES volontaires (K0.4). Chaque mode est exécuté dans un
+ * démarrage QEMU séparé (tests/qemu/cases.sh) car il ne revient jamais :
+ *
+ *   ud      ud2                       -> #UD non géré -> panic
+ *   de      div par zéro              -> #DE non géré -> panic
+ *   gp      MOV DS, 0x0F00            -> #GP(0x0F00) : index 480 hors GDT
+ *   np      INT 0x20                  -> #NP(0x102) : porte 32 de type valide, P = 0
+ *   intbad  INT 0x80                  -> #GP(0x402) : entrée nulle = type invalide ;
+ *                                        le type est vérifié AVANT le bit P
+ *   df      #NP rendu non présent,    -> #NP pendant la livraison de #NP
+ *           puis INT 0x20                => DOUBLE FAULT (porte de tâche)
+ *   triple  IDT de limite 0, INT3     -> aucune porte livrable : TRIPLE FAULT
+ *                                        => réinitialisation du processeur
+ *                                        (prouve que le banc de test la détecte)
+ */
+#include <arch/cpu.h>
+#include <arch/interrupt.h>
+#include <samos/ktest.h>
+#include <samos/log.h>
+#include <samos/string.h>
+
+bool ktest_fatal_mode(const char *mode)
+{
+    kprintf("[TEST] fatal mode '%s'\n", mode);
+    if (strcmp(mode, "ud") == 0) {
+        __asm__ __volatile__("ud2");
+    } else if (strcmp(mode, "de") == 0) {
+        __asm__ __volatile__("xorl %%edx, %%edx\n\tmovl $1, %%eax\n\txorl %%ecx, %%ecx\n\tdivl %%ecx"
+                             : : : "eax", "ecx", "edx", "cc");
+    } else if (strcmp(mode, "gp") == 0) {
+        __asm__ __volatile__("movw $0x0F00, %%ax\n\tmovw %%ax, %%ds" : : : "eax", "memory");
+    } else if (strcmp(mode, "np") == 0) {
+        __asm__ __volatile__("int $0x20");
+    } else if (strcmp(mode, "intbad") == 0) {
+        __asm__ __volatile__("int $0x80");
+    } else if (strcmp(mode, "df") == 0) {
+        /* #NP (contributive) survenant pendant la livraison d'une #NP
+         * (contributive) => #DF (SDM vol. 3A, tableau 6-5). */
+        idt_set_present(EXC_NP, false);
+        __asm__ __volatile__("int $0x20");
+    } else if (strcmp(mode, "triple") == 0) {
+        struct cpu_dtr empty = { 0, 0 };
+        __asm__ __volatile__("lidt %0\n\tint3" : : "m"(empty) : "memory");
+    } else {
+        return false;
+    }
+    return true;   /* atteint seulement si la faute ne s'est pas produite */
+}

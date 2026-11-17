@@ -64,9 +64,14 @@ LDFLAGS := -m elf_i386 -T kernel/arch/$(ARCH)/linker.ld -nostdlib \
 QEMU_FLAGS := -m 128M -no-reboot -no-shutdown
 
 # --- Sources ---
-ASM_SRCS := kernel/arch/$(ARCH)/boot/entry.asm
+ASM_SRCS := kernel/arch/$(ARCH)/boot/entry.asm \
+            kernel/arch/$(ARCH)/gdt_flush.asm \
+            kernel/arch/$(ARCH)/isr_stubs.asm
 
-C_SRCS := kernel/core/kmain.c \
+C_SRCS := kernel/arch/$(ARCH)/gdt.c \
+          kernel/arch/$(ARCH)/idt.c \
+          kernel/arch/$(ARCH)/exceptions.c \
+          kernel/core/kmain.c \
           kernel/core/bootinfo.c \
           kernel/core/layout.c \
           kernel/core/log.c \
@@ -80,7 +85,9 @@ C_SRCS := kernel/core/kmain.c \
           kernel/tests/ktest.c \
           kernel/tests/test_boot.c \
           kernel/tests/test_layout.c \
-          kernel/tests/test_console.c
+          kernel/tests/test_console.c \
+          kernel/tests/test_cpu.c \
+          kernel/tests/test_faults.c
 
 OBJS := $(patsubst %.asm,$(BUILD)/%.o,$(ASM_SRCS)) \
         $(patsubst %.c,$(BUILD)/%.o,$(C_SRCS))

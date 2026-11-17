@@ -38,14 +38,25 @@ run_case() {
         echo "  statut QEMU $status, attendu $expect"
         ok=0
     fi
-    # -d cpu_reset : QEMU 8.2 journalise DEUX resets à la mise sous tension
-    # (initialisation de l'objet CPU, puis reset système avec EIP=0xFFF0).
-    # Tout reset SUPPLÉMENTAIRE indique un triple fault (ou un reset demandé).
-    # Valeur mesurée, ajustable via QEMU_BOOT_RESETS.
-    local resets
+    # Détection d'un triple fault (journal -d cpu_reset) :
+    #  - QEMU écrit « Triple fault » au moment de l'événement ;
+    #  - AVEC -no-reboot, QEMU s'arrête au lieu de réinitialiser le CPU : il
+    #    n'y a donc PAS de « CPU Reset » supplémentaire (constaté en K0.4 ;
+    #    l'hypothèse inverse de K0.1 était fausse) ;
+    #  - QEMU 8.2 journalise deux « CPU Reset » à la mise sous tension : un
+    #    troisième signale un reset demandé par l'invité.
+    # EXPECT_TRIPLE=1 (variable du cas) : le cas DOIT provoquer un triple fault
+    # (test volontaire, qui prouve que la détection fonctionne).
+    local triple resets
+    triple=$(grep -c 'Triple fault' "$qlog" 2>/dev/null || true)
     resets=$(grep -c 'CPU Reset' "$qlog" 2>/dev/null || true)
-    if [ "${resets:-0}" -gt "${QEMU_BOOT_RESETS:-2}" ]; then
-        echo "  reset CPU inattendu ($resets resets dans $qlog)"
+    if [ "${EXPECT_TRIPLE:-0}" -eq 1 ]; then
+        if [ "${triple:-0}" -eq 0 ]; then
+            echo "  triple fault attendu mais absent de $qlog"
+            ok=0
+        fi
+    elif [ "${triple:-0}" -gt 0 ] || [ "${resets:-0}" -gt "${QEMU_BOOT_RESETS:-2}" ]; then
+        echo "  triple fault ou reset CPU inattendu (triple=$triple, resets=$resets dans $qlog)"
         ok=0
     fi
     # Motif "serial:TEXTE" : recherché uniquement dans la sortie série

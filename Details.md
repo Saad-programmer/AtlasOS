@@ -32,6 +32,12 @@ Le texte distingue systématiquement :
 19. Formatage de texte et arithmétique 64 bits sans libgcc (K0.3)
 20. Sécurité du jalon K0.3
 21. Questions de jury et réponses (K0.3)
+22. Segmentation, GDT et TSS (K0.4)
+23. Interruptions, exceptions et IDT (K0.4)
+24. Anatomie d'un gestionnaire : cadre, stubs, IRETD (K0.4)
+25. Double faute, porte de tâche et triple fault (K0.4)
+26. Sécurité du jalon K0.4
+27. Questions de jury et réponses (K0.4)
 - Références
 
 ---
@@ -857,6 +863,314 @@ Le drapeau `g_in_panic` le détecte. On écrit alors un message minimal sur debu
 **Q9. Pourquoi la pile a-t-elle grossi de 116 à 792 octets ?**
 À cause du tampon de ligne de 256 octets de `kprintf` et des tampons de conversion du formateur (2 × 64 octets). Cette valeur a été mesurée par l'instrument de peinture de pile de K0.2, et non estimée.
 
+## 22. Segmentation, GDT et TSS (K0.4)
+
+### 22.1 La segmentation en mode protégé
+
+**[ARCH]** En mode protégé, chaque accès mémoire passe par un **segment**. Une adresse logique `sélecteur:offset` est convertie en **adresse linéaire** = base du segment + offset, après vérification de la limite et des droits. Ensuite, si la pagination est active (K0.6), l'adresse linéaire est traduite en adresse physique.
+
+```text
+adresse logique ──segmentation──► adresse linéaire ──pagination──► adresse physique
+ (CS:EIP, DS:EAX…)    GDT/LDT            (32 bits)        CR3, tables       (bus)
+```
+
+Un **sélecteur** (16 bits, valeur des registres CS, DS, SS…) a la forme `index(13) | TI(1) | RPL(2)` :
+
+- `0x08` est l'index 1 de la GDT (TI = 0), avec un RPL de 0 ;
+- `0x10` est l'index 2.
+
+Chaque registre de segment a une **partie cachée** (*descriptor cache*) : au chargement du sélecteur, le CPU lit le descripteur dans la table et en garde une copie (base, limite, droits). C'est pourquoi un chargeur peut laisser un GDTR invalide sans que le noyau plante, comme dit au §2.3 : les caches restent valables tant qu'on ne recharge aucun segment.
+
+### 22.2 Le modèle plat
+
+**[CHOIX]** SAMOS utilise, comme Linux, Windows et presque tous les systèmes 32 bits modernes, le **modèle plat** : code et données ont une base 0 et une limite de 4 Gio. La segmentation devient une identité, et toute la protection mémoire est confiée à la pagination, plus fine (par page de 4 Kio) et seule disponible en mode 64 bits, où la segmentation est presque entièrement désactivée. On ne peut pas désactiver la segmentation en mode protégé 32 bits : on la neutralise.
+
+### 22.3 Le descripteur de segment
+
+**[ARCH]** Un descripteur fait 8 octets (SDM vol. 3A, figure 3-8). La base (32 bits) et la limite (20 bits) y sont fragmentées pour des raisons de compatibilité avec le 80286 :
+
+| Octets | Contenu |
+|---|---|
+| 0-1 | limite[15:0] |
+| 2-4 | base[23:0] |
+| 5 | **accès** : P (présent), DPL (2 bits, privilège), S (1 = code/données), Type (4 bits) |
+| 6 | **drapeaux** : G (granularité), D/B (32 bits), L (64 bits), AVL, puis limite[19:16] |
+| 7 | base[31:24] |
+
+**Calcul de la limite effective :** avec G = 1, la limite est en unités de 4 Kio.
+
+$$\text{limite effective} = \text{limite} \times 4096 + 4095 = \texttt{0xFFFFF} \times 4096 + 4095 = \texttt{0xFFFFFFFF}$$
+
+**Octets d'accès de SAMOS**, vérifiés par autotest :
+
+| Segment | Accès | Décodage |
+|---|---|---|
+| code noyau (0x08) | `0x9B` | P = 1, DPL = 0, S = 1, type 1011 = code, exécutable, lisible, **accédé** |
+| données noyau (0x10) | `0x93` | P = 1, DPL = 0, S = 1, type 0011 = données, inscriptible, **accédé** |
+| TSS principal (0x18) | `0x8B` après LTR | S = 0, type 1011 = TSS 32 bits **occupé** |
+| TSS #DF (0x20) | `0x89` | type 1001 = TSS 32 bits disponible |
+| drapeaux code/données | `0xCF` | G = 1, D = 1 (32 bits), limite[19:16] = `0xF` |
+
+**Constat expérimental : le processeur écrit dans la GDT.** La première version déclarait les données en `0x92`. Après chargement de DS, l'autotest a lu `0x93` : le CPU positionne lui-même le bit *Accessed* (SDM vol. 3A §3.4.5.1), **en écrivant en mémoire** dans la table. Pour le segment de code, QEMU n'a pas positionné ce bit lors du saut lointain : une différence d'émulation qu'il ne faut pas tenir pour une garantie. **[CHOIX]** Le bit est pré-positionné : le processeur n'a plus jamais besoin d'écrire dans la GDT. C'est la condition pour pouvoir projeter la GDT en lecture seule après K0.6, et la valeur lue devient déterministe.
+
+### 22.4 Recharger les segments : LGDT puis saut lointain
+
+`LGDT` ne fait que charger le registre GDTR (base + limite). Les registres de segment gardent leurs anciens caches. Il faut les recharger :
+
+- **CS** ne peut pas être chargé par `MOV`. On utilise un **saut lointain** `jmp 0x08:.reload_cs`, qui charge CS et EIP en une seule instruction ;
+- **DS, ES, FS, GS, SS** se rechargent par `MOV`. Un `MOV SS` inhibe les interruptions pour l'instruction suivante, pour qu'un couple `mov ss / mov esp` soit atomique (SDM vol. 2, MOV).
+
+### 22.5 Pas de segments utilisateur en K0
+
+**[CHOIX]** Aucun descripteur DPL 3 n'est créé. Aucun code ring 3 n'existe, et un descripteur inutilisé est une surface d'attaque qui ne sert à rien (principe du moindre privilège appliqué à la configuration). Ils seront ajoutés en K1 avec le passage en ring 3.
+
+### 22.6 Le TSS
+
+Le **TSS** (*Task State Segment*, 104 octets) est la structure du **multitâche matériel** de l'i386 : il contient l'état complet d'une tâche (registres, segments, CR3, EIP, EFLAGS) et les piles de privilège (`ss0:esp0`…). Les systèmes modernes n'utilisent plus la commutation de tâches matérielle, plus lente et non portable en 64 bits, mais le TSS reste indispensable pour :
+
+1. **`ss0:esp0`** : la pile noyau chargée lors d'une interruption survenant en ring 3 (K1) ;
+2. la **bitmap d'E/S** : `iomap_base = 104` (taille du TSS) signifie qu'il n'y a pas de bitmap, donc tout accès aux ports depuis un ring > IOPL est refusé ;
+3. en 32 bits uniquement, les **portes de tâche**, qui servent ici à la double faute (§25).
+
+`LTR` charge le registre de tâche (TR) et marque le descripteur « occupé », d'où le passage de `0x89` à `0x8B`, que vérifie l'autotest.
+
+---
+
+## 23. Interruptions, exceptions et IDT (K0.4)
+
+### 23.1 Trois sources d'événements
+
+| Source | Exemples | Synchrone ? |
+|---|---|---|
+| **Exceptions** (le CPU détecte une condition) | division par zéro, opcode invalide, faute de page | oui, liée à une instruction |
+| **Interruptions matérielles** (IRQ) | timer, clavier (K0.5) | non, asynchrone |
+| **Interruptions logicielles** | `INT n`, `INT3` | oui |
+
+Les 32 premiers vecteurs (0-31) sont **réservés par Intel** aux exceptions. C'est pourquoi les IRQ du PIC, qui occupent par défaut 8-15 en mode réel, devront être remappées (K0.5).
+
+### 23.2 Fautes, trappes et abandons
+
+**[ARCH]** La classe d'une exception détermine l'EIP sauvegardé (SDM vol. 3A §6.5) :
+
+| Classe | EIP sauvegardé | Reprise | Exemples |
+|---|---|---|---|
+| **Faute** (*fault*) | l'instruction **fautive** | ré-exécution après correction | #DE, #UD, #GP, #PF |
+| **Trappe** (*trap*) | l'instruction **suivante** | continuation | #BP (`INT3`), #OF |
+| **Abandon** (*abort*) | indéfini ou peu fiable | aucune | #DF, #MC |
+
+Cette distinction est **vérifiée expérimentalement** par les autotests K0.4 :
+
+- `int3` : EIP sauvegardé = adresse du label **après** `int3` (trappe) ;
+- `ud2` : EIP sauvegardé = adresse **de** `ud2`, et les octets lus à cet EIP sont `0F 0B` (faute) ;
+- `div ecx` avec ECX = 0 : EIP = adresse de `div`, octets `F7 F1` (faute).
+
+Pour reprendre après une faute, le gestionnaire de test avance EIP de 2 octets dans le cadre. `IRETD` reprend alors à l'instruction suivante. C'est le principe de l'émulation d'instructions par un noyau. Pour une faute de page, on ne corrige pas EIP : on corrige la cause (on mappe la page) puis on ré-exécute l'instruction.
+
+### 23.3 Le descripteur de porte
+
+**[ARCH]** L'IDT contient jusqu'à 256 **portes** de 8 octets : offset (32 bits, scindé en deux), sélecteur, octet type/attributs `P | DPL | 0 | type` :
+
+| Type | Valeur | Effet |
+|---|---|---|
+| porte d'**interruption** 32 bits | `0xE` | IF ← 0 à l'entrée |
+| porte de **trappe** 32 bits | `0xF` | IF inchangé |
+| porte de **tâche** | `0x5` | commutation de tâche matérielle vers le TSS désigné |
+
+**[CHOIX]** Toutes les exceptions utilisent des portes d'**interruption** (`0x8E` = P, DPL 0, type E). Un gestionnaire ne peut donc jamais être interrompu par une IRQ, ce qui supprime toute question d'imbrication en K0. Le coût : la latence des IRQ augmente pendant le traitement d'une exception, ce qui est négligeable ici. L'autotest vérifie IF = 0 dans le gestionnaire.
+
+**DPL 0 sur toutes les portes :** une instruction `INT n` exécutée depuis le ring 3 (futur) produira #GP au lieu d'entrer dans le noyau. Seules les portes explicitement destinées aux appels système (K1) auront DPL 3.
+
+### 23.4 Constat expérimental : #GP ou #NP ?
+
+La première version supposait qu'un `INT 0x80` vers une entrée vide déclencherait #NP (« segment non présent »). Le test a montré **#GP(0x402)**. **Explication :** l'entrée 128 est entièrement nulle, donc son champ *type* vaut 0, qui n'est pas un type de porte valide. Le processeur valide le **type** avant le bit **P** (ordre des contrôles du pseudo-code de l'instruction `INT n`, SDM vol. 2 ; comportement confirmé ici sous QEMU), et un type invalide produit #GP. Une entrée de type valide mais avec P = 0 (vecteurs 32-47, préparés pour K0.5) produit bien #NP.
+
+Les deux cas sont désormais testés :
+
+- `test=np` avec `INT 0x20` donne #NP(0x102) ;
+- `test=intbad` avec `INT 0x80` donne #GP(0x402).
+
+**Décodage du code d'erreur** (« format sélecteur », SDM §6.13) : `0x402 = 1000 0000 0010₂`. Le bit 1 (IDT) vaut 1 et l'index vaut `0x402 >> 3 = 128`. Le gestionnaire affiche « selector error: IDT index 128 ». De même pour `MOV DS, 0x0F00` : `0xF00 >> 3 = 480`, avec TI = 0, d'où « GDT index 480 », un index qui dépasse les 5 entrées de la table.
+
+---
+
+## 24. Anatomie d'un gestionnaire : cadre, stubs, IRETD (K0.4)
+
+### 24.1 Ce que fait le processeur
+
+**[ARCH]** À l'entrée par une porte d'interruption **sans changement de privilège** (ring 0 → ring 0), le CPU :
+
+1. empile EFLAGS, CS et EIP (et, avec changement de privilège, SS et ESP **avant** eux : K1) ;
+2. empile un **code d'erreur** pour les vecteurs 8, 10-14, 17, 21, 29 et 30 ;
+3. met IF à 0 (porte d'interruption), ainsi que TF, NT, RF et VM ;
+4. charge CS:EIP depuis la porte.
+
+Il **ne modifie pas DF**. Si le code interrompu avait exécuté `STD`, le gestionnaire C hériterait de DF = 1, ce qui violerait l'ABI.
+
+### 24.2 Les stubs assembleur
+
+Le C ne peut pas servir directement de gestionnaire : il faut sauvegarder **tous** les registres (et pas seulement les registres *caller-saved*), uniformiser le cadre et terminer par `IRETD` au lieu de `RET`. Chacun des 48 stubs générés par macro NASM :
+
+- empile un code d'erreur **factice** (0) si le CPU n'en fournit pas, afin que le cadre ait toujours la même forme ;
+- empile son **numéro de vecteur** (un seul `isr_common` sert pour tous) ;
+- saute vers `isr_common`.
+
+`isr_common` :
+
+```nasm
+pushad                  ; 8 registres généraux
+push ds / es / fs / gs  ; segments
+mov ax, 0x10 ; mov ds..gs, ax
+cld                     ; ABI : DF = 0
+mov ebx, esp            ; EBX = &interrupt_frame (callee-saved)
+and esp, 0xFFFFFFF0     ; alignement 16
+sub esp, 12 ; push ebx  ; ESP ≡ 0 mod 16 avant call
+call isr_dispatch
+mov esp, ebx
+pop gs/fs/es/ds ; popad
+add esp, 8              ; vecteur + code d'erreur
+iretd
+```
+
+### 24.3 La structure `interrupt_frame`
+
+Elle décrit la pile **de l'adresse la plus basse à la plus haute**, soit l'ordre inverse des `push` :
+
+```text
+adresse basse  ┌─────────────┐ ← EBX = argument de isr_dispatch
+               │ gs fs es ds │ isr_common
+               │ edi … eax   │ pushad (EDI empilé en dernier)
+               │ vector      │ stub
+               │ err_code    │ stub (0) ou CPU
+               │ eip cs      │ CPU
+adresse haute  │ eflags      │ CPU
+               └─────────────┘ ← ESP du code interrompu (ring 0)
+```
+
+`_Static_assert(sizeof == 68)` garantit la concordance avec l'assembleur. Le gestionnaire peut **modifier** le cadre, par exemple EIP : `popad`/`iretd` rechargent alors ces valeurs. Le champ ESP de `pushad` n'est **pas** restauré par `popad` (SDM : « the ESP value is discarded »). L'ESP réel du code interrompu se calcule comme `&eflags + 4`.
+
+### 24.4 Pourquoi réaligner la pile ?
+
+La profondeur du cadre varie : 4 ou 5 mots poussés par le CPU selon le code d'erreur, et une pile interrompue d'alignement quelconque. Un gestionnaire C compilé avec `-mstack-alignment=16` suppose ESP ≡ 0 (mod 16) au point d'appel. `and esp, -16` arrondit à la frontière inférieure. EBX, préservé par l'appelé selon cdecl, mémorise l'ancienne valeur. L'autotest vérifie dans le gestionnaire que `(EBP + 8) % 16 == 0` (même démonstration qu'au §6.3).
+
+### 24.5 IRETD
+
+**[ARCH]** `IRETD` dépile EIP, CS et EFLAGS (plus ESP et SS en cas de retour vers un privilège inférieur). Il restaure donc **IF et DF d'origine**. L'autotest le montre : DF = 1 avant `int3`, DF = 0 dans le gestionnaire (après `cld`), DF = 1 de nouveau après le retour.
+
+### 24.6 Gestionnaires enregistrables
+
+`interrupt_register(vector, handler)` refuse un gestionnaire nul ou un vecteur déjà occupé : un module ne peut pas remplacer silencieusement le gestionnaire d'un autre. Toute exception **sans** gestionnaire produit un rapport complet (nom, code d'erreur décodé, registres, segments, CR0/CR2/CR3), puis `panic()`. Rien n'est ignoré.
+
+---
+
+## 25. Double faute, porte de tâche et triple fault (K0.4)
+
+### 25.1 Quand survient une double faute ?
+
+**[ARCH]** Si une exception survient **pendant la livraison** d'une autre, le CPU combine les deux selon leurs classes (SDM vol. 3A, tableau 6-5) :
+
+| Première \ Seconde | bénigne | contributive (#DE, #TS, #NP, #SS, #GP) | faute de page |
+|---|---|---|---|
+| bénigne | séquentiel | séquentiel | séquentiel |
+| contributive | séquentiel | **#DF** | séquentiel |
+| faute de page | séquentiel | **#DF** | **#DF** |
+
+Si une troisième exception survient pendant la livraison de #DF, c'est un **triple fault** : le processeur passe en état *shutdown*, et la carte mère le réinitialise.
+
+**Scénario critique pour K0.6.** Un débordement de pile vers la page de garde non présente provoque une faute de page. Pour livrer la #PF, le CPU doit **empiler** EFLAGS/CS/EIP… sur la pile qui vient de déborder, ce qui produit une nouvelle #PF, donc une #DF. Si le gestionnaire de #DF utilise **la même pile**, il échoue lui aussi : triple fault, reset, **aucun diagnostic**.
+
+### 25.2 La solution i386 : une porte de tâche
+
+**[CHOIX]** Le vecteur 8 est une **porte de tâche** vers un TSS dédié (`0x20`), qui définit sa **propre pile** de 4 Kio, son propre EIP (`double_fault_task`), ses segments et son CR3. Lors de la #DF :
+
+1. le CPU **sauvegarde** l'état courant dans le TSS désigné par TR (le TSS principal, d'où l'obligation d'avoir exécuté `LTR`) ;
+2. il **charge** l'état complet depuis le TSS de double faute : nouvelle pile valide, quel que soit l'état de l'ancienne ;
+3. il empile le code d'erreur de #DF (0) sur la nouvelle pile ;
+4. il exécute `double_fault_task`, qui lit l'état interrompu dans le TSS principal et l'affiche, puis panique.
+
+**Alignement à l'entrée de la tâche.** `tss_df.esp` = sommet de la pile (aligné sur 16). Le CPU y empile 4 octets (le code d'erreur), donc à l'entrée ESP = sommet − 4 : $(\text{ESP}+4) \equiv 0 \pmod{16}$, comme pour une fonction appelée normalement. Le code d'erreur occupe la place d'une adresse de retour, que la fonction, `_Noreturn` et sans paramètre, n'utilise jamais.
+
+**Alternative en x86-64 :** les portes de tâche n'existent plus. On utilise l'**IST** (*Interrupt Stack Table*) du TSS 64 bits : jusqu'à 7 piles de secours, sélectionnées par un champ de la porte d'interruption. C'est l'un des points de la migration K1.
+
+### 25.3 Le test de double faute
+
+`test=df` rend la porte de #NP non présente, puis exécute `INT 0x20` :
+
+1. la porte 32 est non présente, d'où **#NP** (contributive) ;
+2. pour livrer #NP, le CPU consulte la porte 11, elle aussi non présente, d'où une nouvelle **#NP** (contributive) ;
+3. contributive puis contributive donne **#DF**, et la porte de tâche est prise.
+
+Sortie réelle :
+
+```text
+*** DOUBLE FAULT (#DF) caught by task gate, running on dedicated stack
+    interrupted task: EIP=0x00104850 ESP=0x0010ff70 EBP=0x0010ff88 EFLAGS=0x00000002
+*** KERNEL PANIC: double fault
+```
+
+L'EIP interrompu se trouve dans `ktest_fatal_mode`, sur l'instruction `int $0x20`. Le test exige en outre l'**absence** de rapport « CPU exception 11 », ce qui prouve qu'aucun gestionnaire de #NP n'a été exécuté. La trace de pile est vide (0 cadre) : `stack_collect` refuse correctement les cadres situés hors de la pile de démarrage, puisque la tâche s'exécute sur sa pile dédiée.
+
+### 25.4 Constat expérimental : détecter un triple fault sous QEMU
+
+`test=triple` charge une IDT de limite 0 puis exécute `INT3`. La porte 3 est hors limite, d'où #GP. La porte 13 l'est aussi, d'où #DF. La porte 8 l'est encore, d'où le triple fault. Le journal `-d cpu_reset,int` de QEMU le confirme :
+
+```text
+v=0d e=001a ...                 #GP, code 0x1a = (3 << 3) | 2 : IDT index 3
+check_exception old: 0xd new 0xd   -> #DF
+v=08 ...
+check_exception old: 0x8 new 0xd
+Triple fault
+```
+
+**Défaut du banc de test découvert grâce à ce test négatif.** Depuis K0.1, la détection d'un triple fault comptait les lignes `CPU Reset`. Or, avec `-no-reboot`, QEMU **s'arrête** au lieu de réinitialiser le CPU : il écrit `Triple fault`, mais aucun nouveau `CPU Reset`. Le détecteur par comptage n'aurait donc jamais rien détecté. Les résultats antérieurs restent valides, car la vérification du statut (124 ou 33 attendus, 0 en cas d'arrêt) aurait échoué. Mais le détecteur dédié était inopérant. **Correction :** on recherche la chaîne `Triple fault`. **Preuve de correction :** le cas `exc_triple` exige désormais sa présence et réussit, et les 11 autres cas exigent son absence. Leçon méthodologique : **un détecteur n'est validé que lorsqu'on l'a vu détecter**.
+
+---
+
+## 26. Sécurité du jalon K0.4
+
+| Aspect | K0.4 |
+|---|---|
+| **Actifs** | intégrité du flux de contrôle du noyau ; disponibilité du diagnostic ; état des registres du code interrompu |
+| **Frontières** | toute exception est une entrée imprévue dans le noyau ; en K1, les interruptions seront le point de passage ring 3 → ring 0 |
+| **Menaces** | exception ignorée laissant le noyau dans un état incohérent ; gestionnaire exécuté avec DF = 1 ou une pile mal alignée ; corruption des registres du code interrompu ; remplacement silencieux d'un gestionnaire ; pile épuisée rendant le diagnostic impossible (triple fault) ; `INT n` depuis un code non privilégié (K1) ; GDT modifiée par le CPU |
+| **Invariants** | toute exception sans gestionnaire mène à `panic` ; `isr_common` sauvegarde et restaure tous les registres généraux et de segment ; DF = 0 et ESP aligné sur 16 dans tout gestionnaire C ; IF = 0 dans tout gestionnaire ; un vecteur n'a qu'un gestionnaire ; #DF s'exécute toujours sur une pile dédiée ; aucune porte DPL 3, aucun segment DPL 3 |
+| **Protections** | portes d'interruption DPL 0 ; stubs uniformes ; `cld` + réalignement ; `interrupt_register` sans écrasement ; porte de tâche #DF ; bit Accessed pré-positionné ; TSS sans bitmap d'E/S |
+| **Tests** | 40 vérifications noyau K0.4 (GDT, TR, IDT, trappe/faute, préservation des registres, DF, IF, alignement) ; 7 démarrages fatals : #UD, #DE, #GP (GDT), #NP, #GP (IDT, type invalide), #DF par porte de tâche, triple fault détecté |
+| **Limites** | un gestionnaire enregistré est du code de confiance (pas d'isolation entre modules du noyau monolithique) ; NMI non géré spécifiquement (il produit une panique) ; #MC non initialisé ; pas de protection contre une exception pendant `isr_common` lui-même (elle mènerait à #DF, qui est capturée) ; la tâche #DF partage le CR3 initial, qu'il faudra mettre à jour en K0.6 via `gdt_set_double_fault_cr3` |
+
+---
+
+## 27. Questions de jury et réponses (K0.4)
+
+**Q1. Pourquoi une GDT si vous utilisez la pagination pour protéger la mémoire ?**
+En mode protégé, la segmentation ne peut pas être désactivée : chaque accès passe par un segment. Le noyau doit donc fournir des descripteurs valides et contrôlés, ceux du chargeur n'étant pas garantis. On choisit des segments plats (base 0, limite 4 Gio) qui neutralisent la segmentation. La GDT porte aussi le TSS, indispensable aux transitions de privilège et à la porte de tâche de double faute.
+
+**Q2. Pourquoi faut-il un saut lointain après LGDT ?**
+LGDT ne change que le registre GDTR. CS garde son descripteur en cache, et il ne peut être rechargé que par un transfert de contrôle lointain (`jmp`, `call` ou `ret` lointain, `iret`), qui charge CS et EIP ensemble. Les autres segments se rechargent par MOV.
+
+**Q3. Différence entre une faute et une trappe ? Comment l'avez-vous montré ?**
+Pour une faute, EIP sauvegardé pointe sur l'instruction fautive, qui sera ré-exécutée. Pour une trappe, il pointe sur la suivante. Les autotests le mesurent : après `int3`, EIP sauvegardé = adresse du label suivant ; après `ud2` et `div` par zéro, EIP pointe sur l'instruction elle-même, dont on relit les octets (`0F 0B`, `F7 F1`).
+
+**Q4. Pourquoi tous les stubs empilent-ils un code d'erreur factice ?**
+Pour qu'il n'existe qu'une seule forme de cadre et un seul `isr_common`. Sans cela, il faudrait deux structures et le code C devrait savoir lesquelles des exceptions empilent un code d'erreur, ce qui serait source d'erreurs.
+
+**Q5. Pourquoi `cld` dans le gestionnaire ?**
+Une interruption ne modifie pas DF. Si le code interrompu a exécuté `STD`, le C hériterait de DF = 1, et un `memcpy` compilé en `rep movsb` copierait à rebours, corrompant la mémoire. L'autotest le prouve : DF vaut 1 dans le cadre, 0 dans le gestionnaire, et 1 de nouveau après IRETD.
+
+**Q6. Porte d'interruption ou de trappe ?**
+Une porte d'interruption met IF à 0 à l'entrée, une porte de trappe ne touche pas IF. SAMOS utilise des portes d'interruption : aucune IRQ ne peut interrompre un gestionnaire, ce qui évite les problèmes de réentrance, notamment dans le journal.
+
+**Q7. Qu'est-ce qu'une double faute ? Comment survivez-vous à une pile épuisée ?**
+C'est une exception survenue pendant la livraison d'une autre, selon le tableau des classes contributives et des fautes de page. Si la pile est épuisée, le CPU ne peut même pas empiler le cadre de #DF. SAMOS utilise une porte de tâche : le CPU charge un TSS dédié avec sa propre pile, si bien que le gestionnaire s'exécute toujours dans un état sain. Le test `df` le démontre. En x86-64, on utilisera l'IST.
+
+**Q8. Comment savez-vous qu'un triple fault serait détecté par vos tests ?**
+Parce qu'on en a provoqué un volontairement (IDT de limite 0) et vérifié que le banc le détecte. Ce test a d'ailleurs révélé que l'ancienne méthode de détection (compter les resets) était inopérante avec `-no-reboot`. Elle a été corrigée.
+
+**Q9. Pourquoi `INT 0x80` donne-t-il #GP et pas #NP ?**
+L'entrée 128 est nulle, donc son type de porte est invalide. Le CPU vérifie le type avant la présence, et un type invalide donne #GP. Une porte de type valide mais non présente (vecteurs 32-47) donne #NP. Les deux comportements sont testés.
+
+**Q10. Pourquoi le bit « Accessed » est-il pré-positionné ?**
+Sinon le processeur écrit dans la GDT au premier chargement d'un segment (constaté : `0x92` devenait `0x93`). Une table que le matériel modifie ne peut pas être protégée en écriture. Pré-positionné, ce bit rend la table stable et protégeable.
+
 ## Références
 
 1. Free Software Foundation, *Multiboot Specification*, version 0.6.96, §3.1 (en-tête), §3.2 (état machine), §3.3 (structure d'information).
@@ -876,3 +1190,5 @@ Le drapeau `g_in_panic` le détecte. On écrit alors un message minimal sur debu
 12. ISO/IEC 9899:2011, §7.16 (`<stdarg.h>`), §7.21.6.1 (`fprintf` : drapeaux, largeur, précision), §7.21.6.5 (`snprintf`).
 13. MITRE, CWE-134 *Use of Externally-Controlled Format String* ; CWE-120 *Buffer Copy without Checking Size of Input*.
 14. D. E. Knuth, *The Art of Computer Programming*, vol. 2 (*Seminumerical Algorithms*), §4.3.1 (arithmétique multiprécision, division).
+15. Intel SDM vol. 3A : §3.4 (sélecteurs, descripteurs, §3.4.5.1 types et bit Accessed), §6.3-6.5 (sources et classes d'exceptions), §6.10-6.12 (IDT, portes, procédures de traitement), §6.13 (codes d'erreur), §6.14-6.15 (tableau 6-5 de la double faute, référence de chaque exception), chap. 7 (gestion des tâches, TSS, portes de tâche).
+16. Intel SDM vol. 2 : `LGDT/LIDT`, `LTR`, `IRET/IRETD`, `PUSHAD/POPAD`, `INT n/INT3`, `UD2`, `DIV`.

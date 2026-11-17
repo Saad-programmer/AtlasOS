@@ -5,6 +5,8 @@
  * Modes (ligne de commande) :
  *   test          toutes les suites, verdict SUCCESS/FAILURE
  *   test=panic    panique volontaire (vérifie le chemin panic, statut 37)
+ *   test=ud|de|gp|np|df|triple   exceptions fatales volontaires (K0.4,
+ *                 voir test_faults.c)
  */
 #include <samos/bootinfo.h>
 #include <samos/ktest.h>
@@ -56,6 +58,10 @@ void ktest_run_all(void)
         if (strcmp(mode, "panic") == 0) {
             deliberate_panic();
         }
+        if (ktest_fatal_mode(mode)) {
+            kprintf("[TEST] fatal mode '%s' returned: fault not raised\n", mode);
+            qemu_exit(QEMU_EXIT_FAILURE);
+        }
         kprintf("[TEST] unknown test mode '%s'\n", mode);
         qemu_exit(QEMU_EXIT_FAILURE);
     }
@@ -63,6 +69,7 @@ void ktest_run_all(void)
     ktest_suite_boot();
     ktest_suite_layout();
     ktest_suite_console();
+    ktest_suite_cpu();
 
     kprintf("[TEST] checks=%u failures=%u\n", g_checks, g_failures);
     if (g_failures == 0) {

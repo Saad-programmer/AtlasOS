@@ -24,5 +24,10 @@ _Noreturn void ktest_run_all(void);
 void ktest_suite_boot(void);       /* K0.1 */
 void ktest_suite_layout(void);     /* K0.2 */
 void ktest_suite_console(void);    /* K0.3 */
+void ktest_suite_cpu(void);        /* K0.4 */
+
+/* Déclenche volontairement une faute fatale (modes test=ud, de, gp, np,
+ * intbad, df, triple). Retourne false si le mode est inconnu. */
+bool ktest_fatal_mode(const char *mode);
 
 #endif /* SAMOS_KTEST_H */

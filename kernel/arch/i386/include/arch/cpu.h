@@ -66,6 +66,38 @@ static inline uint32_t cpu_read_esp(void)
     return v;
 }
 
+/* Registres de table de descripteurs (SGDT/SIDT, SDM vol. 3A §2.4) :
+ * limite 16 bits + base linéaire 32 bits, sans remplissage. */
+struct cpu_dtr {
+    uint16_t limit;
+    uint32_t base;
+} SAMOS_PACKED;
+
+static inline void cpu_sgdt(struct cpu_dtr *d) { __asm__ __volatile__("sgdt %0" : "=m"(*d)); }
+static inline void cpu_sidt(struct cpu_dtr *d) { __asm__ __volatile__("sidt %0" : "=m"(*d)); }
+
+static inline uint16_t cpu_str(void)
+{
+    uint16_t tr;
+    __asm__ __volatile__("str %0" : "=r"(tr));
+    return tr;
+}
+
+#define CPU_READ_SEG(name)                                                  \
+    static inline uint16_t cpu_read_##name(void)                            \
+    {                                                                       \
+        uint16_t v;                                                         \
+        __asm__ __volatile__("mov %%" #name ", %0" : "=r"(v));              \
+        return v;                                                           \
+    }
+CPU_READ_SEG(cs)
+CPU_READ_SEG(ds)
+CPU_READ_SEG(es)
+CPU_READ_SEG(fs)
+CPU_READ_SEG(gs)
+CPU_READ_SEG(ss)
+#undef CPU_READ_SEG
+
 static inline void cpu_cli(void) { __asm__ __volatile__("cli" ::: "memory"); }
 static inline void cpu_sti(void) { __asm__ __volatile__("sti" ::: "memory"); }
 

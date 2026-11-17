@@ -16,20 +16,23 @@ TIMEOUT=3 run_case boot_halt "" 124 \
     "SAMOS: kernel image 0x00100000-" \
     "---G stack-guard" \
     "bytes, guard intact" \
-    "SAMOS: K0.3 boot complete, halting" \
+    "SAMOS: K0.4 boot complete, halting" \
+    "cpu: GDT loaded" \
+    "cpu: IDT loaded (32 exception gates, #DF task gate)" \
     "!KERNEL PANIC"
 
 # K0.3 — Le pilote série transmet réellement : motifs lus dans le seul journal COM1.
 TIMEOUT=3 run_case serial_output "" 124 \
     "serial:SAMOS: kernel entry" \
     "serial:console: debugcon + serial COM1 115200 8N1 + VGA 80x25" \
-    "serial:SAMOS: K0.3 boot complete, halting"
+    "serial:SAMOS: K0.4 boot complete, halting"
 
 # Autotests noyau, toutes suites.
 run_case selftest "test" 33 \
     "[TEST] suite K0.1/K0.2 boot" \
     "[TEST] suite K0.2 layout" \
     "[TEST] suite K0.3 console" \
+    "[TEST] suite K0.4 cpu" \
     "[TEST] ALL TESTS PASSED" \
     "![FAIL]"
 
@@ -44,3 +47,46 @@ run_case panic_path "test=panic" 37 \
 # Mode de test inconnu : refus explicite (statut d'échec), pas de panique.
 run_case unknown_mode "test=nope" 35 \
     "[TEST] unknown test mode 'nope'"
+
+# ---------------------------------------------------------------------------
+# K0.4 — Exceptions fatales : rapport complet puis panique (statut 37).
+# ---------------------------------------------------------------------------
+run_case exc_ud "test=ud" 37 \
+    "serial:*** CPU exception 6: Invalid Opcode (#UD), error code 0x00000000" \
+    "serial:EIP=0x001" "serial:CS=0008" "serial:CR0=" \
+    "serial:KERNEL PANIC: unhandled Invalid Opcode (#UD)"
+
+run_case exc_de "test=de" 37 \
+    "serial:*** CPU exception 0: Divide Error (#DE)" \
+    "serial:KERNEL PANIC: unhandled Divide Error (#DE)"
+
+# MOV DS, 0x0F00 : index 480 au-delà de la limite de la GDT (5 entrées).
+run_case exc_gp "test=gp" 37 \
+    "serial:*** CPU exception 13: General Protection (#GP), error code 0x00000f00" \
+    "serial:selector error: GDT index 480" \
+    "serial:KERNEL PANIC: unhandled General Protection (#GP)"
+
+# INT 0x20 : porte de type valide mais P = 0 => #NP, code = 0x20*8 + 2 (bit IDT).
+run_case exc_np "test=np" 37 \
+    "serial:*** CPU exception 11: Segment Not Present (#NP), error code 0x00000102" \
+    "serial:selector error: IDT index 32" \
+    "serial:KERNEL PANIC: unhandled Segment Not Present (#NP)"
+
+# INT 0x80 : entrée entièrement nulle (type de porte invalide). Le CPU vérifie
+# le TYPE avant le bit P => #GP (et non #NP), code = 0x80*8 + 2. (Constaté en K0.4.)
+run_case exc_int_invalid "test=intbad" 37 \
+    "serial:*** CPU exception 13: General Protection (#GP), error code 0x00000402" \
+    "serial:selector error: IDT index 128"
+
+# Double faute : capturée par la porte de tâche, sur la pile dédiée, SANS reset.
+run_case exc_df "test=df" 37 \
+    "serial:*** DOUBLE FAULT (#DF) caught by task gate, running on dedicated stack" \
+    "serial:interrupted task: EIP=0x001" \
+    "serial:KERNEL PANIC: double fault" \
+    "!CPU exception 11"
+
+# Triple fault volontaire : le banc de test DOIT le détecter (« Triple fault »
+# dans le journal QEMU). Avec -no-reboot, QEMU s'arrête (statut 0).
+EXPECT_TRIPLE=1 run_case exc_triple "test=triple" 0 \
+    "[TEST] fatal mode 'triple'" \
+    "!KERNEL PANIC"

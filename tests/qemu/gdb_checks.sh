@@ -97,7 +97,7 @@ stop_qemu
 # Octets pairs = caractères, octets impairs = attributs ; 80 caractères par ligne.
 od -An -v -tu1 "$OUT/vga.bin" | tr -s ' ' '\n' | sed '/^$/d' | awk 'NR % 2 == 1' |
     awk '{ printf "%c", ($1 >= 32 && $1 < 127) ? $1 : 32; if (NR % 80 == 0) printf "\n" }' > "$OUT/vga.txt"
-if grep -q 'SAMOS: kernel entry' "$OUT/vga.txt" && grep -q 'K0.3 boot complete' "$OUT/vga.txt"; then
+if grep -q 'SAMOS: kernel entry' "$OUT/vga.txt" && grep -q 'boot complete, halting' "$OUT/vga.txt"; then
     echo "[PASS] gdb: texte de demarrage present en memoire VGA 0xB8000"
 else
     echo "[FAIL] gdb: texte absent de la memoire VGA (voir $OUT/vga.txt)"; fail=1
