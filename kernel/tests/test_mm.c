@@ -231,6 +231,60 @@ static void test_frame_types(void)
     KTEST_CHECK(pmm_core_check(p) == 0);                               /* G1 après les tests */
 }
 
+/* K0.7-M2.3 — E4 : cadres des structures de pagination.
+ * paging_directory() renvoie l'adresse PHYSIQUE du répertoire (valeur de CR3). */
+static void test_pagetable_frames(void)
+{
+    const struct pmm *p = pmm_state();
+    uint32_t pd_frame = paging_directory() >> PAGE_SHIFT;
+    KTEST_CHECK(pmm_core_type(p, pd_frame) == FRAME_PAGETABLE);
+
+    /* Refus de libération du répertoire actif. On lit (identité) l'entrée du
+     * répertoire qui couvre l'image du noyau, avant et après la tentative. */
+    const volatile uint32_t *pd = (const volatile uint32_t *)(uintptr_t)paging_directory();
+    uint32_t pde_before = pd[0x100000u >> 22];
+    uint32_t free_before = p->free_count;
+    uint32_t invalid_before = p->invalid_frees;
+    KTEST_CHECK(pmm_free_frame(paging_directory()) == SAMOS_EINVAL);
+    KTEST_CHECK(pmm_core_type(p, pd_frame) == FRAME_PAGETABLE);
+    KTEST_CHECK(p->free_count == free_before);
+    KTEST_CHECK(p->invalid_frees == invalid_before + 1);
+    KTEST_CHECK(pd[0x100000u >> 22] == pde_before);                 /* contenu intact */
+    KTEST_CHECK(cpu_read_cr3() == paging_directory());              /* toujours actif */
+    uint32_t pa = 0, v = 0;
+    KTEST_CHECK(vmm_translate((uint32_t)(uintptr_t)&kmain, &pa, 0) &&
+                pa == (uint32_t)(uintptr_t)&kmain);                 /* traduction intacte */
+    KTEST_CHECK(mem_probe_read((const void *)&kmain, &v) == 0);     /* accès réel intact */
+
+    /* Table de pages active, distincte du répertoire : celle qui projette kmain.
+     * Vérifier d'abord que c'est bien la structure attendue. */
+    uint32_t kva = (uint32_t)(uintptr_t)&kmain;
+    uint32_t pt_phys = pd[kva >> 22] & PTE_FRAME;
+    const volatile uint32_t *pt = (const volatile uint32_t *)(uintptr_t)pt_phys;
+    uint32_t pte_before = pt[(kva >> 12) & 0x3FFu];
+    KTEST_CHECK(pt_phys != 0 && pt_phys != paging_directory());
+    KTEST_CHECK((pte_before & PTE_PRESENT) && (pte_before & PTE_FRAME) == (kva & PTE_FRAME));
+    KTEST_CHECK(pmm_core_type(p, pt_phys >> PAGE_SHIFT) == FRAME_PAGETABLE);
+    free_before = p->free_count;
+    KTEST_CHECK(pmm_free_frame(pt_phys) == SAMOS_EINVAL);           /* E4 : refusé */
+    KTEST_CHECK(pmm_core_type(p, pt_phys >> PAGE_SHIFT) == FRAME_PAGETABLE);
+    KTEST_CHECK(p->free_count == free_before);
+    KTEST_CHECK(pt[(kva >> 12) & 0x3FFu] == pte_before);           /* contenu intact */
+    KTEST_CHECK(mem_probe_read((const void *)&kmain, &v) == 0);
+
+    /* Un cadre ordinaire reste allouable, libérable et réallouable. */
+    uint32_t f = pmm_alloc_frame();
+    KTEST_CHECK(f != 0 && pmm_core_type(p, f >> PAGE_SHIFT) == FRAME_ALLOCATED);
+    KTEST_CHECK(pmm_free_frame(f) == SAMOS_OK && pmm_core_type(p, f >> PAGE_SHIFT) == FRAME_FREE);
+    uint32_t g = pmm_alloc_frame();
+    KTEST_CHECK(g != 0 && pmm_core_type(p, g >> PAGE_SHIFT) == FRAME_ALLOCATED);
+    KTEST_CHECK(pmm_free_frame(g) == SAMOS_OK);
+    /* E1/E2 toujours actifs après les tentatives interdites. */
+    KTEST_CHECK(vmm_map(0, g, PTE_WRITE) == SAMOS_EPERM);
+    KTEST_CHECK(vmm_map((uint32_t)(uintptr_t)__stack_guard_start, g, PTE_WRITE) == SAMOS_EPERM);
+    KTEST_CHECK(pmm_core_check(p) == 0);
+}
+
 void ktest_suite_mm(void)
 {
     ktest_suite("K0.6 mm");
@@ -241,4 +295,5 @@ void ktest_suite_mm(void)
     test_map_unmap();
     test_forbidden_mappings();
     test_frame_types();
+    test_pagetable_frames();
 }

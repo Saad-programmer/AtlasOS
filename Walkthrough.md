@@ -1050,3 +1050,22 @@ Résultat : `make test` réussi, avec 25 cas QEMU sur 25.
 - Aucune structure de pagination statique n'existe. Politique de destruction : aucune en K0 (aucun chemin ne retire une table) ; à revoir en K1.
 - Vérification : `make clean && make test` donne 99 `[PASS]`, 0 `[FAIL]`, 26 cas QEMU sur 26 ; compilation parallèle propre réussie.
 - Reste à faire : les tests E4 (type, refus, contenu et compteurs inchangés, pagination intacte, scénario E4 rejoué), la contre-épreuve isolée et la mise à jour du document de conception.
+
+### K0.7-M2.3 (finalisation) — E4 démontré corrigé
+
+Tests ajoutés un par un dans `test_pagetable_frames` (`kernel/tests/test_mm.c`), chacun compilé et exécuté avant le suivant :
+
+1. type `PAGETABLE` du répertoire actif (251 vérifications, 0 échec) ;
+2. refus de sa libération, avec type, compteurs et PDE inchangés, CR3, traduction et accès à `kmain` intacts (259) ;
+3. même chose sur la table active qui projette `kmain`, après vérification que c'est bien la structure attendue (267) ;
+4. cadre ordinaire alloué, libéré puis réalloué ; E1 et E2 toujours refusés ; `pmm_core_check` à 0 (274).
+
+**Contre-épreuves (copies isolées).**
+
+- Mutant A (libération acceptant `PAGETABLE`) : statut 35, 7 échecs ciblés (`pmm_free_frame(paging_directory()) == SAMOS_EINVAL`, type, `free_count`…).
+- Mutant B (tables allouées par `pmm_alloc_frame`, soit la condition d'origine de E4) : statut 35, échecs sur le type et sur le refus.
+- Aucun triple fault. Un mutant plus large (`pmm_core_free` acceptant tout type) a provoqué une panique avant d'atteindre ces tests : il a été écarté comme preuve non spécifique.
+
+**Validation.** `make clean && make test` donne un statut 0, 99 `[PASS]`, 0 `[FAIL]`, 26 cas QEMU sur 26 (RAM de 16 MiB à 4 GiB, production, tests négatifs du banc). Compilation parallèle depuis zéro réussie.
+
+**Toujours ouverts :** E3 (alias inscriptibles, M2.5) et E5 (références, M2.4).
