@@ -75,12 +75,34 @@ static bool va_must_stay_unmapped(uint32_t va)
            page < (uint32_t)(uintptr_t)__stack_guard_end;
 }
 
-samos_err_t vmm_map(uint32_t va, uint32_t pa, uint32_t flags)
+/*
+ * K0.7-M2.4c — Chemin unique de création d'une projection.
+ *   counted = true  : projection DYNAMIQUE (vmm_map). Un cadre ALLOCATED
+ *                     prend exactement une référence (pmm_ref) ; un cadre FREE
+ *                     est refusé (il pourrait être réalloué en restant projeté).
+ *                     Les autres types (noyau, réservé, table de pages, hors
+ *                     mémoire gérée) ne sont pas comptés : leur refus relève de
+ *                     E3 (M2.5).
+ *   counted = false : projection en IDENTITÉ permanente, jamais comptée.
+ *                     Réservée à paging_init(), avant l'activation de la
+ *                     pagination (vérifié par KASSERT) : ce chemin ne peut pas
+ *                     servir à créer une projection dynamique.
+ * Transaction : toutes les vérifications faillibles précèdent la prise de
+ * référence, et l'écriture de la PTE, qui ne peut plus échouer, la suit.
+ */
+static samos_err_t map_page(uint32_t va, uint32_t pa, uint32_t flags, bool counted)
 {
     if ((va | pa) & 0xFFFu || (flags & ~0xFFFu) != 0) {
         return SAMOS_EINVAL;
     }
     if (va_must_stay_unmapped(va)) {
+        return SAMOS_EPERM;
+    }
+    if (!counted) {
+        KASSERT(!paging_enabled());
+    }
+    enum frame_type t = pmm_core_type(pmm_state(), pa >> PAGE_SHIFT);
+    if (counted && t == FRAME_FREE) {
         return SAMOS_EPERM;
     }
     uint32_t *pt = get_table(va, true);
@@ -90,11 +112,22 @@ samos_err_t vmm_map(uint32_t va, uint32_t pa, uint32_t flags)
     if (pt[PT_INDEX(va)] & PTE_PRESENT) {
         return SAMOS_EEXIST;                   /* jamais d'écrasement silencieux */
     }
+    if (counted && t == FRAME_ALLOCATED) {
+        samos_err_t e = pmm_ref(pa);           /* dernière étape faillible */
+        if (e != SAMOS_OK) {
+            return e;                          /* aucune PTE écrite, aucune référence prise */
+        }
+    }
     pt[PT_INDEX(va)] = pa | flags | PTE_PRESENT;
     if (paging_enabled()) {
         cpu_invlpg((const void *)(uintptr_t)va);   /* pas d'entrée périmée « non présente » dans le TLB */
     }
     return SAMOS_OK;
+}
+
+samos_err_t vmm_map(uint32_t va, uint32_t pa, uint32_t flags)
+{
+    return map_page(va, pa, flags, true);
 }
 
 samos_err_t vmm_unmap(uint32_t va, uint32_t *pa)
@@ -216,7 +249,7 @@ samos_err_t paging_init(uint32_t idmap_top)
             continue;                          /* page de garde : NON présente */
         }
         uint32_t flags = (va >= ro_start && va < ro_end) ? 0u : PTE_WRITE;
-        samos_err_t e = vmm_map(va, va, flags);
+        samos_err_t e = map_page(va, va, flags, false);   /* identité : non comptée */
         if (e != SAMOS_OK) {
             return e;
         }

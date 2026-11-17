@@ -1095,3 +1095,22 @@ Premier sous-jalon de M2.4 (correction de E5), limité au cœur pur. `paging.c` 
 - **Contre-épreuve** (copie isolée, garde `refs > 0` supprimée) : test hébergé à 8 échecs (premier : `pmm_core_free(&p, b) == SAMOS_EBUSY`) ; noyau au statut 35 avec 4 échecs ciblés (premier : `pmm_free_frame(f) == SAMOS_EBUSY`) ; aucun triple fault.
 - Validation : `make clean && make test` donne 101 `[PASS]`, 0 `[FAIL]`, 26 cas QEMU sur 26 ; compilation parallèle propre réussie.
 - **E5 n'est pas corrigé** : le VMM ne prend pas encore de références (M2.4c).
+
+### K0.7-M2.4c — Références prises par vmm_map
+
+- `paging.c` :
+  - `static map_page(..., counted)` ; `vmm_map()` passe `counted = true`, `paging_init()` passe `counted = false` (identité non comptée) ;
+  - ce chemin interne est protégé par `KASSERT(!paging_enabled())` ;
+  - une référence est prise en dernier, juste avant l'écriture de la PTE ; un cadre `FREE` est refusé.
+- **Régression attendue observée.** Sans relâchement dans `vmm_unmap()`, deux tests existants échouaient à la libération (`test_mm.c` lignes 184 et 210). Ils vérifient maintenant le compte exact de références (2 et 1) et les relâchent explicitement, de façon temporaire jusqu'à M2.4d.
+- **Nouveau test `test_vmm_refs`** (noyau) :
+  - aucune référence après le démarrage ;
+  - +1 exact, 2 pour deux projections, traduction correcte ;
+  - aucun effet sur le compteur pour E1, E2, `va` ou `pa` non alignées, droits invalides, `EEXIST` et cadre `FREE` ;
+  - libération refusée tant que le cadre est projeté ;
+  - `ERANGE` à 4095 sans PTE installée ;
+  - `ENOMEM`, mémoire épuisée, sans référence prise ;
+  - nettoyage complet, E4 toujours refusé, `pmm_core_check` à 0.
+- **Contre-épreuve** (prise de référence supprimée) : statut 35, 16 échecs, premiers : `vmm_map(va1, f, PTE_WRITE) == SAMOS_OK && pmm_refs(f) == 1` et `pmm_free_frame(f) == SAMOS_EBUSY` ; aucun triple fault.
+- Validation : `make clean && make test` donne 101 `[PASS]`, 0 `[FAIL]`, 26 cas QEMU sur 26, dont `selftest_512M` ; compilation parallèle propre réussie.
+- **E5 reste ouvert** (M2.4d : relâchement dans `vmm_unmap`).
