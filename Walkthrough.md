@@ -1069,3 +1069,17 @@ Tests ajoutés un par un dans `test_pagetable_frames` (`kernel/tests/test_mm.c`)
 **Validation.** `make clean && make test` donne un statut 0, 99 `[PASS]`, 0 `[FAIL]`, 26 cas QEMU sur 26 (RAM de 16 MiB à 4 GiB, production, tests négatifs du banc). Compilation parallèle depuis zéro réussie.
 
 **Toujours ouverts :** E3 (alias inscriptibles, M2.5) et E5 (références, M2.4).
+
+### K0.7-M2.4a — Opérations de références dans le cœur du PMM
+
+Premier sous-jalon de M2.4 (correction de E5), limité au cœur pur. `paging.c` et `vmm_map()` ne sont pas modifiés.
+
+- `kernel/include/samos/pmm.h`, `kernel/mm/pmm_core.c` :
+  - `pmm_core_ref()`, `pmm_core_unref()`, `pmm_core_refs()` et le compteur `ref_errors` ;
+  - seuls les cadres `FRAME_ALLOCATED` sont acceptés (sinon `SAMOS_EPERM`) ;
+  - borne de 4095 et refus de passer sous 0 (`SAMOS_ERANGE`) ;
+  - chaque refus est décidé avant toute écriture, donc le descripteur reste intact.
+- `tests/host/test_pmm_refs.c` (24 vérifications) : +1 et −1 exacts, sous-dépassement, 4095 références acceptées puis la suivante refusée, types `KERNEL`, `RESERVED`, `FREE` et `PAGETABLE` refusés, cadre hors limites, valeur de `ref_errors`, descripteurs inchangés après chaque refus, libération et `pmm_core_check` inchangées.
+- **Contre-épreuves** (copie isolée) : chacune des trois gardes supprimées est détectée par l'assertion attendue (débordement ligne 41, sous-dépassement ligne 34, type ligne 50). Sans la garde de type, ASan signale aussi une écriture hors de la table.
+- **Limite connue :** `pmm_core_check()` compte encore toute référence non nulle comme une anomalie (règle de M2.2). C'est exact tant qu'aucun code noyau ne prend de référence ; la règle devra être ramenée à F2 lors de l'intégration (M2.4b).
+- Validation : `make clean && make test` donne 100 `[PASS]`, 0 `[FAIL]`, 26 cas QEMU sur 26 ; compilation parallèle propre réussie.

@@ -56,6 +56,7 @@ struct pmm {
     uint32_t double_frees;         /* libération d'un cadre déjà libre */
     uint32_t invalid_frees;        /* libération d'un cadre non alloué par le PMM */
     uint32_t invalid_transitions;  /* réservation refusée sur un cadre déjà distribué */
+    uint32_t ref_errors;           /* K0.7-M2.4a : opérations de référence refusées */
 };
 
 /* Initialise : tout RESERVED, puis FREE pour les cadres entièrement contenus
@@ -85,6 +86,12 @@ enum frame_type pmm_core_type(const struct pmm *p, uint32_t frame);
 /* Recompte les descripteurs et vérifie G1 et F1-F3 sur toute la table.
  * Retourne le nombre d'anomalies (0 = cohérent). Coût O(nframes). */
 uint32_t pmm_core_check(const struct pmm *p);
+/* K0.7-M2.4a : compteur de références d'un cadre ALLOCATED.
+ * Refus sans modification du descripteur : SAMOS_EPERM (type), SAMOS_ERANGE
+ * (borne FRAME_REFS_MAX ou zéro). */
+samos_err_t pmm_core_ref(struct pmm *p, uint32_t frame);
+samos_err_t pmm_core_unref(struct pmm *p, uint32_t frame);
+uint32_t pmm_core_refs(const struct pmm *p, uint32_t frame);
 
 /* --- Interface du noyau --- */
 samos_err_t pmm_init(const struct memmap *m, uint32_t limit_bytes);

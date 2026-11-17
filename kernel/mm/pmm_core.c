@@ -132,6 +132,7 @@ samos_err_t pmm_core_init(struct pmm *p, frame_desc_t *meta, uint32_t meta_entri
     p->double_frees = 0;
     p->invalid_frees = 0;
     p->invalid_transitions = 0;
+    p->ref_errors = 0;
     /* Écriture directe (sans set_type) : état initial, free_count = 0. */
     for (uint32_t f = 0; f < nframes; f++) {
         meta[f] = frame_desc_make(FRAME_RESERVED, 0);   /* rien n'est disponible par défaut */
@@ -254,5 +255,43 @@ samos_err_t pmm_core_free(struct pmm *p, uint32_t frame)
         return SAMOS_EINVAL;
     }
     set_type(p, frame, FRAME_FREE);
+    return SAMOS_OK;
+}
+
+/* K0.7-M2.4a — Compteur de références (12 bits) d'un cadre ALLOCATED.
+ * Chaque refus est vérifié AVANT toute écriture : le descripteur reste
+ * identique en cas d'erreur (R4), et le compteur reste dans [0, 4095] (R5). */
+uint32_t pmm_core_refs(const struct pmm *p, uint32_t frame)
+{
+    return (frame < p->nframes) ? frame_desc_refs(p->meta[frame]) : 0;
+}
+
+samos_err_t pmm_core_ref(struct pmm *p, uint32_t frame)
+{
+    if (pmm_core_type(p, frame) != FRAME_ALLOCATED) {
+        p->ref_errors++;
+        return SAMOS_EPERM;
+    }
+    uint32_t n = frame_desc_refs(p->meta[frame]);
+    if (n >= FRAME_REFS_MAX) {
+        p->ref_errors++;
+        return SAMOS_ERANGE;
+    }
+    p->meta[frame] = frame_desc_make(FRAME_ALLOCATED, n + 1u);
+    return SAMOS_OK;
+}
+
+samos_err_t pmm_core_unref(struct pmm *p, uint32_t frame)
+{
+    if (pmm_core_type(p, frame) != FRAME_ALLOCATED) {
+        p->ref_errors++;
+        return SAMOS_EPERM;
+    }
+    uint32_t n = frame_desc_refs(p->meta[frame]);
+    if (n == 0) {
+        p->ref_errors++;
+        return SAMOS_ERANGE;
+    }
+    p->meta[frame] = frame_desc_make(FRAME_ALLOCATED, n - 1u);
     return SAMOS_OK;
 }
