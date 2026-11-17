@@ -184,6 +184,32 @@ static void test_map_unmap(void)
     KTEST_CHECK(pmm_free_frame(frame) == SAMOS_OK);
 }
 
+/*
+ * K0.7-M1 — E1 et E2 : la page nulle et la page de garde ne doivent jamais
+ * pouvoir être projetées, quels que soient le cadre et les droits demandés,
+ * et la protection doit rester effective après les tentatives.
+ */
+static void test_forbidden_mappings(void)
+{
+    uint32_t frame = pmm_alloc_frame();
+    uint32_t guard = (uint32_t)(uintptr_t)__stack_guard_start;
+    uint32_t v = 0;
+    KTEST_CHECK(frame != 0);
+    KTEST_CHECK(vmm_map(0, frame, PTE_WRITE) == SAMOS_EPERM);        /* E1 */
+    KTEST_CHECK(vmm_map(0, frame, 0) == SAMOS_EPERM);                /* E1, lecture seule */
+    KTEST_CHECK(vmm_map(guard, frame, PTE_WRITE) == SAMOS_EPERM);    /* E2 */
+    KTEST_CHECK(vmm_map(guard, frame, 0) == SAMOS_EPERM);            /* E2, lecture seule */
+    /* Les tentatives n'ont rien laissé : NULL et la garde fautent toujours. */
+    KTEST_CHECK(!vmm_translate(0, 0, 0));
+    KTEST_CHECK(!vmm_translate(guard, 0, 0));
+    KTEST_CHECK(mem_probe_read((const void *)0, &v) == -1);
+    KTEST_CHECK(mem_probe_read((const void *)(uintptr_t)guard, &v) == -1);
+    /* Une adresse voisine légitime reste projetable (pas de refus excessif). */
+    KTEST_CHECK(vmm_map(0xD0002000u, frame, PTE_WRITE) == SAMOS_OK);
+    KTEST_CHECK(vmm_unmap(0xD0002000u, 0) == SAMOS_OK);
+    KTEST_CHECK(pmm_free_frame(frame) == SAMOS_OK);
+}
+
 void ktest_suite_mm(void)
 {
     ktest_suite("K0.6 mm");
@@ -192,4 +218,5 @@ void ktest_suite_mm(void)
     test_paging_state();
     test_protections();
     test_map_unmap();
+    test_forbidden_mappings();
 }

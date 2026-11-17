@@ -54,10 +54,32 @@ static uint32_t *get_table(uint32_t va, bool create)
     return (uint32_t *)(uintptr_t)pt;
 }
 
+/*
+ * K0.7-M1 — Pages virtuelles qui doivent rester NON projetées en permanence :
+ *   - la page nulle [0, 4 KiB) : tout déréférencement de NULL doit fauter (E1) ;
+ *   - la page de garde sous la pile de démarrage : un débordement de pile doit
+ *     fauter (E2).
+ * Le refus est imposé ici, dans l'API, et non laissé aux appelants : en K0.6,
+ * vmm_map(0, ...) et vmm_map(garde, ...) étaient acceptés (preuve :
+ * docs/review/evidence/k06-memory-defects.txt, E1 et E2).
+ */
+static bool va_must_stay_unmapped(uint32_t va)
+{
+    uint32_t page = va & PTE_FRAME;
+    if (page == 0) {
+        return true;
+    }
+    return page >= (uint32_t)(uintptr_t)__stack_guard_start &&
+           page < (uint32_t)(uintptr_t)__stack_guard_end;
+}
+
 samos_err_t vmm_map(uint32_t va, uint32_t pa, uint32_t flags)
 {
     if ((va | pa) & 0xFFFu || (flags & ~0xFFFu) != 0) {
         return SAMOS_EINVAL;
+    }
+    if (va_must_stay_unmapped(va)) {
+        return SAMOS_EPERM;
     }
     uint32_t *pt = get_table(va, true);
     if (pt == 0) {

@@ -970,3 +970,23 @@ Tests ajoutés :
 Résultat : `make test` réussi, avec 25 cas QEMU sur 25.
 
 **Défaut de construction trouvé après coup (corrigé dans un commit séparé).** Le `Makefile` de l'étape K0.7.1 contenait une règle à motifs à deux cibles (`$(BUILD)/prod/%.o $(BUILD)/test/%.o: %.asm`). Pour GNU Make, une telle règle signifie qu'une **seule** exécution produit les **deux** cibles. Après `make clean`, les objets assembleur de l'image de test n'étaient donc jamais produits (`ld: cannot find build/test/kernel/arch/i386/boot/entry.o`). Les compilations incrémentales masquaient le défaut ; une compilation depuis un arbre propre l'a révélé. La règle a été scindée en deux. Résultat vérifié depuis `make clean` : `make test` donne 97 lignes `[PASS]` et aucun `[FAIL]` ; `make -j8` réussit aussi.
+
+### K0.7-M1 — Page nulle et page de garde jamais projetables (E1, E2)
+
+**Méthode (décidée après deux interruptions).** Les changements se font par petites modifications ciblées, avec compilation et tests après chacune, et un commit par sous-jalon validé.
+
+**Changements.**
+
+| Fichier | Changement |
+|---|---|
+| `kernel/include/samos/errno.h` | `SAMOS_EPERM` : refus imposé par une règle de sécurité |
+| `kernel/arch/i386/paging.c` | `va_must_stay_unmapped()` : vrai pour la page nulle et la page de garde. `vmm_map()` répond `SAMOS_EPERM` pour ces pages, quels que soient le cadre et les droits demandés. Le refus est **dans l'API**, il ne dépend pas des appelants. `paging_init()` contournait déjà ces deux pages ; il n'est pas affecté. |
+| `kernel/tests/test_mm.c` | `test_forbidden_mappings()` : 14 vérifications. Les quatre tentatives (nulle et garde, en RW puis en R) sont refusées. Après ces tentatives, les deux pages ne sont toujours pas traduites et fautent toujours. Une adresse voisine légitime reste projetable. |
+
+**Vérification.**
+
+- Test ciblé (`-append test`) : statut 33, 239 vérifications, 0 échec.
+- **Contre-épreuve par injection de défaut.** Dans une copie isolée des sources, la garde a été neutralisée (`if (0 && va_must_stay_unmapped(va))`, substitution vérifiée : 1 occurrence avant, 1 après). Résultat : statut 35, **8 échecs**, dont `mem_probe_read((const void *)0, &v) == -1`. La page nulle redevenait donc lisible, et le test le détecte.
+- Régression complète depuis `make clean` : 97 `[PASS]`, 0 `[FAIL]`, 25 cas QEMU sur 25. Compilation parallèle propre réussie.
+
+**Limite assumée à ce stade.** M1 ferme E1 et E2. E3 (alias inscriptible), E4 (table de pages libérable) et E5 (cadre projeté libérable) restent ouverts jusqu'aux sous-jalons M2 à M5.

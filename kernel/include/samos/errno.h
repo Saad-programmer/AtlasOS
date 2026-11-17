@@ -19,6 +19,7 @@ enum {
     SAMOS_ENOSPC   = -7,   /* plus de place (tampon plein) */
     SAMOS_EAGAIN   = -8,   /* ressource temporairement indisponible (tampon vide) */
     SAMOS_EBUSY    = -9,   /* ressource occupée */
+    SAMOS_EPERM    = -10,  /* opération interdite par une règle de sécurité (K0.7) */
 };
 
 #endif /* SAMOS_ERRNO_H */
