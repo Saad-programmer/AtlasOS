@@ -154,13 +154,17 @@ run_case stack_overflow "test=stack" 37 \
 # Tailles de RAM : petite, moyenne, au-delà de la limite d'identité (1 GiB),
 # et 4 GiB (région au-dessus de 4 GiB dans la carte, ignorée).
 QEMU_MEM=16M TIMEOUT=4 run_case mem_16M "" 124 \
+    "pmm: descriptor table consistent" "!inconsistent" \
     "paging: enabled" "SAMOS: K0.6 boot complete" "!KERNEL PANIC" "!mm: RAM above"
 QEMU_MEM=512M TIMEOUT=4 run_case mem_512M "" 124 \
+    "pmm: descriptor table consistent" "!inconsistent" \
     "128 page tables" "SAMOS: K0.6 boot complete" "!KERNEL PANIC"
 QEMU_MEM=1500M TIMEOUT=6 run_case mem_1500M "" 124 \
+    "pmm: descriptor table consistent" "!inconsistent" \
     "pmm: 262144 frames managed" "mm: RAM above 1024 MiB is not managed in K0" \
     "SAMOS: K0.6 boot complete" "!KERNEL PANIC"
 QEMU_MEM=4G TIMEOUT=6 run_case mem_4G "" 124 \
+    "pmm: descriptor table consistent" "!inconsistent" \
     "mm: 0x100000000-0x13fffffff available" "pmm: 262144 frames managed" \
     "SAMOS: K0.6 boot complete" "!KERNEL PANIC"
 
@@ -174,3 +178,8 @@ run_case nested_exception "test=nested" 37 \
     "serial:while handling exception 3 (Breakpoint (#BP))" \
     "serial:KERNEL PANIC: nested exception" \
     "!RECURSIVE PANIC"
+
+# K0.7-M2.2 — Cohérence de la table des descripteurs vérifiée au démarrage
+# (pmm_core_check dans mm_init) aussi en PRODUCTION, et à la RAM minimale testée.
+IMG=prod TIMEOUT=3 run_case prod_descriptor_check "" 124 \
+    "serial:pmm: descriptor table consistent" "!inconsistent" "!KERNEL PANIC"

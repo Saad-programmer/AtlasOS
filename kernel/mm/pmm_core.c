@@ -1,13 +1,25 @@
 /*
  * SAMOS / AtlasOS — kernel/mm/pmm_core.c
- * Cœur pur de l'allocateur de cadres par bitmap. Voir pmm.h et Details.md §34.
+ * Cœur pur de l'allocateur de cadres. K0.6 : bitmap ; K0.7-M2.2 : table de
+ * descripteurs (samos/frame.h). Voir pmm.h, Details.md §34 et
+ * docs/design/K0.7-M2-frame-tracking.md.
  */
 #include <samos/multiboot.h>
 #include <samos/pmm.h>
 
-static inline void bit_set(uint32_t *bm, uint32_t f)   { bm[f >> 5] |= (1u << (f & 31u)); }
-static inline void bit_clear(uint32_t *bm, uint32_t f) { bm[f >> 5] &= ~(1u << (f & 31u)); }
-static inline bool bit_test(const uint32_t *bm, uint32_t f) { return (bm[f >> 5] >> (f & 31u)) & 1u; }
+/* K0.7-M2.2 : SEUL endroit où le type d'un cadre change, et donc SEUL endroit
+ * où free_count est modifié (invariant G1). Les références sont remises à 0 :
+ * en M2.2 elles ne sont jamais incrémentées (comptage prévu en M4). */
+static void set_type(struct pmm *p, uint32_t f, enum frame_type t)
+{
+    enum frame_type old = frame_desc_type(p->meta[f]);
+    if (old == FRAME_FREE && t != FRAME_FREE) {
+        p->free_count--;
+    } else if (old != FRAME_FREE && t == FRAME_FREE) {
+        p->free_count++;
+    }
+    p->meta[f] = frame_desc_make(t, 0);
+}
 
 /* Convertit [base, base+len) en cadres. outward = arrondi vers l'extérieur
  * (réservation : tout cadre touché), sinon vers l'intérieur (disponible :
@@ -41,48 +53,69 @@ static bool to_frames(uint64_t base, uint64_t len, bool outward, uint32_t nframe
     return true;
 }
 
-static void mark_range(struct pmm *p, uint32_t first, uint32_t end, bool used)
+samos_err_t pmm_core_reserve_as(struct pmm *p, uint64_t base, uint64_t len,
+                                enum frame_type type, const char *name)
 {
-    for (uint32_t f = first; f < end; f++) {
-        bool was = bit_test(p->bitmap, f);
-        if (used && !was) {
-            bit_set(p->bitmap, f);
-            p->free_count--;
-        } else if (!used && was) {
-            bit_clear(p->bitmap, f);
-            p->free_count++;
-        }
+    if (type != FRAME_RESERVED && type != FRAME_KERNEL) {
+        return SAMOS_EINVAL;
     }
-}
-
-samos_err_t pmm_core_reserve(struct pmm *p, uint64_t base, uint64_t len, const char *name)
-{
     uint32_t first, end;
     if (!to_frames(base, len, true, p->nframes, &first, &end)) {
         return SAMOS_OK;                   /* hors de la mémoire gérée : rien à faire */
     }
+    /* Vérification complète AVANT toute modification : une réservation
+     * refusée ne laisse aucun cadre à moitié modifié. */
+    for (uint32_t f = first; f < end; f++) {
+        enum frame_type t = frame_desc_type(p->meta[f]);
+        if (t == FRAME_ALLOCATED || t == FRAME_PAGETABLE) {
+            p->invalid_transitions++;
+            return SAMOS_EBUSY;
+        }
+    }
     if (p->nreserved >= PMM_MAX_RESERVED) {
         return SAMOS_ENOSPC;
     }
-    mark_range(p, first, end, true);
+    for (uint32_t f = first; f < end; f++) {
+        /* Un cadre KERNEL garde son type : une réservation RESERVED qui le
+         * chevauche (zone du firmware, structure du chargeur) ne doit pas
+         * effacer l'information « appartient à l'image du noyau ». */
+        if (type == FRAME_RESERVED && frame_desc_type(p->meta[f]) == FRAME_KERNEL) {
+            continue;
+        }
+        set_type(p, f, type);
+    }
     p->reserved[p->nreserved++] = (struct pmm_range){ first, end, name };
     return SAMOS_OK;
 }
 
-samos_err_t pmm_core_init(struct pmm *p, uint32_t *bitmap, uint32_t bitmap_words,
+samos_err_t pmm_core_reserve(struct pmm *p, uint64_t base, uint64_t len, const char *name)
+{
+    return pmm_core_reserve_as(p, base, len, FRAME_RESERVED, name);
+}
+
+samos_err_t pmm_core_init(struct pmm *p, frame_desc_t *meta, uint32_t meta_entries,
                           uint32_t limit_frames, const struct memmap *m)
 {
-    if (p == 0 || bitmap == 0 || m == 0 || bitmap_words == 0) {
+    if (p == 0 || meta == 0 || m == 0 || meta_entries == 0) {
         return SAMOS_EINVAL;
     }
-    uint64_t cap = (uint64_t)bitmap_words * 32u;
-    uint32_t nframes = (limit_frames < cap) ? limit_frames : (uint32_t)cap;
+    uint32_t nframes = (limit_frames < meta_entries) ? limit_frames : meta_entries;
 
-    /* La mémoire gérée s'arrête à la fin de la plus haute région disponible. */
+    /* La mémoire gérée s'arrête à la fin de la plus haute région disponible.
+     * K0.7-M2.2 (constat L6) : calcul à partir du DERNIER octet,
+     * (base + length - 1) >> 12, puis + 1. L'ancienne forme
+     * (base + length) >> 12 débordait à 0 pour une région se terminant à 2^64.
+     * memmap garantit base + length - 1 <= 2^64 - 1 (pas de débordement). */
     uint64_t top = 0;
     for (unsigned i = 0; i < m->count; i++) {
         if (m->r[i].type == MULTIBOOT_MEMORY_AVAILABLE) {
-            uint64_t end_frame = (m->r[i].base + m->r[i].length) >> PAGE_SHIFT;
+            uint64_t last = m->r[i].base + (m->r[i].length - 1u);
+            /* floor((last + 1) / 4096) sans calculer last + 1 (qui déborde si
+             * last == 2^64 - 1) : même résultat que la formule de K0.6, qui
+             * ne compte PAS un dernier cadre seulement partiellement disponible
+             * (constaté par le test hébergé : 0x903 et non 0x904). */
+            uint64_t end_frame = (last >> PAGE_SHIFT) +
+                                 (((last & (PAGE_SIZE - 1u)) == PAGE_SIZE - 1u) ? 1u : 0u);
             if (end_frame > top) {
                 top = end_frame;
             }
@@ -92,14 +125,16 @@ samos_err_t pmm_core_init(struct pmm *p, uint32_t *bitmap, uint32_t bitmap_words
         nframes = (uint32_t)top;
     }
 
-    p->bitmap = bitmap;
+    p->meta = meta;
     p->nframes = nframes;
     p->hint = 0;
     p->nreserved = 0;
     p->double_frees = 0;
     p->invalid_frees = 0;
-    for (uint32_t w = 0; w < (nframes + 31u) / 32u; w++) {
-        bitmap[w] = 0xFFFFFFFFu;             /* tout occupé par défaut */
+    p->invalid_transitions = 0;
+    /* Écriture directe (sans set_type) : état initial, free_count = 0. */
+    for (uint32_t f = 0; f < nframes; f++) {
+        meta[f] = frame_desc_make(FRAME_RESERVED, 0);   /* rien n'est disponible par défaut */
     }
     p->free_count = 0;
 
@@ -108,7 +143,9 @@ samos_err_t pmm_core_init(struct pmm *p, uint32_t *bitmap, uint32_t bitmap_words
         uint32_t first, end;
         if (m->r[i].type == MULTIBOOT_MEMORY_AVAILABLE &&
             to_frames(m->r[i].base, m->r[i].length, false, nframes, &first, &end)) {
-            mark_range(p, first, end, false);
+            for (uint32_t f = first; f < end; f++) {
+                set_type(p, f, FRAME_FREE);
+            }
         }
     }
     /* 2. Toute autre région l'emporte en cas de chevauchement : réservée. */
@@ -126,19 +163,46 @@ samos_err_t pmm_core_init(struct pmm *p, uint32_t *bitmap, uint32_t bitmap_words
     return pmm_core_reserve(p, 0, PAGE_SIZE, "null frame");
 }
 
-bool pmm_core_is_used(const struct pmm *p, uint32_t frame)
+enum frame_type pmm_core_type(const struct pmm *p, uint32_t frame)
 {
-    return frame >= p->nframes || bit_test(p->bitmap, frame);
+    return (frame < p->nframes) ? frame_desc_type(p->meta[frame]) : FRAME_RESERVED;
 }
 
+bool pmm_core_is_used(const struct pmm *p, uint32_t frame)
+{
+    return pmm_core_type(p, frame) != FRAME_FREE;
+}
+
+/* K0.7-M2.2 : déduit du descripteur (et non plus d'une recherche dans la
+ * liste des plages) : la table est la seule source de vérité. */
 bool pmm_core_is_reserved(const struct pmm *p, uint32_t frame)
 {
-    for (unsigned i = 0; i < p->nreserved; i++) {
-        if (frame >= p->reserved[i].first && frame < p->reserved[i].end) {
-            return true;
+    enum frame_type t = pmm_core_type(p, frame);
+    return t == FRAME_RESERVED || t == FRAME_KERNEL;
+}
+
+uint32_t pmm_core_check(const struct pmm *p)
+{
+    uint32_t anomalies = 0, free_seen = 0;
+    for (uint32_t f = 0; f < p->nframes; f++) {
+        frame_desc_t d = p->meta[f];
+        if (!frame_desc_valid(d)) {
+            anomalies++;                     /* F1, F2 */
+        }
+        if (frame_desc_refs(d) != 0) {
+            anomalies++;                     /* M2.2 : aucune référence n'est encore comptée */
+        }
+        if (frame_desc_type(d) == FRAME_FREE) {
+            free_seen++;
         }
     }
-    return false;
+    if (free_seen != p->free_count) {
+        anomalies++;                         /* G1 */
+    }
+    if (p->nframes != 0 && pmm_core_type(p, 0) != FRAME_RESERVED) {
+        anomalies++;                         /* le cadre 0 n'est jamais distribuable */
+    }
+    return anomalies;
 }
 
 uint32_t pmm_core_alloc(struct pmm *p)
@@ -146,42 +210,38 @@ uint32_t pmm_core_alloc(struct pmm *p)
     if (p->free_count == 0) {
         return PMM_NO_FRAME;
     }
-    uint32_t words = (p->nframes + 31u) / 32u;
-    /* Next-fit par mots de 32 bits : un mot 0xFFFFFFFF (32 cadres occupés)
-     * est sauté en une comparaison. Deux passes : [hint, fin) puis [0, hint). */
-    for (uint32_t k = 0; k < words; k++) {
-        uint32_t w = (p->hint + k) % words;
-        uint32_t bits = p->bitmap[w];
-        if (bits == 0xFFFFFFFFu) {
-            continue;
+    /* Next-fit : recherche circulaire à partir de la dernière allocation.
+     * (La bitmap permettait de sauter 32 cadres occupés en une comparaison ;
+     * le parcours est maintenant cadre par cadre. Le coût est mesuré par le
+     * test d'épuisement : voir Walkthrough K0.7-M2.2.) */
+    for (uint32_t k = 0; k < p->nframes; k++) {
+        uint32_t f = p->hint + k;
+        if (f >= p->nframes) {
+            f -= p->nframes;
         }
-        for (uint32_t b = 0; b < 32; b++) {
-            uint32_t f = w * 32u + b;
-            if (f >= p->nframes) {
-                break;
-            }
-            if (((bits >> b) & 1u) == 0) {
-                bit_set(p->bitmap, f);
-                p->free_count--;
-                p->hint = w;
-                return f;
-            }
+        if (frame_desc_type(p->meta[f]) == FRAME_FREE) {
+            set_type(p, f, FRAME_ALLOCATED);
+            p->hint = f;
+            return f;
         }
     }
     return PMM_NO_FRAME;                     /* inatteignable si free_count est cohérent */
 }
 
+/* Seul un cadre ALLOCATED peut être libéré (G2 ; G4 dès que les tables de
+ * pages auront le type PAGETABLE, en M3). Codes conservés depuis K0.6 :
+ * SAMOS_ENOENT = double libération, SAMOS_EINVAL = cadre non libérable. */
 samos_err_t pmm_core_free(struct pmm *p, uint32_t frame)
 {
-    if (frame >= p->nframes || pmm_core_is_reserved(p, frame)) {
-        p->invalid_frees++;
-        return SAMOS_EINVAL;                 /* I1 : jamais libérer un cadre réservé */
-    }
-    if (!bit_test(p->bitmap, frame)) {
+    enum frame_type t = pmm_core_type(p, frame);
+    if (t == FRAME_FREE) {
         p->double_frees++;
-        return SAMOS_ENOENT;                 /* I3 : déjà libre => double libération */
+        return SAMOS_ENOENT;
     }
-    bit_clear(p->bitmap, frame);
-    p->free_count++;
+    if (t != FRAME_ALLOCATED) {
+        p->invalid_frees++;
+        return SAMOS_EINVAL;
+    }
+    set_type(p, frame, FRAME_FREE);
     return SAMOS_OK;
 }

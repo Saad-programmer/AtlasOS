@@ -210,6 +210,27 @@ static void test_forbidden_mappings(void)
     KTEST_CHECK(pmm_free_frame(frame) == SAMOS_OK);
 }
 
+/* K0.7-M2.2 — Types réels des cadres et protection de la table elle-même. */
+static void test_frame_types(void)
+{
+    const struct pmm *p = pmm_state();
+    uint32_t meta_phys = (uint32_t)(uintptr_t)p->meta;       /* identité : va == pa */
+    KTEST_CHECK(pmm_core_check(p) == 0);
+    KTEST_CHECK(pmm_core_type(p, meta_phys >> PAGE_SHIFT) == FRAME_KERNEL);
+    KTEST_CHECK(pmm_free_frame(meta_phys & ~0xFFFu) == SAMOS_EINVAL);   /* métadonnées protégées */
+    /* Dernier octet de la table (128 cadres pour 2^18 descripteurs) : aussi KERNEL. */
+    uint32_t meta_last = meta_phys + (uint32_t)(sizeof(frame_desc_t) << 18) - 1u;
+    KTEST_CHECK(pmm_core_type(p, meta_last >> PAGE_SHIFT) == FRAME_KERNEL);
+    KTEST_CHECK(pmm_free_frame(meta_last & ~0xFFFu) == SAMOS_EINVAL);
+    KTEST_CHECK(pmm_core_type(p, ((uint32_t)(uintptr_t)&kmain) >> PAGE_SHIFT) == FRAME_KERNEL);
+    KTEST_CHECK(pmm_core_type(p, 0xB8) == FRAME_RESERVED);              /* VGA, mémoire basse */
+    KTEST_CHECK(pmm_core_type(p, 0) == FRAME_RESERVED);
+    uint32_t f = pmm_alloc_frame();
+    KTEST_CHECK(f != 0 && pmm_core_type(p, f >> PAGE_SHIFT) == FRAME_ALLOCATED);
+    KTEST_CHECK(pmm_free_frame(f) == SAMOS_OK && pmm_core_type(p, f >> PAGE_SHIFT) == FRAME_FREE);
+    KTEST_CHECK(pmm_core_check(p) == 0);                               /* G1 après les tests */
+}
+
 void ktest_suite_mm(void)
 {
     ktest_suite("K0.6 mm");
@@ -219,4 +240,5 @@ void ktest_suite_mm(void)
     test_protections();
     test_map_unmap();
     test_forbidden_mappings();
+    test_frame_types();
 }

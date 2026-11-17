@@ -2,6 +2,7 @@
  * SAMOS / AtlasOS — kernel/mm/pmm.c
  * Instance noyau de l'allocateur de cadres. Voir pmm.h et Details.md §34.
  */
+#include <arch/paging.h>
 #include <samos/bootinfo.h>
 #include <samos/kernel.h>
 #include <samos/log.h>
@@ -9,26 +10,34 @@
 #include <samos/pmm.h>
 #include <samos/string.h>
 
-/* Bitmap statique couvrant 4 GiB : 2^20 cadres / 32 = 32768 mots = 128 KiB
- * dans .bss. Choix : aucune dépendance circulaire (l'allocateur n'a pas à
- * s'allouer lui-même), au prix de 128 KiB toujours réservés. */
-#define BITMAP_WORDS (1u << 15)
-static uint32_t g_bitmap[BITMAP_WORDS];
+/* K0.7-M2.2 — Table statique des descripteurs (remplace la bitmap de K0.6).
+ * Capacité : 2^18 cadres = 1 GiB, exactement la mémoire que le noyau peut
+ * gérer (limite de la projection en identité, PAGING_IDMAP_LIMIT) ; taille :
+ * 2^18 * 2 octets = 512 KiB dans .bss.
+ * Placement : dans l'image du noyau, donc dans la plage réservée FRAME_KERNEL
+ * ci-dessous : la table ne peut jamais être allouée ni libérée, et aucune
+ * allocation n'est nécessaire pour initialiser l'allocateur (pas de
+ * dépendance récursive). */
+#define PMM_MAX_FRAMES (1u << 18)
+SAMOS_STATIC_ASSERT((PAGING_IDMAP_LIMIT >> PAGE_SHIFT) <= PMM_MAX_FRAMES,
+                    "la table de descripteurs doit couvrir toute la RAM projetable");
+static frame_desc_t g_meta[PMM_MAX_FRAMES];
 static struct pmm g_pmm;
 
 samos_err_t pmm_init(const struct memmap *m, uint32_t limit_bytes)
 {
-    samos_err_t e = pmm_core_init(&g_pmm, g_bitmap, BITMAP_WORDS, limit_bytes >> PAGE_SHIFT, m);
+    samos_err_t e = pmm_core_init(&g_pmm, g_meta, PMM_MAX_FRAMES, limit_bytes >> PAGE_SHIFT, m);
     if (e != SAMOS_OK) {
         return e;
     }
     /* Mémoire basse (< 1 MiB) : IVT, BDA, EBDA, VGA, ROM, et en pratique les
      * structures Multiboot de QEMU. Réservée en bloc (approche prudente). */
     e = pmm_core_reserve(&g_pmm, 0, 0x100000, "low memory (<1 MiB)");
-    /* Image du noyau, bitmap comprise (elle est dans .bss). */
+    /* Image du noyau, table des descripteurs du PMM comprise (elle est dans .bss). */
     if (e == SAMOS_OK) {
-        e = pmm_core_reserve(&g_pmm, (uintptr_t)__kernel_start,
-                             (uintptr_t)__kernel_end - (uintptr_t)__kernel_start, "kernel image");
+        e = pmm_core_reserve_as(&g_pmm, (uintptr_t)__kernel_start,
+                                (uintptr_t)__kernel_end - (uintptr_t)__kernel_start,
+                                FRAME_KERNEL, "kernel image (incl. PMM descriptor table)");
     }
     /* Structures du chargeur : un autre chargeur (GRUB) peut les placer
      * au-dessus de 1 MiB. Déjà copiées par bootinfo/memmap, mais réservées par

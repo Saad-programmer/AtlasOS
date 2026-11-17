@@ -48,6 +48,16 @@ samos_err_t mm_init(void)
     if (e != SAMOS_OK) {
         return e;
     }
+    /* K0.7-M2.2 : vérification complète de la table des descripteurs (G1,
+     * F1-F2, cadre 0) à CHAQUE démarrage, production comprise. Une table
+     * incohérente rendrait toutes les garanties du PMM fausses : on refuse
+     * de continuer. Coût : un parcours de nframes descripteurs (<= 2^18). */
+    uint32_t anomalies = pmm_core_check(pmm_state());
+    if (anomalies != 0) {
+        klog(LOG_ERROR, "pmm: descriptor table inconsistent (%u anomalies)\n", anomalies);
+        return SAMOS_EINVAL;
+    }
+    klog(LOG_INFO, "pmm: descriptor table consistent\n");
     pmm_print();
     uint64_t managed = (uint64_t)pmm_state()->nframes << PAGE_SHIFT;
     uint64_t highest = 0;

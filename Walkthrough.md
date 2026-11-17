@@ -1014,3 +1014,29 @@ Résultat : `make test` réussi, avec 25 cas QEMU sur 25.
 - Régression depuis `make clean` : 98 `[PASS]`, 0 `[FAIL]`, 25 cas QEMU sur 25. Compilation parallèle propre réussie.
 
 **Constat annexe (non corrigé ici).** Les ELF complets diffèrent entre deux répertoires de compilation : NASM écrit le répertoire absolu (`DW_AT_comp_dir`) dans ses informations DWARF, et `-ffile-prefix-map` ne s'applique qu'à Clang. Ce défaut de reproductibilité sera traité dans un sous-jalon dédié.
+
+### K0.7-M2.2 — Descripteurs de cadres intégrés au PMM
+
+**Reprise après interruption.** Des modifications non commitées existaient dans `pmm.h`, `pmm_core.c`, `test_mm.c` et le document de conception. Elles ont été relues avant d'être conservées. Corrections apportées :
+
+- empêcher la rétrogradation d'un cadre `KERNEL` en `RESERVED` ;
+- commentaires obsolètes (« bitmap ») ;
+- une assertion tautologique du test hébergé remplacée par une vraie vérification d'atomicité ;
+- une formule du document de conception corrompue : des barres obliques inverses avaient été interprétées comme caractères de contrôle. La formule a été réécrite en texte simple, et aucun fichier modifié ne contient plus de caractère de contrôle.
+
+**Changements.**
+
+- `pmm_core.c`, `pmm.h` : table de descripteurs à la place de la bitmap ; `set_type()` seul point de modification de `free_count` ; `pmm_core_reserve_as()` (refus atomique, `KERNEL` jamais rétrogradé) ; `pmm_core_type()` ; `pmm_core_check()`.
+- `pmm.c` : table statique `g_meta[2^18]` (512 KiB), réservée comme partie de l'image (`FRAME_KERNEL`).
+- `mm.c` : `pmm_core_check()` exécuté à chaque démarrage, production comprise.
+- Tests :
+  - hébergé `test_descriptors()` : types, chevauchements, refus atomique, capacité, région se terminant en 2^64, **corruptions délibérées détectées** ;
+  - noyau `test_frame_types()` : table des descripteurs `KERNEL` et non libérable, aux deux bouts ;
+  - QEMU : ligne `descriptor table consistent` exigée de 16 MiB à 4 GiB et en production.
+
+**Défaut trouvé par le test hébergé.** Le calcul de la fin de la mémoire gérée, réécrit contre le débordement en 2^64, comptait un dernier cadre partiel (`0x904` au lieu de `0x903`). La sémantique de K0.6 a été rétablie sans débordement.
+
+**Vérification.**
+
+- `make clean && make test` : statut 0, **99 `[PASS]`, 0 `[FAIL]`**, 26 cas QEMU sur 26, `host pmm_core` à 1986 vérifications. Compilation parallèle depuis zéro réussie.
+- Injection de défauts, dans une copie isolée, sur 6 mutants (substitution vérifiée à 1 occurrence) : **6 sur 6 détectés** (rétrogradation `KERNEL`, refus non atomique, dérive de `free_count`, vérificateur aveugle, E1/E2 désactivés, double libération acceptée).
