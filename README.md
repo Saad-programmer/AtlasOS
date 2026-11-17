@@ -43,9 +43,9 @@ Le but n'est pas d'assembler des bibliothèques existantes. Il s'agit de **compr
 | K0.3 | VGA texte, port série COM1, journalisation, `panic` | ✅ implémenté et vérifié |
 | K0.4 | GDT, IDT, exceptions CPU | ✅ implémenté et vérifié |
 | K0.5 | PIC 8259, PIT, clavier PS/2, file circulaire | ✅ implémenté et vérifié |
-| K0.6 | Carte mémoire, allocateur physique, pagination, protections | ⏳ à venir |
+| K0.6 | Carte mémoire, allocateur physique, pagination, protections | ✅ implémenté et vérifié |
 
-Après K0.6, le développement fonctionnel s'arrête pour une revue complète, avant toute phase K1 (x86-64, processus, ordonnanceur, appels système).
+**La phase K0 est terminée.** Conformément au plan, le développement fonctionnel est arrêté. La revue complète du noyau et l'analyse de préparation à x86-64 se trouvent dans [`docs/review/K0-review.md`](docs/review/K0-review.md). La phase K1 (x86-64, processus, ordonnanceur, appels système) attend l'autorisation du développeur.
 
 ## 4. Vue d'ensemble de l'architecture
 
@@ -88,17 +88,21 @@ Tout le code spécifique au processeur se trouve dans `kernel/arch/i386/`. La mi
 | Clavier PS/2 | `kernel/drivers/ps2kbd.c`, `kbd_decode.c` | init complète du 8042 et reset du clavier, ISR minimal, automate jeu 1 (Shift, Ctrl, Alt, Verr. Maj, touches étendues, Pause), US QWERTY |
 | File circulaire | `kernel/lib/ringbuf.c` | SPSC sans verrou, indices libres, perte comptée |
 | Boucle d'inactivité | `kernel/core/kmain.c` | écho clavier, sommeil `sti; hlt` sans réveil perdu |
+| Carte mémoire | `kernel/mm/memmap.c` | analyse défensive de la carte E820/Multiboot (éléments malformés, tronqués, débordements), tri, repli `mem_lower/mem_upper` |
+| Allocateur physique | `kernel/mm/pmm_core.c`, `pmm.c` | bitmap 1 bit/cadre, next-fit, réservations prioritaires (mémoire basse, noyau, firmware, Multiboot), double libération détectée, cadres remis à zéro |
+| Pagination | `kernel/arch/i386/paging.c` | 32 bits, pages 4 KiB, identité sur la RAM gérée (≤ 1 GiB), page nulle et page de garde non projetées, `.text`/`.rodata` en lecture seule avec CR0.WP, `vmm_map/unmap/translate` avec INVLPG |
+| Fautes de page | `paging.c`, `probe.asm` | diagnostic contextuel (NULL, débordement de pile, écriture en lecture seule, hors RAM) ; sondes mémoire avec table de correction d'exception |
 | Arithmétique 64 bits | `kernel/lib/math64.c` | division 64/32 sans libgcc (division longue binaire) |
 | Bibliothèque minimale | `kernel/lib/string.c` | `memset`, `memcpy`, `memmove`, `memcmp`, `strlen`, `strnlen`, `strcmp`, `strncmp`, `strlcpy` |
-| Autotests noyau | `kernel/tests/` | 163 vérifications exécutées dans le noyau sous QEMU, plus 8 démarrages volontairement fatals et 1 test clavier interactif |
+| Autotests noyau | `kernel/tests/` | 223 vérifications exécutées dans le noyau sous QEMU, plus 13 démarrages volontairement fatals, 1 test clavier interactif et 5 configurations de RAM |
 
 ## 6. Composants en cours de développement
 
-- K0.6 : carte mémoire, allocateur physique, pagination, protections.
+Aucun : la phase K0 est terminée et en revue (voir `docs/review/K0-review.md`).
 
 ## 7. Composants planifiés
 
-K0.6 (voir le tableau ci-dessus). Plus tard, sous réserve d'autorisation : x86-64, TSS/IST, Ring 3, processus, ordonnanceur, appels système, IPC, VFS, pilotes de stockage et audio, moteur numérique, reconnaissance et synthèse vocales, agent.
+Sous réserve d'autorisation (phase K1 et suivantes) : allocateur d'objets du noyau (`kmalloc`), x86-64 (mode long, noyau *higher-half*, NX, IST), TSS/IST, Ring 3, processus, ordonnanceur, appels système, IPC, VFS, pilotes de stockage et audio, moteur numérique, reconnaissance et synthèse vocales, agent.
 
 ## 8. Structure du dépôt
 
@@ -113,10 +117,12 @@ AtlasOS/
 │   │   ├── idt.c, isr_stubs.asm      IDT et points d'entrée des interruptions
 │   │   ├── exceptions.c      répartition, rapport d'exception, tâche de double faute
 │   │   ├── pic.c, irq.c      PIC 8259A et couche IRQ
-│   │   └── include/arch/     io.h, cpu.h, gdt.h, idt.h, interrupt.h, pic.h, irq.h
+│   │   ├── paging.c, probe.asm       pagination 32 bits, fautes de page, sondes
+│   │   └── include/arch/     io.h, cpu.h, gdt.h, idt.h, interrupt.h, pic.h, irq.h, paging.h
 │   ├── core/                 kmain.c, bootinfo.c, layout.c, log.c, panic.c
 │   ├── drivers/              qemu_dbg.c, vga.c, serial.c, pit.c, ps2kbd.c, kbd_decode.c
 │   ├── lib/                  string.c, format.c, math64.c, ringbuf.c
+│   ├── mm/                   memmap.c, pmm_core.c, pmm.c, mm.c (mémoire physique)
 │   ├── include/samos/        en-têtes internes du noyau
 │   └── tests/                autotests exécutés dans le noyau
 ├── tests/
@@ -125,6 +131,7 @@ AtlasOS/
 │   └── qemu/                 tests de démarrage QEMU et vérifications GDB
 ├── tools/check_elf.sh        vérifications statiques de l'image ELF
 ├── docs/adr/                 décisions d'architecture
+├── docs/review/              revue de fin de phase (K0)
 ├── README.md  Walkthrough.md  Details.md  CLAUDE.md
 ```
 
@@ -173,13 +180,19 @@ SAMOS: kernel entry (SAMOS/AtlasOS 0.1.0-k0)
 [info ] cpu: IDT loaded (32 exception gates, #DF task gate)
 SAMOS: multiboot magic ok, info at 0x00009500, flags 0x0000024f
 SAMOS: cmdline "build/samos.elf "
-SAMOS: kernel image 0x00100000-0x00112000
+SAMOS: kernel image 0x00100000-0x00136000
   ... (régions de l'image)
+[info ] mm: 0x000000000-0x00009fbff available
+  ... (carte mémoire)
+[info ] mm: 6 regions, 130559 KiB available
+[info ] pmm: 32736 frames managed (130944 KiB), 32426 free (129704 KiB), 7 reserved ranges
+[info ] paging: enabled (CR0.PG|WP), identity map 0x00001000-0x07fe0000, 32 page tables, null page and stack guard unmapped, .text/.rodata read-only
+[info ] pmm: 32736 frames managed (130944 KiB), 32393 free (129572 KiB), 7 reserved ranges
 [info ] irq: 8259 PIC remapped to vectors 0x20-0x2f, all lines masked
 [info ] timer: PIT channel 0, 100 Hz (divisor 11932)
 [info ] keyboard: 8042 self-test ok, PS/2 keyboard reset ok, IRQ1 enabled
-SAMOS: boot stack high-water 792 bytes, guard intact
-SAMOS: K0.5 boot complete, interrupts enabled, keyboard echo active
+SAMOS: boot stack high-water 836 bytes, guard page unmapped (MMU-enforced)
+SAMOS: K0.6 boot complete, paging on, interrupts enabled, keyboard echo active
 ```
 
 Le noyau reste ensuite actif. Les touches tapées dans la fenêtre QEMU (`make run-vga`) sont décodées et renvoyées à l'écran et sur le port série. Disposition US QWERTY.
@@ -196,8 +209,8 @@ make test
 |---|---|---|
 | Statique ELF | `make check-elf` | ELF32/i386, entrée = `_start`, en-tête Multiboot (offset, alignement, somme), aucun symbole indéfini, aucun segment W+X, sections alignées/ordonnées/NOBITS, aucune section dynamique, absence d'auto-appel de `memset`/`memcpy` |
 | Outils (négatif) | `make test-tools` | `check_elf.sh` doit rejeter une image à somme corrompue ou sans en-tête |
-| Hébergés | `make test-host` | `string.c` ; `format.c` (comparaison différentielle avec `snprintf` de la libc) ; `math64.c` (100 000 divisions comparées à la division native) ; `ringbuf.c` (1 million d'opérations comparées à un modèle) ; `kbd_decode.c` (automate et 65 536 paires d'octets) ; le tout sous AddressSanitizer + UBSan |
-| QEMU | `make test-qemu` | démarrage normal (sans triple fault), sortie série de bout en bout, clavier de bout en bout (frappes injectées par `sendkey`), autotests noyau (`-append test`), chemin de panique (`test=panic`, statut 37), refus d'un mode de test inconnu, exceptions fatales `test=ud/de/gp/np/intbad`, double faute par porte de tâche (`test=df`), triple fault volontaire détecté (`test=triple`) |
+| Hébergés | `make test-host` | `string.c` ; `format.c` (comparaison différentielle avec `snprintf` de la libc) ; `math64.c` (100 000 divisions comparées à la division native) ; `ringbuf.c` (1 million d'opérations comparées à un modèle) ; `kbd_decode.c` (automate et 65 536 paires d'octets) ; `memmap.c` (cartes hostiles et 20 000 cartes aléatoires) ; `pmm_core.c` (invariants, épuisement, 200 000 opérations contre un modèle) ; le tout sous AddressSanitizer + UBSan |
+| QEMU | `make test-qemu` | démarrage normal (sans triple fault), sortie série de bout en bout, clavier de bout en bout (frappes injectées par `sendkey`), autotests noyau (`-append test`), chemin de panique (`test=panic`, statut 37), refus d'un mode de test inconnu, exceptions fatales `test=ud/de/gp/np/intbad`, double faute par porte de tâche (`test=df`), triple fault volontaire détecté (`test=triple`), violations mémoire `test=null/wtext/wrodata/unmapped`, débordement de pile attrapé (`test=stack`), RAM de 16 MiB à 4 GiB |
 | GDB | `make test-gdb` | état exact des registres à l'entrée de `kmain` ; test négatif du magic invalide ; lecture de la mémoire VGA `0xB8000` depuis l'extérieur du noyau |
 
 Le noyau transmet son verdict à QEMU via le périphérique `isa-debug-exit` (statut 33 = succès, 35 = échec, 37 = panic).
@@ -223,19 +236,22 @@ Seuls des outils de développement standard sont utilisés : compilateur, assemb
 - Pas de segments ni de code ring 3 (prévu en K1).
 - Le port série est en émission seule, par scrutation (pas d'IRQ 4, pas de réception).
 - Le journal n'est pas réentrant : les futurs gestionnaires d'IRQ ne devront pas journaliser.
-- Pas de pagination : les permissions des segments ne sont pas appliquées par le CPU.
-- La zone de garde de pile n'est vérifiée que par logiciel, a posteriori. La page de garde matérielle (non présente) viendra avec la pagination (K0.6).
-- En i386 sans PAE, le matériel ne pourra pas rendre les données non exécutables (pas de bit NX).
+- **Pas de bit NX** (pagination 32 bits sans PAE) : les données du noyau sont exécutables ; W^X n'est réalisé que pour le code.
+- Projection en identité : seule la RAM sous 1 GiB est gérée ; toute la RAM est inscriptible par le noyau ; pas encore d'espaces d'adressage séparés ni de noyau *higher-half*.
+- Pas d'allocateur d'objets (`kmalloc`) ; l'allocateur physique n'a ni verrou ni compteur de références (monoprocesseur, appelé hors interruption).
+- Le code d'autotest et les modes de faute volontaire sont compilés dans le noyau (sélectionnés par la ligne de commande) : à exclure d'une future version de production.
 - Testé uniquement sous QEMU. Sur un PC UEFI récent, le mode texte VGA ne sera pas disponible.
 
 ## 17. Feuille de route
 
-`K0.1 ✅ → K0.2 ✅ → K0.3 ✅ → K0.4 ✅ → K0.5 ✅ → K0.4 → K0.5 → K0.6 → revue K0 → (autorisation) K1 x86-64 → processus/ordonnanceur → appels système → IPC → VFS → pilotes → A0 (IA) → V0 (voix) → I0 (agent)`
+`K0.1 ✅ → K0.2 ✅ → K0.3 ✅ → K0.4 ✅ → K0.5 ✅ → K0.6 ✅ → revue K0 (livrée, en attente de décision) → (autorisation) K1 : x86-64, noyau higher-half, kmalloc → processus/ordonnanceur → appels système → IPC → VFS → pilotes → A0 (IA) → V0 (voix) → I0 (agent)`
 
 ## 18. Documentation
 
 - [`Walkthrough.md`](Walkthrough.md) : journal de développement reproductible, étape par étape.
 - [`Details.md`](Details.md) : cours technique et académique sur les concepts implémentés.
+- [`docs/review/K0-review.md`](docs/review/K0-review.md) : revue complète de K0 et préparation x86-64.
+- [`docs/adr/0001-k0-fondations.md`](docs/adr/0001-k0-fondations.md) : décisions d'architecture de K0.
 - [`CLAUDE.md`](CLAUDE.md) : directive d'ingénierie du projet.
 
 ## 19. Références

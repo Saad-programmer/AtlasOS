@@ -5,6 +5,8 @@
 #include <samos/layout.h>
 #include <samos/kernel.h>
 #include <samos/log.h>
+#include <arch/cpu.h>
+#include <arch/paging.h>
 
 #define PAGE_MASK 0xFFFu
 
@@ -86,6 +88,13 @@ size_t boot_stack_high_water(void)
 
 bool boot_stack_guard_intact(void)
 {
+    /* K0.6 : une fois la pagination active, la page de garde n'est plus
+     * projetée ; la lire provoquerait une #PF. La protection est alors
+     * MATÉRIELLE : la garde est « intacte » si elle est bien non projetée
+     * (tout débordement aurait déjà provoqué une faute). */
+    if (cpu_read_cr0() & CR0_PG) {
+        return !vmm_translate((uint32_t)(uintptr_t)__stack_guard_start, 0, 0);
+    }
     const volatile uint32_t *p = (const volatile uint32_t *)(uintptr_t)__stack_guard_start;
     const volatile uint32_t *end = (const volatile uint32_t *)(uintptr_t)__stack_guard_end;
     for (; p < end; p++) {

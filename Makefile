@@ -66,13 +66,15 @@ QEMU_FLAGS := -m 128M -no-reboot -no-shutdown
 # --- Sources ---
 ASM_SRCS := kernel/arch/$(ARCH)/boot/entry.asm \
             kernel/arch/$(ARCH)/gdt_flush.asm \
-            kernel/arch/$(ARCH)/isr_stubs.asm
+            kernel/arch/$(ARCH)/isr_stubs.asm \
+            kernel/arch/$(ARCH)/probe.asm
 
 C_SRCS := kernel/arch/$(ARCH)/gdt.c \
           kernel/arch/$(ARCH)/idt.c \
           kernel/arch/$(ARCH)/exceptions.c \
           kernel/arch/$(ARCH)/pic.c \
           kernel/arch/$(ARCH)/irq.c \
+          kernel/arch/$(ARCH)/paging.c \
           kernel/core/kmain.c \
           kernel/core/bootinfo.c \
           kernel/core/layout.c \
@@ -87,6 +89,10 @@ C_SRCS := kernel/arch/$(ARCH)/gdt.c \
           kernel/lib/format.c \
           kernel/lib/math64.c \
           kernel/lib/ringbuf.c \
+          kernel/mm/memmap.c \
+          kernel/mm/mm.c \
+          kernel/mm/pmm.c \
+          kernel/mm/pmm_core.c \
           kernel/lib/string.c \
           kernel/tests/ktest.c \
           kernel/tests/test_boot.c \
@@ -94,7 +100,8 @@ C_SRCS := kernel/arch/$(ARCH)/gdt.c \
           kernel/tests/test_console.c \
           kernel/tests/test_cpu.c \
           kernel/tests/test_faults.c \
-          kernel/tests/test_irq.c
+          kernel/tests/test_irq.c \
+          kernel/tests/test_mm.c
 
 OBJS := $(patsubst %.asm,$(BUILD)/%.o,$(ASM_SRCS)) \
         $(patsubst %.c,$(BUILD)/%.o,$(C_SRCS))

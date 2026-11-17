@@ -43,6 +43,12 @@ Le texte distingue systématiquement :
 30. Contrôleur PS/2 8042 et décodage du clavier (K0.5)
 31. Sécurité du jalon K0.5
 32. Questions de jury et réponses (K0.5)
+33. La mémoire physique et sa carte (K0.6)
+34. Allocateur de cadres physiques par bitmap (K0.6)
+35. Pagination 32 bits : traduction, droits, TLB (K0.6)
+36. Fautes de page, sondes et table de correction d'exceptions (K0.6)
+37. Sécurité du jalon K0.6
+38. Questions de jury et réponses (K0.6)
 - Références
 
 ---
@@ -1435,6 +1441,292 @@ Avec le moniteur QEMU (`sendkey`), qui injecte des frappes dans le contrôleur P
 **Q10. Quel bogue avez-vous rencontré avec le 8042 ?**
 La réécriture de l'octet de configuration à partir d'une copie lue avant la commande d'activation du port recoupait l'horloge du clavier. L'initialisation semblait réussie, mais aucune touche n'arrivait. Le diagnostic est venu des compteurs (`bytes=0 irq1=0`) et de la relecture de la sémantique du bit 4.
 
+## 33. La mémoire physique et sa carte (K0.6)
+
+### 33.1 Mémoire physique, virtuelle, et allocation dynamique
+
+Trois notions à ne pas confondre :
+
+| Notion | Unité | Gérée par | Question à laquelle elle répond |
+|---|---|---|---|
+| **Mémoire physique** | cadre (*frame*) de 4 Kio | allocateur physique (PMM) | quelles cellules de RAM sont libres ? |
+| **Mémoire virtuelle** | page de 4 Kio | pagination (tables de pages, MMU) | à quelle adresse physique correspond cette adresse ? avec quels droits ? |
+| **Allocation dynamique du noyau** | octet (`kmalloc`) | tas du noyau (*heap*) | où placer cet objet de 48 octets ? |
+
+K0.6 implémente les **deux premières**. Le tas du noyau (`kmalloc`), construit au-dessus des deux, n'est **pas** implémenté. C'est une décision de périmètre : il n'est utile qu'avec des objets de durée de vie dynamique, comme les processus de K1.
+
+### 33.2 D'où vient la carte mémoire ?
+
+La RAM d'un PC n'est pas contiguë. Le premier Mio contient des trous historiques (VGA à `0xA0000`, ROM à `0xC0000`-`0xFFFFF`), le firmware réserve des zones pour l'ACPI et le SMM, et les périphériques PCI occupent une fenêtre sous 4 Gio (le *PCI hole*). Seul le firmware connaît cette disposition. Il l'expose par l'appel BIOS **`INT 15h, EAX = E820h`**, ou par `GetMemoryMap()` en UEFI. Le chargeur Multiboot recopie le résultat dans `mmap_addr/mmap_length`.
+
+Carte réelle observée sous QEMU avec `-m 128M` :
+
+```text
+0x000000000-0x00009fbff available        639 Kio de mémoire conventionnelle
+0x00009fc00-0x00009ffff reserved         EBDA (Extended BIOS Data Area)
+0x0000f0000-0x0000fffff reserved         ROM du BIOS
+0x000100000-0x007fdffff available        mémoire étendue
+0x007fe0000-0x007ffffff reserved         tables ACPI de QEMU
+0x0fffc0000-0x0ffffffff reserved         flash du firmware (vecteur de reset)
+```
+
+Avec `-m 4G`, QEMU place une partie de la RAM **au-dessus de 4 Gio** (`0x100000000-0x13fffffff`), car la fenêtre PCI occupe `0xC0000000-0xFFFFFFFF`. Un noyau 32 bits sans PAE ne peut pas l'adresser : elle est conservée dans la carte mais ignorée par l'allocateur.
+
+### 33.3 Analyse défensive
+
+**[ARCH]** Format d'un élément : `size` (4 octets) suivi de `base_addr` (8), `length` (8) et `type` (4). Le champ `size` **n'inclut pas** ses propres 4 octets, et peut valoir plus que 20 : l'élément suivant se trouve à `adresse + size + 4`.
+
+**Menaces :** la carte vient du firmware et du chargeur, donc de l'extérieur du noyau. `memmap_parse()` est écrite pour qu'**aucune** carte, même hostile, ne provoque une lecture hors du tampon :
+
+| Cas | Comportement |
+|---|---|
+| `size < 20` | arrêt : l'élément suivant ne peut pas être localisé de façon sûre |
+| `size > len − off − 4` (élément qui dépasse le tampon, y compris `size = 0xFFFFFFFF`) | arrêt, sans calculer `off + size`, qui déborderait |
+| 1 à 3 octets résiduels | signalé comme malformé |
+| `length = 0` | ignoré et compté |
+| $\text{base} + \text{length} > 2^{64}$ | ignoré et compté (test sans débordement : $\text{length} - 1 > 2^{64} - 1 - \text{base}$) |
+| plus de 64 éléments | surplus compté, jamais écrit hors du tableau |
+| éléments non triés | tri par insertion (stable, $n \le 64$) |
+| lectures non alignées | `memcpy` vers des variables locales |
+
+**Vérification :** 10 scénarios ciblés et **20 000 cartes aléatoires**, chacune dans un tampon alloué à sa taille exacte sous AddressSanitizer. La moindre lecture d'un octet au-delà ferait échouer le test.
+
+**Repli :** sans carte détaillée (bit 6 absent), `memmap_from_basic()` construit deux régions à partir de `mem_lower` et `mem_upper`.
+
+---
+
+## 34. Allocateur de cadres physiques par bitmap (K0.6)
+
+### 34.1 Choix de la structure
+
+| Structure | Allocation | Libération | Mémoire | Contiguïté |
+|---|---|---|---|---|
+| **Bitmap** (SAMOS) | $O(n/32)$ au pire | $O(1)$ (+ vérification des réserves) | 1 bit/cadre (128 Kio pour 4 Gio) | recherche possible |
+| Pile de cadres libres | $O(1)$ | $O(1)$ | 4 octets/cadre libre | non |
+| Liste chaînée intrusive | $O(1)$ | $O(1)$ | 0 (dans les cadres libres) | non ; exige d'accéder aux cadres libres |
+| Buddy allocator (Linux) | $O(\log n)$ | $O(\log n)$ | ~ 1 bit/cadre/niveau | oui, par puissances de 2 |
+
+**[CHOIX]** La bitmap : la plus simple à prouver correcte, et elle permet de **détecter une double libération** (le bit est déjà à 0). Ce n'est pas possible avec une pile ou une liste, qui accepteraient d'empiler deux fois le même cadre et le distribueraient ensuite à deux propriétaires. Le *buddy allocator* sera pertinent quand le noyau aura besoin de blocs physiques contigus (tampons DMA).
+
+**Recherche *next-fit* par mots.** On parcourt la bitmap par mots de 32 bits à partir de la dernière position utilisée. Un mot qui vaut `0xFFFFFFFF` représente 32 cadres occupés, sautés en une comparaison. Coût mesuré : l'épuisement complet de 32 393 cadres, remise à zéro comprise, prend environ 710 ms sous QEMU (émulation TCG), un temps dominé par la remise à zéro de 129 Mio.
+
+### 34.2 Construction de la bitmap
+
+Ordre des opérations, qui garantit que les réservations l'emportent :
+
+1. **tout marquer occupé** ;
+2. **libérer** chaque cadre **entièrement contenu** dans une région *available* (arrondi **vers l'intérieur**) ;
+3. **réoccuper et enregistrer comme réservé** chaque cadre **touché**, même partiellement, par une région d'un autre type (arrondi **vers l'extérieur**) ;
+4. réserver le cadre 0, la mémoire basse (< 1 Mio), l'image du noyau (bitmap comprise) et les structures Multiboot.
+
+**Pourquoi deux arrondis opposés ?** Une région disponible `[0x900800, 0x903800)` ne contient que les cadres `0x901` et `0x902` entiers. Le cadre `0x900` est à moitié hors de la région, et le distribuer reviendrait à utiliser 2 Kio non garantis. Inversement, une zone réservée qui touche un cadre, ne serait-ce que d'un octet, rend tout ce cadre inutilisable. Les deux cas sont testés.
+
+**Formules (cadres de $2^{12}$ octets) :**
+
+$$\text{intérieur : } \left[\left\lceil \tfrac{b}{4096} \right\rceil,\ \left\lfloor \tfrac{b + \ell}{4096} \right\rfloor\right) \qquad \text{extérieur : } \left[\left\lfloor \tfrac{b}{4096} \right\rfloor,\ \left\lfloor \tfrac{b + \ell - 1}{4096} \right\rfloor + 1\right)$$
+
+Elles sont calculées en évitant tout débordement 64 bits : $b + \ell - 1$ (dernier octet) plutôt que $b + \ell$, et le cas $\text{last} = 2^{64} - 1$ est traité à part.
+
+**Pourquoi réserver tout le premier Mio ?** Il contient l'IVT, la BDA, l'EBDA, la mémoire vidéo et les ROM, et sous QEMU aussi la structure Multiboot (`0x9500`). **[CHOIX]** C'est une approche prudente, au prix d'environ 600 Kio. Un futur pilote ACPI ou un trampoline de démarrage SMP pourra en réclamer une partie explicitement.
+
+### 34.3 Invariants et leur vérification
+
+| Invariant | Mécanisme | Test |
+|---|---|---|
+| **I1** un cadre réservé n'est jamais alloué ni libérable | réservations après les libérations ; `pmm_core_free` consulte la liste des réserves | épuisement : aucun cadre réservé ; libérer le noyau, la VGA ou le cadre 0 est refusé |
+| **I2** jamais deux allocations sans libération | le bit passe à 1 dans `pmm_core_alloc` | épuisement : tous les cadres distincts |
+| **I3** double libération détectée | bit déjà à 0, donc `SAMOS_ENOENT` et compteur | test noyau et test hébergé |
+| **I4** `free_count` = nombre de 0 | toute modification passe par `mark_range`/`alloc`/`free` | comparaison avec un comptage complet après 200 000 opérations aléatoires |
+
+**Remise à zéro à l'allocation.** Un cadre libéré peut contenir les données de son ancien propriétaire (fuite d'information entre futurs processus) ou d'anciennes entrées de table de pages (projections fantômes). `pmm_alloc_frame()` le remet donc à zéro. Le test salit un cadre, le libère, le réalloue (même cadre, par next-fit) et vérifie qu'il est nul.
+
+**[CHOIX] Bitmap statique** de 128 Kio dans `.bss`. Elle couvre les $2^{20}$ cadres de 4 Gio et évite la question de l'œuf et de la poule (avec quoi allouer la structure de l'allocateur ?). Son coût est fixe.
+
+---
+
+## 35. Pagination 32 bits : traduction, droits, TLB (K0.6)
+
+### 35.1 Traduction d'adresse
+
+**[ARCH]** (SDM vol. 3A §4.3) Avec CR0.PG = 1, CR4.PAE = 0 et des pages de 4 Kio, une adresse linéaire de 32 bits se décompose ainsi :
+
+```text
+ 31        22 21        12 11           0
+┌────────────┬────────────┬──────────────┐
+│ index PDE  │ index PTE  │   décalage   │
+│  (10 bits) │  (10 bits) │   (12 bits)  │
+└────────────┴────────────┴──────────────┘
+CR3 ──► répertoire[1024] ──► table[1024] ──► cadre + décalage = adresse physique
+```
+
+$$\text{phys} = \text{PTE}\big[\text{PDE}[\text{CR3}][va_{31..22}]\big][va_{21..12}]_{31..12} \;\|\; va_{11..0}$$
+
+On a $2^{10} \times 2^{10} \times 2^{12} = 2^{32}$ : un répertoire couvre 4 Gio, une table couvre 4 Mio. Exemple vérifié par autotest : l'adresse virtuelle `0xD0000123`, projetée sur le cadre $F$, se traduit en $F + \texttt{0x123}$.
+
+**Format d'une entrée** (PDE ou PTE, 32 bits) : bits 31-12 = numéro de cadre ; bit 0 **P** (présent) ; bit 1 **R/W** ; bit 2 **U/S** ; bits 3-4 PWT/PCD (cache) ; bit 5 **A** (accédé) ; bit 6 **D** (modifié, PTE seulement) ; bit 7 PS (PDE : page de 4 Mio).
+
+**Droits effectifs** (SDM §4.6) : l'accès est permis seulement si le **PDE et le PTE** le permettent tous les deux (intersection). **[CHOIX]** Les PDE de SAMOS sont permissifs (P | W), et c'est le PTE qui décide, à la granularité de 4 Kio.
+
+### 35.2 L'espace d'adressage du noyau K0
+
+```text
+0x00000000 ┌───────────────┐ NON PROJETÉE (page nulle)
+0x00001000 ├───────────────┤ RW   mémoire basse (BIOS, VGA 0xB8000)
+0x00100000 ├───────────────┤ R    .text                    (kernel image)
+           ├───────────────┤ R    .rodata
+           ├───────────────┤ RW   .data, .bss (bitmap PMM, GDT, IDT, TSS)
+           ├───────────────┤ NON PROJETÉE (page de garde)
+           ├───────────────┤ RW   pile de démarrage
+           ├───────────────┤ RW   RAM gérée (cadres, tables de pages)
+idmap_top  ├───────────────┤
+           │      ...      │ NON PROJETÉ
+0xFFFFFFFF └───────────────┘
+```
+
+Tout est projeté **en identité** (virtuel = physique). L'activation de la pagination ne change donc l'adresse d'aucune instruction ni d'aucune donnée : l'instruction qui suit `mov cr0` s'exécute à la même adresse. **[CHOIX]** C'est le plus simple pour K0 (ADR 0001, décision 6). En contrepartie, le noyau et les futurs programmes devraient partager les mêmes adresses basses. Un noyau *higher-half* sera nécessaire pour la séparation noyau/utilisateur (voir la revue K0, `docs/review/K0-review.md`).
+
+**Coût :** 1 table de pages pour 4 Mio, soit 32 tables (128 Kio) pour 128 Mio et 256 tables (1 Mio) pour la limite de 1 Gio.
+
+### 35.3 CR0.WP : le noyau aussi doit respecter la lecture seule
+
+**[ARCH]** Par défaut (CR0.WP = 0), le ring 0 **ignore** le bit R/W : le noyau peut écrire dans une page en lecture seule. Avec WP = 1 (i486 et suivants), la lecture seule s'applique aussi au superviseur. SAMOS active PG et WP ensemble. Sans WP, toutes les protections de `.text` et `.rodata` seraient décoratives. Les tests `wtext`/`wrodata` le démontrent : une écriture dans `.text` produit #PF avec le code `0x3` (P = 1, W = 1).
+
+### 35.4 Pas de NX en i386 sans PAE
+
+**[ARCH]** La pagination 32 bits classique n'a **aucun bit d'interdiction d'exécution** : toute page présente est exécutable. Le bit XD/NX (bit 63) n'existe qu'avec PAE (entrées de 64 bits) ou en mode long. **Conséquence :** les données du noyau (pile, `.data`, RAM) sont exécutables. Un attaquant capable d'écrire dans la pile pourrait y exécuter du code. Le W^X n'est donc réalisé qu'à **moitié** : le code n'est pas inscriptible, mais les données sont exécutables. C'est l'un des arguments majeurs pour PAE ou x86-64 (revue K0).
+
+### 35.5 Le TLB et INVLPG
+
+Le **TLB** (*Translation Lookaside Buffer*) est un cache des traductions récentes. Sans lui, chaque accès mémoire en coûterait trois (PDE, PTE, donnée). **[ARCH]** Le TLB n'est **pas** cohérent avec les tables en mémoire : modifier un PTE ne met pas à jour une traduction déjà en cache. Après avoir **retiré** ou **restreint** une projection, il faut invalider l'entrée par `INVLPG adresse`, ou recharger CR3, ce qui vide tout le TLB sauf les pages globales.
+
+**Démonstration expérimentale :** le test projette `0xD0000000`, y écrit (la traduction entre dans le TLB), retire la projection avec `vmm_unmap`, qui exécute `INVLPG`, puis relit par une sonde. Il exige une faute. Sans `INVLPG`, la lecture pourrait réussir grâce à l'entrée périmée. Avec QEMU, le TLB est émulé, mais la règle architecturale est la même.
+
+### 35.6 Activation
+
+Ordre dans `paging_init()` :
+
+1. allouer le répertoire (cadre remis à zéro : 1024 PDE non présents) ;
+2. projeter page par page toute la RAM gérée avec ses droits, en allouant les tables au besoin ;
+3. enregistrer le gestionnaire de #PF ;
+4. donner le même CR3 à la tâche de double faute, **avant** l'activation. Une #DF survenant après la pagination chargerait sinon CR3 = 0 et ne verrait aucune table, d'où un triple fault ;
+5. `mov cr3, pd` ;
+6. `CR0 |= PG | WP`.
+
+Les tables sont construites **avant** l'activation, quand les adresses physiques sont directement utilisables. Après, elles le restent grâce à l'identité.
+
+---
+
+## 36. Fautes de page, sondes et table de correction d'exceptions (K0.6)
+
+### 36.1 La faute de page (#PF, vecteur 14)
+
+**[ARCH]** Quand une traduction échoue (entrée non présente) ou viole les droits, le CPU lève #PF, **place l'adresse fautive dans CR2** et empile un code d'erreur :
+
+| Bit | Nom | 0 | 1 |
+|---|---|---|---|
+| 0 | P | page non présente | violation de protection |
+| 1 | W/R | lecture | écriture |
+| 2 | U/S | superviseur | utilisateur |
+| 3 | RSVD | — | bit réservé positionné dans une entrée |
+| 4 | I/D | — | lecture d'instruction (avec NX) |
+
+C'est une **faute** : EIP pointe sur l'instruction fautive, qui sera ré-exécutée si le gestionnaire corrige la cause. C'est le fondement de la mémoire virtuelle à la demande (*demand paging*), de la copie sur écriture (*copy-on-write*) et du *swap*. **En K0, toute #PF est une erreur du noyau.** Le gestionnaire produit un diagnostic contextuel (`paging_classify`) puis panique :
+
+| Condition | Diagnostic |
+|---|---|
+| CR2 < 4096 | `NULL pointer dereference` |
+| CR2 dans la page de garde | `kernel stack overflow` |
+| P = 1, W = 1, CR2 dans `.text` / `.rodata` | `write to read-only kernel code / data` |
+| P = 0, CR2 ≥ fin de l'identité | `access to an unmapped address` |
+
+### 36.2 Le débordement de pile : #PF, puis #DF
+
+Récursion infinie (`test=stack`), observée :
+
+1. un `push` écrit sous `boot_stack_bottom`, dans la page de garde non présente : **#PF** ;
+2. pour livrer cette #PF, le CPU doit **empiler** EFLAGS, CS, EIP et le code d'erreur… sur la pile, c'est-à-dire dans la page de garde : **seconde #PF pendant la livraison d'une #PF**, donc **#DF** (tableau du §25.1) ;
+3. la porte de tâche de #DF (K0.4) bascule sur un TSS dont la pile est valide et dont le CR3 est le bon ;
+4. `double_fault_task` lit CR2 = `0x00131ffc` (le **dernier mot** de la page de garde, exactement là où le CPU a tenté d'empiler) et diagnostique `kernel stack overflow`.
+
+**Sans la porte de tâche de K0.4, ce scénario finissait en triple fault** et en redémarrage muet. Les jalons K0.2 (page de garde), K0.4 (TSS de #DF) et K0.6 (pagination) n'ont de valeur de sécurité **qu'ensemble**. Le test le vérifie de bout en bout, y compris l'**absence** de triple fault.
+
+### 36.3 Tester une protection sans paniquer : la table de correction
+
+Pour vérifier dans **un seul** démarrage que la page nulle, `.text`, `.rodata`, la garde et la mémoire non projetée sont protégées, il faut provoquer une faute **et reprendre l'exécution**. Problème : le gestionnaire ne connaît pas la longueur de l'instruction fautive, qu'on ne peut donc pas simplement « sauter ».
+
+**Solution (principe de la table `__ex_table` du noyau Linux, utilisée par `copy_from_user`) :**
+
+1. Les seuls accès autorisés à fauter sont deux instructions **connues**, écrites en assembleur et dont l'adresse est exportée : `mem_probe_read_insn: mov edx, [ecx]` et `mem_probe_write_insn: mov [ecx], edx`.
+2. Si une #PF survient avec EIP égal à l'une de ces adresses, le gestionnaire mémorise CR2 et le code d'erreur, puis **remplace EIP** par `mem_probe_fixup` (`mov eax, -1 ; ret`).
+3. L'instruction fautive n'a pas modifié ESP (une faute est précise : aucun effet partiel). Le `ret` de la correction revient donc normalement à l'appelant C, qui reçoit −1.
+
+Toute autre #PF reste fatale : la correction est strictement limitée à des adresses **déclarées**. On peut ainsi vérifier non seulement qu'un accès est refusé, mais aussi **pourquoi**, avec CR2 et le code d'erreur exacts :
+
+| Accès sondé | Résultat attendu (vérifié) |
+|---|---|
+| lecture de `kmain` (`.text`) | succès |
+| écriture dans une variable de `.data` | succès, valeur modifiée |
+| lecture de `0x0` | faute, CR2 = 0, P = 0, W = 0 |
+| écriture dans `kmain` | faute, CR2 = `&kmain`, P = 1, W = 1 ; code intact |
+| écriture dans `.rodata` | faute, valeur intacte |
+| lecture dans la page de garde | faute, CR2 exact, P = 0 |
+| lecture de `0xE0000000` | faute |
+| `0xD0000000` après `vmm_unmap` | faute (INVLPG effectif) |
+| écriture dans une projection en lecture seule | faute ; la lecture réussit |
+
+Ce mécanisme est aussi le **prototype** de l'accès sûr du noyau à la mémoire des futurs programmes utilisateur (K1) : un pointeur fourni par un programme non fiable sera lu par une sonde, et non par un déréférencement direct.
+
+---
+
+## 37. Sécurité du jalon K0.6
+
+| Aspect | K0.6 |
+|---|---|
+| **Actifs** | intégrité du code et des constantes du noyau ; pile ; tables de pages ; mémoire libre (confidentialité de son ancien contenu) ; exactitude de la comptabilité physique |
+| **Frontières** | firmware/chargeur → noyau (carte mémoire non fiable) ; futur : utilisateur → noyau (pointeurs non fiables, préfiguré par les sondes) |
+| **Menaces** | carte mémoire malformée ou hostile (lecture hors tampon, débordements) ; allocation d'un cadre réservé (corruption du noyau ou du firmware) ; double allocation et double libération ; fuite du contenu d'un cadre recyclé ; écriture dans `.text` (injection de code) ; déréférencement de NULL silencieux ; débordement de pile silencieux ; projection périmée dans le TLB ; écrasement silencieux d'une projection ; #DF sans tables de pages |
+| **Invariants** | I1-I4 (§34.3) ; page 0 jamais projetée ; `.text`/`.rodata` jamais inscriptibles (WP = 1) ; page de garde jamais projetée ; toute suppression de projection suivie d'INVLPG ; `vmm_map` n'écrase jamais ; le CR3 de la tâche #DF est celui du noyau ; la RAM gérée est entièrement projetée (chaque cadre distribué est accessible) |
+| **Protections** | parseur défensif ; arrondis intérieur/extérieur ; réserves prioritaires ; bitmap à détection de double libération ; remise à zéro ; PTE par région ; CR0.WP ; garde non présente + porte de tâche #DF ; INVLPG ; `SAMOS_EEXIST` ; table de correction limitée à deux instructions déclarées |
+| **Tests** | 60 vérifications noyau K0.6 ; 5 démarrages fatals (null, wtext, wrodata, unmapped, stack) ; 4 tailles de RAM (16 Mio, 512 Mio, 1,5 Gio, 4 Gio) + autotests à 512 Mio ; hébergés : 20 000 cartes aléatoires, 200 000 opérations de PMM contre un modèle |
+| **Limites** | **pas de NX** : données exécutables (i386 sans PAE) ; identité : toute la RAM est inscriptible par le noyau ; mémoire basse projetée en RW ; GDT, IDT et TSS inscriptibles (le TSS doit l'être : le CPU y écrit lors des commutations de tâche) ; PMM monoprocesseur et sans verrou (correct tant qu'il n'est pas appelé en interruption) ; aucun compteur de références : libérer un cadre encore projeté n'est pas détecté ; `vmm_map` accepte n'importe quelle adresse physique (API interne de confiance) ; RAM au-delà de 1 Gio ignorée ; pas d'espaces d'adressage séparés (K1) |
+
+---
+
+## 38. Questions de jury et réponses (K0.6)
+
+**Q1. Différence entre mémoire physique, mémoire virtuelle et `malloc` ?**
+La mémoire physique, ce sont les cellules de RAM, gérées par cadres de 4 Kio. La mémoire virtuelle, ce sont les adresses utilisées par le code, traduites par la MMU via les tables de pages. `malloc` découpe des pages en petits objets. SAMOS K0 implémente les deux premières, pas encore un allocateur d'objets.
+
+**Q2. Pourquoi ne pas utiliser simplement mem_upper ?**
+Parce que la RAM n'est pas contiguë : trous historiques, zones ACPI, fenêtre PCI. Seule la carte E820 indique précisément quelles régions sont utilisables. Utiliser des zones réservées corromprait le firmware ou les tables ACPI.
+
+**Q3. Comment votre allocateur détecte-t-il une double libération ?**
+Le bit du cadre est déjà à 0 lors de la seconde libération. L'appel est refusé (`SAMOS_ENOENT`) et compté. C'est un avantage de la bitmap sur une liste de cadres libres, qui accepterait le doublon.
+
+**Q4. Pourquoi remettre les cadres à zéro ?**
+Pour qu'aucun ancien contenu (données, anciennes tables de pages) ne fuie vers le nouveau propriétaire. C'est indispensable dès qu'il y aura plusieurs processus.
+
+**Q5. Décrivez la traduction d'une adresse virtuelle.**
+Les 10 bits de poids fort indexent le répertoire (CR3), les 10 suivants indexent la table, et les 12 derniers sont le décalage dans le cadre. Le résultat est le numéro de cadre du PTE concaténé avec le décalage. Les droits effectifs sont l'intersection de ceux du PDE et du PTE.
+
+**Q6. Pourquoi CR0.WP ?**
+Sans lui, le ring 0 ignore la lecture seule : le noyau pourrait écrire dans son propre code sans faute. Avec WP, une écriture dans `.text` produit #PF (code 0x3), ce que le test démontre.
+
+**Q7. Votre noyau applique-t-il W^X ?**
+Partiellement. Le code et les constantes ne sont pas inscriptibles. Mais la pagination 32 bits n'a pas de bit NX : les données restent exécutables. Il faudra PAE ou le mode long.
+
+**Q8. Qu'est-ce que le TLB et pourquoi INVLPG ?**
+Le TLB est un cache matériel des traductions, non cohérent avec les tables en mémoire. Après avoir retiré une projection, il faut invalider l'entrée correspondante, sinon l'ancienne traduction reste utilisable. Le test le vérifie : accès, retrait, puis accès qui doit fauter.
+
+**Q9. Que se passe-t-il exactement lors d'un débordement de pile ?**
+L'écriture dans la page de garde provoque #PF. Sa livraison nécessite d'empiler sur cette même page, d'où une seconde #PF, donc #DF. La porte de tâche de #DF bascule sur une pile dédiée avec le bon CR3. Le gestionnaire voit dans CR2 une adresse de la page de garde et diagnostique le débordement. Sans cette porte, ce serait un triple fault.
+
+**Q10. Comment testez-vous qu'une écriture est interdite sans planter ?**
+Avec une table de correction d'exception : l'accès est fait par une instruction assembleur dont l'adresse est connue du gestionnaire de #PF. Le gestionnaire redirige alors EIP vers un code de correction qui renvoie −1. C'est le principe de `copy_from_user` sous Linux. Toute autre faute reste fatale.
+
+**Q11. Pourquoi une projection en identité ? Quelles limites ?**
+Elle est simple : activer la pagination ne déplace rien, et le noyau accède directement aux cadres. Limites : seule la RAM projetée (≤ 1 Gio) est gérable, et l'espace bas est occupé par le noyau, ce qui empêche de donner aux programmes les mêmes adresses. Un noyau *higher-half* (au-dessus de `0xC0000000`, ou de `0xFFFF800000000000` en x86-64) résoudra ces deux points.
+
 ## Références
 
 1. Free Software Foundation, *Multiboot Specification*, version 0.6.96, §3.1 (en-tête), §3.2 (état machine), §3.3 (structure d'information).
@@ -1462,3 +1754,7 @@ La réécriture de l'octet de configuration à partir d'une copie lue avant la c
 20. Motorola, *MC146818A Real-Time Clock*, fiche technique (registres CMOS, bit UIP).
 21. Intel SDM vol. 2 (`STI` : inhibition des interruptions pour l'instruction suivante ; `HLT` ; `RDTSC`) et vol. 3A §9.2 (ordonnancement mémoire x86).
 22. ISO/IEC 9899:2011, §6.2.5 p9 (arithmétique non signée modulo $2^N$), §7.17 (atomiques, pour l'extension multiprocesseur).
+23. Intel SDM vol. 3A, chap. 4 : §4.1 (modes de pagination), §4.3 (pagination 32 bits, figures 4-2 et 4-4), §4.6 (droits d'accès, CR0.WP), §4.7 (code d'erreur de #PF), §4.10 (TLB, INVLPG) ; §6.15 (exception 14).
+24. ACPI Specification, chapitre « System Address Map Interfaces » (INT 15h E820h, types de plages).
+25. D. P. Bovet, M. Cesati, *Understanding the Linux Kernel*, 3e éd., O'Reilly, 2005 : chap. 2 (pagination), chap. 8 (cadres, buddy allocator), chap. 10 (table des exceptions `__ex_table`).
+26. A. S. Tanenbaum, H. Bos, *Modern Operating Systems*, 4e éd., chap. 3 (gestion de la mémoire, bitmaps et listes, pagination, TLB).

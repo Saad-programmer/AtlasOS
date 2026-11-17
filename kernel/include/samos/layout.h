@@ -46,8 +46,10 @@ void kernel_layout_print(void);
  * (cases de la pile dont le motif de peinture a été écrasé). */
 size_t boot_stack_high_water(void);
 
-/* Vrai si la zone de garde n'a jamais été écrite (aucun débordement détecté
- * par logiciel). Détection a posteriori uniquement : voir Details.md §15. */
+/* Avant pagination : vrai si la zone de garde n'a jamais été écrite
+ * (détection logicielle a posteriori, Details.md §15).
+ * Après pagination (K0.6) : vrai si la page de garde est bien NON projetée
+ * (protection matérielle, Details.md §35). */
 bool boot_stack_guard_intact(void);
 
 #endif /* SAMOS_LAYOUT_H */

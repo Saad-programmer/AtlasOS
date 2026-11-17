@@ -16,6 +16,15 @@
  * (En K0.4 ces tests utilisaient INT 0x20 ; depuis K0.5 ce vecteur est l'IRQ 0
  *  du PIT : un INT 0x20 logiciel exécuterait le gestionnaire du timer et
  *  enverrait un EOI parasite au PIC. Voir Details.md §28.6.)
+ * K0.6 (pagination active) :
+ *   null     lecture de *(uint32_t *)0      -> #PF, « NULL pointer dereference »
+ *   wtext    écriture dans .text            -> #PF(P|W), code en lecture seule
+ *   wrodata  écriture dans .rodata          -> #PF(P|W)
+ *   unmapped lecture à 0xE0000000           -> #PF, hors de la RAM projetée
+ *   stack    récursion infinie              -> la pile atteint la page de
+ *            garde : #PF, dont la livraison exige d'empiler sur cette même
+ *            page => 2e #PF => #DF, attrapée par la porte de tâche sur sa pile
+ *            dédiée (K0.4). Démonstration de bout en bout K0.2 + K0.4 + K0.6.
  *   triple  IDT de limite 0, INT3     -> aucune porte livrable : TRIPLE FAULT
  *                                        => réinitialisation du processeur
  *                                        (prouve que le banc de test la détecte)
@@ -24,7 +33,28 @@
 #include <arch/interrupt.h>
 #include <samos/ktest.h>
 #include <samos/log.h>
+#include <samos/kernel.h>
 #include <samos/string.h>
+
+static const uint32_t g_rodata_word = 0x12345678u;
+
+/* Récursion (pratiquement) sans fin consommant ~256 octets de pile par niveau. noinline et
+ * l'utilisation de buf APRÈS l'appel empêchent l'optimisation en boucle. */
+/* Borne volatile jamais atteinte en pratique (la pile de 16 KiB s'épuise vers
+ * la profondeur 60) : elle rend la récursion formellement finie, ce qui évite
+ * l'avertissement -Winfinite-recursion sans le désactiver. */
+static volatile uint32_t g_recursion_limit = UINT32_MAX;
+
+static __attribute__((noinline)) uint32_t recurse_forever(uint32_t depth)
+{
+    volatile uint8_t buf[256];
+    if (depth == g_recursion_limit) {
+        return 0;
+    }
+    buf[0] = (uint8_t)depth;
+    uint32_t r = recurse_forever(depth + 1);
+    return r + buf[0];
+}
 
 bool ktest_fatal_mode(const char *mode)
 {
@@ -45,6 +75,16 @@ bool ktest_fatal_mode(const char *mode)
          * (contributive) => #DF (SDM vol. 3A, tableau 6-5). */
         idt_set_present(EXC_NP, false);
         __asm__ __volatile__("int $0x2e");
+    } else if (strcmp(mode, "null") == 0) {
+        (void)*(volatile uint32_t *)(uintptr_t)0;
+    } else if (strcmp(mode, "wtext") == 0) {
+        *(volatile uint32_t *)(uintptr_t)&kmain = 0xCCCCCCCCu;
+    } else if (strcmp(mode, "wrodata") == 0) {
+        *(volatile uint32_t *)(uintptr_t)&g_rodata_word = 0;
+    } else if (strcmp(mode, "unmapped") == 0) {
+        (void)*(volatile uint32_t *)(uintptr_t)0xE0000000u;
+    } else if (strcmp(mode, "stack") == 0) {
+        (void)recurse_forever(0);
     } else if (strcmp(mode, "triple") == 0) {
         struct cpu_dtr empty = { 0, 0 };
         __asm__ __volatile__("lidt %0\n\tint3" : : "m"(empty) : "memory");

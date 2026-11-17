@@ -756,3 +756,145 @@ Premier passage : `selftest`, `exc_np`, `exc_df` et `keyboard_e2e` en échec.
 make clean && make test    # 49 lignes [PASS], aucune [FAIL]
 make run-vga               # taper au clavier dans la fenêtre QEMU : écho à l'écran
 ```
+
+---
+
+## Jalon K0.6 — Carte mémoire, allocateur physique, pagination et protections
+
+### A. Objectif
+
+Donner au noyau :
+
+- une connaissance **fiable** de la mémoire physique ;
+- un allocateur de cadres **sûr** ;
+- une **pagination** qui applique enfin les protections prévues depuis K0.2 : page nulle, code en lecture seule, page de garde de pile.
+
+C'est le dernier jalon de K0 : il est suivi de l'arrêt du développement fonctionnel et de la revue complète.
+
+### B. État de départ
+
+Le noyau s'exécutait en mémoire physique, sans aucune protection. Les droits R-X/R--/RW- des segments ELF n'étaient qu'une intention. La garde de pile n'était vérifiée que par logiciel, a posteriori. La carte mémoire était seulement localisée et bornée par `bootinfo` (K0.1), jamais lue.
+
+### C. Fichiers créés et modifiés
+
+| Fichier | Changement |
+|---|---|
+| `kernel/include/samos/memmap.h`, `kernel/mm/memmap.c` | **nouveaux** : parseur défensif, tri, repli |
+| `kernel/include/samos/pmm.h`, `kernel/mm/pmm_core.c` | **nouveaux** : cœur pur de l'allocateur par bitmap |
+| `kernel/mm/pmm.c` | **nouveau** : instance du noyau (bitmap statique, réserves, remise à zéro) |
+| `kernel/include/samos/mm.h`, `kernel/mm/mm.c` | **nouveaux** : orchestration, avertissement au-delà de 1 GiB |
+| `kernel/arch/i386/include/arch/paging.h`, `kernel/arch/i386/paging.c` | **nouveaux** : tables, `vmm_*`, #PF, diagnostic |
+| `kernel/arch/i386/probe.asm` | **nouveau** : sondes et correction d'exception |
+| `kernel/arch/i386/exceptions.c`, `interrupt.h` | `exception_report` public ; diagnostic CR2 dans la tâche #DF |
+| `kernel/core/layout.c`, `layout.h` | vérification de la garde par le MMU quand la pagination est active |
+| `kernel/core/kmain.c` | `mm_init()` avant les IRQ ; message final K0.6 |
+| `kernel/tests/test_mm.c` | **nouveau** : suite K0.6 (60 vérifications) |
+| `kernel/tests/test_faults.c` | modes `null`, `wtext`, `wrodata`, `unmapped`, `stack` |
+| `kernel/tests/test_layout.c` | test de débordement simulé : refusé par le MMU après K0.6 |
+| `tests/host/test_memmap.c`, `test_pmm.c` | **nouveaux** |
+| `tests/qemu/run.sh`, `cases.sh` | `QEMU_MEM` par cas ; 10 nouveaux cas |
+| `tests/qemu/gdb_checks.sh` | motifs VGA adaptés au défilement |
+| `docs/review/K0-review.md` | **nouveau** : revue de fin de phase |
+
+### D. Séquence d'implémentation
+
+1. **Composants purs d'abord** : `memmap.c` et `pmm_core.c`, avec leurs tests hébergés. Ces tests ont réussi dès leur première exécution, notamment les cartes hostiles et les 200 000 opérations contre le modèle. Pendant la rédaction, j'ai réordonné le calcul d'arrondi de `to_frames` pour que le contrôle de débordement précède l'addition.
+2. `pmm.c` : bitmap statique de 128 KiB, réserves (mémoire basse, image du noyau, structures Multiboot), remise à zéro à l'allocation.
+3. `probe.asm` puis `paging.c`. J'ai placé la pagination dans `arch/i386/`, et non dans `mm/`, car le format des tables est propre à l'architecture : `mm/` reste portable vers x86-64.
+4. `mm.c` et l'intégration dans `kmain`, **avant** le PIC, pour que le timer et le clavier fonctionnent d'emblée sous pagination.
+5. Adaptation de K0.2 : la page de garde n'est plus lisible (#PF). `boot_stack_guard_intact()` vérifie donc qu'elle est non projetée, et le test de débordement simulé passe par une sonde, qui doit échouer.
+6. Tests noyau, modes fatals, tailles de RAM.
+
+### E. Compilation
+
+`make`. Nouvelle source assembleur : `probe.asm`. Taille de l'image : `.text` 32 KiB, `.bss` 139 KiB (dont la bitmap de 128 KiB), `.bootstack` 20 KiB (garde comprise). `nm -u` reste vide.
+
+### F. Exécution
+
+`make run`. Nouvelles lignes :
+
+```text
+[info ] mm: 0x000000000-0x00009fbff available
+[info ] mm: 0x00009fc00-0x00009ffff reserved
+[info ] mm: 0x0000f0000-0x0000fffff reserved
+[info ] mm: 0x000100000-0x007fdffff available
+[info ] mm: 0x007fe0000-0x007ffffff reserved
+[info ] mm: 0x0fffc0000-0x0ffffffff reserved
+[info ] mm: 6 regions, 130559 KiB available
+[info ] pmm: 32736 frames managed (130944 KiB), 32426 free (129704 KiB), 7 reserved ranges
+[info ] paging: enabled (CR0.PG|WP), identity map 0x00001000-0x07fe0000, 32 page tables, null page and stack guard unmapped, .text/.rodata read-only
+[info ] pmm: 32736 frames managed (130944 KiB), 32393 free (129572 KiB), 7 reserved ranges
+...
+SAMOS: boot stack high-water 836 bytes, guard page unmapped (MMU-enforced)
+SAMOS: K0.6 boot complete, paging on, interrupts enabled, keyboard echo active
+```
+
+Vérification arithmétique : $32426 - 32393 = 33$ cadres, soit 1 répertoire et 32 tables ($\lceil \texttt{0x07fe0000} / 4\,\text{MiB} \rceil = 32$).
+
+Débordement de pile (`-append test=stack`) :
+
+```text
+*** DOUBLE FAULT (#DF) caught by task gate, running on dedicated stack
+    last page-fault address CR2=0x00131ffc: kernel stack overflow (guard page below the boot stack)
+*** KERNEL PANIC: double fault
+```
+
+`0x00131ffc` est le dernier mot de la page de garde `[0x131000, 0x132000)`, exactement là où le CPU a tenté d'empiler le cadre de la #PF.
+
+### G. Tests
+
+```bash
+make clean && make test
+```
+
+Résultat observé : **61 lignes `[PASS]`, aucune `[FAIL]`**, statut 0.
+
+| Test | Attendu | Observé |
+|---|---|---|
+| Carte : 10 scénarios hostiles + 20 000 cartes aléatoires (hébergé, ASan) | aucune lecture hors tampon, résultat trié | **PASS** (15 vérifications) |
+| PMM : arrondis, chevauchements, I1-I4, épuisement, 200 000 opérations contre le modèle (hébergé) | conforme | **PASS** (1958 vérifications) |
+| Carte réelle sous QEMU : triée, non malformée, > 100 MiB disponibles | conforme | **PASS** |
+| Allocation : alignée, hors noyau, ≥ 1 MiB ; cadre recyclé remis à zéro | conforme | **PASS** |
+| Libérations refusées : double, noyau, VGA, cadre 0, non alignée, hors mémoire | conforme | **PASS** |
+| Épuisement : 32 393 cadres alloués, tous valides, puis rendus | conforme | **PASS** (710 ms) |
+| CR0.PG + WP, CR3, CR3 de la tâche #DF | conforme | **PASS** |
+| Traductions : `.text`/`.rodata` R, `.data`/VGA RW, page nulle et garde absentes, superviseur | conforme | **PASS** |
+| Sondes : 9 accès légitimes ou interdits, avec CR2 et code d'erreur exacts | conforme | **PASS** |
+| `vmm_map/unmap` : alias physique, EEXIST, EINVAL, INVLPG effectif, projection R | conforme | **PASS** |
+| Total des autotests noyau | statut 33 | **PASS** (223 vérifications) |
+| `pf_null`, `pf_write_text`, `pf_write_rodata`, `pf_unmapped` | diagnostic exact, statut 37 | **PASS** |
+| `stack_overflow` : #DF par porte de tâche, diagnostic, pas de triple fault | conforme | **PASS** |
+| `mem_16M`, `mem_512M`, `mem_1500M` (plafond 1 GiB signalé), `mem_4G` (région > 4 GiB ignorée), autotests à 512 MiB | conforme | **PASS** |
+| Régressions K0.1-K0.5 | inchangé | **PASS** |
+
+### H. Débogage
+
+1. **`error: all paths through this function will call itself [-Winfinite-recursion]`.** Clang a détecté la récursion volontaire du mode `stack`. Plutôt que de désactiver l'avertissement, j'ai ajouté une borne `volatile` jamais atteinte, qui rend la récursion formellement finie.
+2. **Mesure « 0 ms » pour l'épuisement de 129 MiB.** Le résultat était physiquement impossible. Cause : la suite K0.5 se termine par `cli`, donc le PIT ne comptait plus. La mesure est désormais faite avec IF = 1, ce qui donne 710 ms. La remise à zéro, elle, était prouvée indépendamment par le test du cadre sali.
+3. **Motif obsolète `bytes, guard intact`.** Le message de démarrage a changé volontairement (`guard page unmapped (MMU-enforced)`).
+4. **Test GDB VGA en échec.** Le journal de démarrage dépasse désormais 25 lignes : l'écran a défilé et `SAMOS: kernel entry` n'est plus dans le tampon (la première ligne visible est `SAMOS: kernel image ...`). Le noyau est correct, le défilement ayant été testé en K0.3. Le test cherche maintenant des lignes de fin de démarrage.
+5. **Avertissement ajouté** après les essais de tailles de RAM : à 1,5 GiB et 4 GiB, le plafond de 1 GiB était appliqué **silencieusement**. Un message `mm: RAM above 1024 MiB is not managed in K0` le signale désormais, et un cas de test l'exige.
+
+### I. Intégration
+
+- K0.2 : les régions de `layout.c` déterminent les droits des pages, et la page de garde devient non présente.
+- K0.4 : #PF est enregistrée par `interrupt_register` ; la tâche #DF reçoit le CR3 du noyau et diagnostique le débordement.
+- K0.5 : les IRQ sont activées **après** la pagination. Le timer, le clavier et leurs tampons fonctionnent sous pagination (toute la suite K0.5 s'exécute avec PG = 1).
+
+### J. Critères d'achèvement
+
+- [x] Carte mémoire lue et validée, robuste aux cartes hostiles.
+- [x] Régions utilisables et réservées identifiées ; noyau et structures de démarrage réservés.
+- [x] Allocateur de cadres avec invariants vérifiés (I1-I4).
+- [x] Pagination active ; traduction vérifiée (identité et alias).
+- [x] Fautes de page diagnostiquées ; protections démontrées (NULL, `.text`, `.rodata`, garde, non projeté).
+- [x] Débordement de pile attrapé sans triple fault.
+- [x] Aucune régression ; documentation à jour (Details §33 à 38).
+- [x] **Arrêt du développement fonctionnel** ; revue `docs/review/K0-review.md`.
+
+### K. Reproduction
+
+```bash
+make clean && make test    # 61 lignes [PASS], aucune [FAIL]
+qemu-system-i386 -m 128M -kernel build/samos.elf -append test=stack -serial stdio -display none -device isa-debug-exit,iobase=0xf4,iosize=0x04
+```

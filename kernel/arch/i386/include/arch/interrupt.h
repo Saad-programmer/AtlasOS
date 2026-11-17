@@ -79,6 +79,9 @@ static inline uint32_t interrupt_frame_esp(const struct interrupt_frame *f)
     return (uint32_t)(uintptr_t)&f->eflags + 4u;
 }
 
+/* Rapport complet d'une exception (nom, code d'erreur décodé, registres). */
+void exception_report(const struct interrupt_frame *frame);
+
 /* Appelé par isr_common (isr_stubs.asm). */
 void isr_dispatch(struct interrupt_frame *frame);
 

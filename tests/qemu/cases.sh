@@ -15,8 +15,9 @@ TIMEOUT=3 run_case boot_halt "" 124 \
     "SAMOS: multiboot magic ok" \
     "SAMOS: kernel image 0x00100000-" \
     "---G stack-guard" \
-    "bytes, guard intact" \
-    "SAMOS: K0.5 boot complete, interrupts enabled" \
+    "SAMOS: K0.6 boot complete, paging on, interrupts enabled" \
+    "paging: enabled (CR0.PG|WP), identity map 0x00001000-0x07fe0000" \
+    "guard page unmapped (MMU-enforced)" \
     "irq: 8259 PIC remapped to vectors 0x20-0x2f" \
     "timer: PIT channel 0, 100 Hz (divisor 11932)" \
     "keyboard: 8042 self-test ok, PS/2 keyboard reset ok, IRQ1 enabled" \
@@ -28,7 +29,7 @@ TIMEOUT=3 run_case boot_halt "" 124 \
 TIMEOUT=3 run_case serial_output "" 124 \
     "serial:SAMOS: kernel entry" \
     "serial:console: debugcon + serial COM1 115200 8N1 + VGA 80x25" \
-    "serial:SAMOS: K0.5 boot complete"
+    "serial:SAMOS: K0.6 boot complete"
 
 # Autotests noyau, toutes suites.
 run_case selftest "test" 33 \
@@ -37,6 +38,7 @@ run_case selftest "test" 33 \
     "[TEST] suite K0.3 console" \
     "[TEST] suite K0.4 cpu" \
     "[TEST] suite K0.5 irq" \
+    "[TEST] suite K0.6 mm" \
     "[TEST] ALL TESTS PASSED" \
     "![FAIL]"
 
@@ -106,3 +108,46 @@ TIMEOUT=20 run_case_keys keyboard_e2e "test=kbd" 33 \
     "serial:[TEST] kbd ready" \
     "serial:[TEST] kbd line: 'Samos K0.5 !'" \
     "serial:dropped=0"
+
+# ---------------------------------------------------------------------------
+# K0.6 — Protections mémoire : chaque violation est diagnostiquée précisément.
+# ---------------------------------------------------------------------------
+run_case pf_null "test=null" 37 \
+    "serial:*** CPU exception 14: Page Fault (#PF), error code 0x00000000" \
+    "serial:page not present, read access, supervisor mode, address CR2=0x00000000" \
+    "serial:diagnosis: NULL pointer dereference"
+
+run_case pf_write_text "test=wtext" 37 \
+    "serial:error code 0x00000003" \
+    "serial:protection violation, write access" \
+    "serial:diagnosis: write to read-only kernel code (.text)"
+
+run_case pf_write_rodata "test=wrodata" 37 \
+    "serial:diagnosis: write to read-only kernel data (.rodata)"
+
+run_case pf_unmapped "test=unmapped" 37 \
+    "serial:address CR2=0xe0000000" \
+    "serial:diagnosis: access to an unmapped address (outside identity-mapped RAM)"
+
+# Débordement de pile : page de garde (K0.2) + pagination (K0.6) => #PF non
+# livrable => #DF attrapée par la porte de tâche (K0.4), SANS triple fault.
+run_case stack_overflow "test=stack" 37 \
+    "serial:*** DOUBLE FAULT (#DF) caught by task gate, running on dedicated stack" \
+    "serial:kernel stack overflow (guard page below the boot stack)" \
+    "serial:KERNEL PANIC: double fault"
+
+# Tailles de RAM : petite, moyenne, au-delà de la limite d'identité (1 GiB),
+# et 4 GiB (région au-dessus de 4 GiB dans la carte, ignorée).
+QEMU_MEM=16M TIMEOUT=4 run_case mem_16M "" 124 \
+    "paging: enabled" "SAMOS: K0.6 boot complete" "!KERNEL PANIC" "!mm: RAM above"
+QEMU_MEM=512M TIMEOUT=4 run_case mem_512M "" 124 \
+    "128 page tables" "SAMOS: K0.6 boot complete" "!KERNEL PANIC"
+QEMU_MEM=1500M TIMEOUT=6 run_case mem_1500M "" 124 \
+    "pmm: 262144 frames managed" "mm: RAM above 1024 MiB is not managed in K0" \
+    "SAMOS: K0.6 boot complete" "!KERNEL PANIC"
+QEMU_MEM=4G TIMEOUT=6 run_case mem_4G "" 124 \
+    "mm: 0x100000000-0x13fffffff available" "pmm: 262144 frames managed" \
+    "SAMOS: K0.6 boot complete" "!KERNEL PANIC"
+
+# Régression : les autotests passent aussi avec 512 MiB.
+QEMU_MEM=512M run_case selftest_512M "test" 33 "[TEST] ALL TESTS PASSED" "![FAIL]"

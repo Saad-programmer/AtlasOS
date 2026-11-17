@@ -6,6 +6,7 @@
 #include <samos/ktest.h>
 #include <samos/layout.h>
 #include <arch/cpu.h>
+#include <arch/paging.h>
 
 /* Consomme volontairement ~2 KiB de pile. noinline + volatile empêchent le
  * compilateur de supprimer ou de réduire le tableau. */
@@ -59,14 +60,21 @@ static void test_stack_instrumentation(void)
     KTEST_CHECK(after >= before && after >= 2048);
     KTEST_CHECK(boot_stack_guard_intact());                    /* 2 KiB ne débordent pas */
 
-    /* Test négatif : simuler un débordement en écrivant dans la zone de
-     * garde, vérifier la détection, puis restaurer le motif. Sans pagination
-     * cette écriture est possible ; après K0.6 elle provoquerait une #PF. */
+    /* Test négatif : simuler un débordement en écrivant dans la zone de garde.
+     * K0.2 (sans pagination) : l'écriture réussissait et la peinture
+     * corrompue était détectée a posteriori.
+     * K0.6 (pagination active) : la page n'est pas projetée ; l'écriture,
+     * faite par une sonde, doit être REFUSÉE par le MMU (faute de page). */
     volatile uint32_t *g = (volatile uint32_t *)(uintptr_t)(__stack_guard_end - 4);
-    *g = 0;
-    KTEST_CHECK(!boot_stack_guard_intact());
-    *g = BOOT_STACK_PAINT;
-    KTEST_CHECK(boot_stack_guard_intact());
+    if (cpu_read_cr0() & CR0_PG) {
+        KTEST_CHECK(mem_probe_write(g, 0) == -1);
+        KTEST_CHECK(boot_stack_guard_intact());
+    } else {
+        *g = 0;
+        KTEST_CHECK(!boot_stack_guard_intact());
+        *g = BOOT_STACK_PAINT;
+        KTEST_CHECK(boot_stack_guard_intact());
+    }
 }
 
 void ktest_suite_layout(void)

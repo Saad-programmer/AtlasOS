@@ -12,15 +12,17 @@
  *   2. GDT + IDT (K0.4) : toute exception devient diagnosticable.
  *   3. Validation Multiboot (K0.1) : en cas d'échec -> panic().
  *   4. Disposition mémoire (K0.2) : affichage et vérification -> panic().
- *   5. Interruptions matérielles (K0.5) : PIC remappé et tout masqué, puis
- *      PIT (IRQ 0) et clavier (IRQ 1). IF reste à 0 jusqu'à l'étape 7.
- *   6. Mode test (`test` sur la ligne de commande) : autotests sous QEMU.
- *   7. Sinon : STI puis boucle d'inactivité (écho clavier).
+ *   5. Mémoire (K0.6) : carte mémoire, cadres physiques, pagination.
+ *   6. Interruptions matérielles (K0.5) : PIC remappé et tout masqué, puis
+ *      PIT (IRQ 0) et clavier (IRQ 1). IF reste à 0 jusqu'à l'étape 8.
+ *   7. Mode test (`test` sur la ligne de commande) : autotests sous QEMU.
+ *   8. Sinon : STI puis boucle d'inactivité (écho clavier).
  */
 #include <samos/bootinfo.h>
 #include <samos/kernel.h>
 #include <samos/ktest.h>
 #include <samos/layout.h>
+#include <samos/mm.h>
 #include <samos/log.h>
 #include <samos/panic.h>
 #include <samos/serial.h>
@@ -95,6 +97,13 @@ void kmain(uint32_t magic, uint32_t mbi_phys)
         panic("kernel layout invariants violated");
     }
 
+    /* K0.6 : carte mémoire, allocateur physique, pagination. Avant les IRQ :
+     * timer et clavier fonctionneront d'emblée sous pagination. */
+    samos_err_t mm_err = mm_init();
+    if (mm_err != SAMOS_OK) {
+        panic("memory management initialisation failed (%d)", mm_err);
+    }
+
     pic_init();
     klog(LOG_INFO, "irq: 8259 PIC remapped to vectors 0x%02x-0x%02x, all lines masked\n",
          PIC_IRQ_BASE, PIC_IRQ_BASE + PIC_IRQ_COUNT - 1);
@@ -114,8 +123,8 @@ void kmain(uint32_t magic, uint32_t mbi_phys)
         ktest_run_all();
     }
 
-    kprintf("SAMOS: boot stack high-water %zu bytes, guard %s\n",
-            boot_stack_high_water(), boot_stack_guard_intact() ? "intact" : "CORRUPTED");
-    kprintf("SAMOS: K0.5 boot complete, interrupts enabled, keyboard echo active\n");
+    kprintf("SAMOS: boot stack high-water %zu bytes, guard page %s\n",
+            boot_stack_high_water(), boot_stack_guard_intact() ? "unmapped (MMU-enforced)" : "MAPPED (unsafe)");
+    kprintf("SAMOS: K0.6 boot complete, paging on, interrupts enabled, keyboard echo active\n");
     idle_loop();
 }

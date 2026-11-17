@@ -27,7 +27,7 @@ run_case() {
     local dlog="$OUT/$name.debugcon.log" slog="$OUT/$name.serial.log" qlog="$OUT/$name.qemu.log"
     total=$((total + 1))
     rm -f "$dlog" "$slog" "$qlog"
-    timeout "$TIMEOUT" "$QEMU" -m 128M -display none -no-reboot \
+    timeout "$TIMEOUT" "$QEMU" -m "${QEMU_MEM:-128M}" -display none -no-reboot \
         -kernel "$KERNEL" -append "$append" \
         -debugcon "file:$dlog" -serial "file:$slog" \
         -device isa-debug-exit,iobase=0xf4,iosize=0x04 \

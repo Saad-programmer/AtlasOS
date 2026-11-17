@@ -76,6 +76,7 @@ void ktest_run_all(void)
     ktest_suite_console();
     ktest_suite_cpu();
     ktest_suite_irq();
+    ktest_suite_mm();
 
     kprintf("[TEST] checks=%u failures=%u\n", g_checks, g_failures);
     if (g_failures == 0) {

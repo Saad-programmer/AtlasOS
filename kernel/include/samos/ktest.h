@@ -26,10 +26,11 @@ void ktest_suite_layout(void);     /* K0.2 */
 void ktest_suite_console(void);    /* K0.3 */
 void ktest_suite_cpu(void);        /* K0.4 */
 void ktest_suite_irq(void);        /* K0.5 */
+void ktest_suite_mm(void);         /* K0.6 */
 void ktest_keyboard_line(void);    /* K0.5, mode test=kbd */
 
 /* Déclenche volontairement une faute fatale (modes test=ud, de, gp, np,
- * intbad, df, triple). Retourne false si le mode est inconnu. */
+ * intbad, df, triple ; K0.6 : null, wtext, wrodata, unmapped, stack). Retourne false si le mode est inconnu. */
 bool ktest_fatal_mode(const char *mode);
 
 #endif /* SAMOS_KTEST_H */

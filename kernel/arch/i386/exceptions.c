@@ -13,6 +13,7 @@
 #include <arch/interrupt.h>
 #include <arch/irq.h>
 #include <arch/pic.h>
+#include <arch/paging.h>
 #include <samos/log.h>
 #include <samos/panic.h>
 
@@ -88,7 +89,7 @@ static void decode_page_fault_error(uint32_t err)
             (void *)(uintptr_t)cpu_read_cr2());
 }
 
-static void dump_frame(const struct interrupt_frame *f)
+void exception_report(const struct interrupt_frame *f)
 {
     kprintf("*** CPU exception %u: %s, error code %p\n", (unsigned)f->vector,
             exception_name(f->vector), (void *)(uintptr_t)f->err_code);
@@ -124,7 +125,7 @@ void isr_dispatch(struct interrupt_frame *frame)
         h(frame);
         return;
     }
-    dump_frame(frame);
+    exception_report(frame);
     panic("unhandled %s at EIP %p", exception_name(v), (void *)frame->eip);
 }
 
@@ -145,5 +146,12 @@ void double_fault_task(void)
     kprintf("    EAX=%p EBX=%p ECX=%p EDX=%p CR3=%p\n", (void *)(uintptr_t)t->eax,
             (void *)(uintptr_t)t->ebx, (void *)(uintptr_t)t->ecx, (void *)(uintptr_t)t->edx,
             (void *)(uintptr_t)t->cr3);
+    /* K0.6 : CR2 conserve l'adresse de la dernière faute de page. Si elle se
+     * trouve dans la page de garde, la cause la plus probable est une pile
+     * épuisée : la #PF n'a pas pu être livrée (pile non projetée) => #DF.
+     * (CR2 peut être ancien si la #DF n'a pas pour origine une #PF.) */
+    uint32_t cr2 = cpu_read_cr2();
+    kprintf("    last page-fault address CR2=%p: %s\n", (void *)(uintptr_t)cr2,
+            paging_classify(cr2, 0));
     panic("double fault");
 }

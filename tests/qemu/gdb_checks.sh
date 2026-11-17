@@ -97,7 +97,10 @@ stop_qemu
 # Octets pairs = caractères, octets impairs = attributs ; 80 caractères par ligne.
 od -An -v -tu1 "$OUT/vga.bin" | tr -s ' ' '\n' | sed '/^$/d' | awk 'NR % 2 == 1' |
     awk '{ printf "%c", ($1 >= 32 && $1 < 127) ? $1 : 32; if (NR % 80 == 0) printf "\n" }' > "$OUT/vga.txt"
-if grep -q 'SAMOS: kernel entry' "$OUT/vga.txt" && grep -q 'boot complete' "$OUT/vga.txt"; then
+# Le journal de démarrage dépasse 25 lignes depuis K0.6 : l'écran a défilé et
+# les premières lignes ne sont plus dans le tampon. On cherche donc des lignes
+# de FIN de démarrage, toujours visibles (le défilement est testé en K0.3).
+if grep -q 'timer: PIT channel 0' "$OUT/vga.txt" && grep -q 'boot complete' "$OUT/vga.txt"; then
     echo "[PASS] gdb: texte de demarrage present en memoire VGA 0xB8000"
 else
     echo "[FAIL] gdb: texte absent de la memoire VGA (voir $OUT/vga.txt)"; fail=1
