@@ -22,8 +22,13 @@ Le texte distingue systématiquement :
 9. Entrées/sorties : ports d'E/S et canal de diagnostic QEMU
 10. Sécurité du jalon K0.1
 11. Stratégie de vérification
-12. Questions de jury et réponses
-13. Références
+12. Questions de jury et réponses (K0.1)
+13. Le script de liaison en profondeur (K0.2)
+14. Disposition mémoire du noyau et modèle de permissions (K0.2)
+15. Pile de démarrage : zone de garde et peinture (K0.2)
+16. Sécurité du jalon K0.2
+17. Questions de jury et réponses (K0.2)
+- Références
 
 ---
 
@@ -469,7 +474,166 @@ Non, et aucune affirmation de ce type n'est faite. Il valide ses entrées extern
 
 ---
 
-## 13. Références
+## 13. Le script de liaison en profondeur (K0.2)
+
+### 13.1 Rôle de l'éditeur de liens
+
+Le compilateur produit des **fichiers objets relogeables** : leurs sections commencent à l'adresse 0 et leurs références externes sont des *relocations* en attente. L'éditeur de liens :
+
+1. **fusionne** les sections d'entrée de même nature (`.text` de chaque `.o`) en sections de sortie ;
+2. **attribue une adresse** à chaque section de sortie ;
+3. **résout les symboles** et applique les relocations (par exemple `R_386_32` : écrire l'adresse absolue d'un symbole, ou `R_386_PC32` : écrire un déplacement relatif à EIP) ;
+4. produit les *program headers* qui disent au chargeur quoi charger, et où.
+
+Sans script, ld utilise un script par défaut prévu pour les exécutables Linux, qui chargerait à `0x08048000` avec un segment pour l'interpréteur dynamique. Un noyau a besoin d'un contrôle total, d'où `-T linker.ld`.
+
+### 13.2 Le compteur de position `.`
+
+Dans `SECTIONS`, le symbole `.` est le **compteur de position** : l'adresse courante (VMA). `. = 0x00100000;` le place à 1 Mio. Chaque section de sortie avance `.` de sa taille. `ALIGN(PAGE_SIZE)` arrondit au multiple de 4096 supérieur :
+
+$$\text{ALIGN}(a, n) = \left\lceil \frac{a}{n} \right\rceil \cdot n = (a + n - 1) \mathbin{\&} \lnot(n-1) \quad (n \text{ puissance de 2})$$
+
+`. += PAGE_SIZE;` dans `.bootstack` réserve 4 Kio sans y placer aucun contenu : c'est ainsi qu'est créée la zone de garde.
+
+### 13.3 VMA et LMA
+
+Chaque section a une **VMA** (*Virtual Memory Address*, l'adresse à laquelle le code s'exécute et pour laquelle il est relogé) et une **LMA** (*Load Memory Address*, l'adresse où le chargeur la dépose, reflétée dans `p_paddr`). **[CHOIX]** En K0 elles sont égales (identité), ce que `check_elf.sh` vérifie (`vaddr == paddr`). Un noyau *higher-half* aurait VMA = `0xC0100000` et LMA = `0x00100000`, avec `AT(...)` dans le script et une pagination activée dans le code d'entrée avant tout accès absolu. Cette évolution est reportée (ADR 0001, décision 6).
+
+### 13.4 Directives utilisées
+
+| Directive | Signification | Usage dans SAMOS |
+|---|---|---|
+| `OUTPUT_FORMAT("elf32-i386")`, `OUTPUT_ARCH(i386)` | format et architecture de sortie | refuse de lier un objet 64 bits par erreur |
+| `ENTRY(_start)` | valeur de `e_entry` dans l'en-tête ELF | adresse à laquelle le chargeur saute |
+| `PHDRS { ... }` | déclaration explicite des *program headers* | 3 segments R-X, R--, RW- |
+| `:text`, `:data` | affectation d'une section de sortie à un segment | regroupement par permission |
+| `KEEP(...)` | interdit l'élimination par `--gc-sections` | l'en-tête Multiboot n'est référencé par aucun code |
+| `(NOLOAD)` | section de type NOBITS | pile et zone de garde : aucun octet dans le fichier |
+| `*(COMMON)` | symboles « communs » (globales non initialisées à l'ancienne) | vide grâce à `-fno-common`, gardé par robustesse |
+| `/DISCARD/` | sections supprimées | `.comment`, `.note*`, `.eh_frame` |
+| `ASSERT(expr, msg)` | échec de la liaison si `expr` est faux | invariants vérifiés **à chaque build** |
+
+### 13.5 Les assertions de liaison
+
+Une assertion de liaison transforme une hypothèse en erreur de compilation. SAMOS vérifie :
+
+- `__kernel_start == 0x00100000` : le noyau commence à 1 Mio ;
+- `.bss` alignée sur 4 au début et à la fin : nécessaire à `rep stosd`, qui écrit des mots de 4 octets ;
+- `boot_stack_bottom == __stack_guard_end` : la pile suit **immédiatement** la zone de garde, sans trou ;
+- `boot_stack_top % 16 == 0` : condition de départ de la démonstration d'alignement (§6.3) ;
+- `__kernel_end <= 0x00400000` : l'image tient sous 4 Mio. **[CHOIX]** C'est une hypothèse simplificatrice pour K0.6, révisable. Elle évite qu'une croissance silencieuse du noyau ne viole les hypothèses de la pagination initiale.
+
+---
+
+## 14. Disposition mémoire du noyau et modèle de permissions (K0.2)
+
+### 14.1 Carte de l'image (build actuel)
+
+Valeurs réellement affichées au démarrage par `kernel_layout_print()` :
+
+```text
+SAMOS: kernel image 0x00100000-0x0010a000
+SAMOS:   0x00100000-0x00102000 r-x  .text
+SAMOS:   0x00102000-0x00103000 r--  .rodata
+SAMOS:   0x00103000-0x00105000 rw-  .data+.bss
+SAMOS:   0x00105000-0x00106000 ---G stack-guard
+SAMOS:   0x00106000-0x0010a000 rw-  boot-stack
+```
+
+L'image occupe 40 Kio en mémoire. Le fichier n'en contient qu'environ 16 Kio de contenu chargé, car `.bss` et `.bootstack` sont NOBITS.
+
+### 14.2 Le principe W^X
+
+**W^X** (*write XOR execute*) : aucune page ne doit être à la fois inscriptible et exécutable. Si un attaquant, ou un bogue, peut écrire dans une zone exécutable, il peut injecter du code. Si une zone de code est non inscriptible et une zone de données non exécutable, l'injection directe de code devient impossible et il faut recourir à des techniques plus complexes, comme le ROP.
+
+**[ARCH]** Sur i386 sans PAE, la pagination ne connaît que le bit **R/W**. Il n'y a **pas** de bit « non exécutable » : toute page présente est exécutable. Le bit NX (*Execute Disable*, bit 63 des entrées) n'existe qu'avec PAE ou en mode long (Intel SDM vol. 3A, §4.6). Conséquence importante pour K0.6 :
+
+| Protection | i386 sans PAE (K0) | PAE / x86-64 (K1) |
+|---|---|---|
+| `.text` non inscriptible | ✅ (R/W = 0 + CR0.WP = 1) | ✅ |
+| `.rodata` non inscriptible | ✅ | ✅ |
+| données non exécutables | ❌ impossible | ✅ (NX) |
+| zone de garde non présente | ✅ (P = 0) | ✅ |
+
+Les permissions `LAYOUT_*` de `layout.h` sont donc un **modèle d'intention**. En K0.6, seule une partie sera appliquée par le matériel. C'est une limite documentée, et l'un des arguments techniques en faveur de la migration x86-64.
+
+### 14.3 L'API de disposition
+
+`kernel_layout()` renvoie un tableau de régions contiguës, alignées sur 4 Kio, sans chevauchement, couvrant exactement `[__kernel_start, __kernel_end)`. Ces propriétés sont vérifiées par `kernel_layout_valid()` à chaque démarrage, et le noyau s'arrête si elles sont violées. Cette table servira deux fois en K0.6 :
+
+- pour **réserver** l'image du noyau dans l'allocateur de frames physiques, afin de ne jamais allouer une page du noyau ;
+- pour **créer les entrées de pages** avec les bons droits.
+
+---
+
+## 15. Pile de démarrage : zone de garde et peinture (K0.2)
+
+### 15.1 Le problème
+
+Une pile n'a pas de limite matérielle en mode protégé à segments plats : `push` décrémente ESP sans contrôle. Un débordement, par récursion ou par gros tableau local, écrit sous `boot_stack_bottom`. En K0.1, cette zone était le reste de `.bss`, notamment `g_bootinfo` : la corruption aurait été **silencieuse**.
+
+### 15.2 La solution en deux temps
+
+1. **K0.2 (logiciel).** La pile a sa propre section `.bootstack`, précédée d'une **zone de garde de 4 Kio** qui ne contient aucune donnée. Un débordement modéré (< 4 Kio) n'écrase que la garde. Celle-ci est **peinte** au démarrage avec le motif `0x5AFE57AC`, et `boot_stack_guard_intact()` vérifie qu'elle est intacte.
+2. **K0.6 (matériel).** La page de garde sera **non présente** (P = 0) dans les tables de pages. Le premier accès provoquera une faute de page (#PF, vecteur 14) **au moment même** du débordement, et non a posteriori.
+
+**Limites de la détection logicielle :**
+
+- elle est **a posteriori** : on constate la corruption après coup, sans savoir quand elle a eu lieu ;
+- un débordement de plus de 4 Kio sauterait la garde sans forcément l'écrire (par exemple un grand tableau local non initialisé suivi d'une écriture lointaine) ;
+- une écriture légitime égale au motif n'est pas détectée. La probabilité est faible mais non nulle.
+
+### 15.3 Mesure de la profondeur maximale (*high-water mark*)
+
+La pile entière est peinte avant l'appel de `kmain`. Comme elle croît vers le bas, l'adresse la plus basse dont le motif a été écrasé donne la profondeur maximale atteinte :
+
+$$\text{profondeur} = \texttt{boot\_stack\_top} - \min\{\,a \mid \text{mot}(a) \neq \text{motif}\,\}$$
+
+Mesure réelle après démarrage normal : **116 octets** sur 16 384. L'autotest vérifie que l'appel d'une fonction utilisant un tableau local de 2 Kio fait bien monter la mesure à au moins 2048 octets. L'instrument est donc réellement sensible. Cette mesure sera précieuse en K0.4/K0.5 pour dimensionner la pile face aux cadres d'interruption.
+
+### 15.4 Ordre des opérations dans `_start`
+
+La peinture a lieu **après** l'effacement de `.bss` et **avant** la préparation des arguments, quand la pile est vide. Écrire le motif sur des cases déjà utilisées détruirait des données. À ce moment, la seule utilisation précédente est le couple `push 0 / popfd`, terminé.
+
+---
+
+## 16. Sécurité du jalon K0.2
+
+| Aspect | K0.2 |
+|---|---|
+| **Actifs** | séparation code/données, intégrité de la pile et des variables globales |
+| **Menaces** | débordement de pile corrompant `.bss` ; section mal placée créant une page W+X ; croissance du noyau violant les hypothèses mémoire ; dépendance PIC/dynamique introduite par une option de compilation |
+| **Invariants** | régions contiguës, alignées sur 4 Kio, sans chevauchement ; aucune région W+X ; garde de 4 Kio immédiatement sous la pile ; image < 4 Mio ; aucune section `.got`/`.plt`/`.dynamic`/`.interp`/`.rel*` |
+| **Protections** | `PHDRS` à permissions séparées ; `ASSERT` de liaison ; `kernel_layout_valid()` au démarrage ; zone de garde peinte ; `check_elf.sh` (sections, ordre, NOBITS) |
+| **Tests** | 18 vérifications de la suite K0.2, dont un **test négatif** (écriture simulée dans la garde → détectée, puis restaurée) ; tests négatifs de `check_elf.sh` (somme corrompue, magic absent → rejet) |
+| **Limites** | permissions non appliquées par le CPU avant K0.6 ; pas de NX possible en i386 sans PAE ; détection de débordement a posteriori seulement |
+
+---
+
+## 17. Questions de jury et réponses (K0.2)
+
+**Q1. Pourquoi ne pas laisser ld utiliser son script par défaut ?**
+Il est conçu pour un programme Linux : adresse de base `0x08048000`, segment `PT_INTERP`, sections dynamiques. Un noyau doit contrôler son adresse de chargement, l'ordre des sections (l'en-tête Multiboot en premier), les permissions des segments et les symboles de disposition.
+
+**Q2. Qu'est-ce qu'un symbole `__bss_start` en C ?**
+Une adresse attribuée par l'éditeur de liens, sans stockage associé. On le déclare comme un tableau (`extern char __bss_start[]`) et on n'utilise que son adresse. Lire son contenu reviendrait à lire le premier octet de `.bss`.
+
+**Q3. Pourquoi aligner chaque section sur 4 Kio, au prix de la mémoire perdue ?**
+Parce que la protection mémoire s'applique par page. Une page partagée entre `.text` et `.data` devrait être à la fois inscriptible et exécutable. Le coût est d'au plus 4 Kio par section, soit environ 16 Kio, négligeable devant les 128 Mio de la machine de test.
+
+**Q4. Votre noyau applique-t-il W^X ?**
+Pas encore. Le fichier ELF le déclare (segments séparés) et le noyau le vérifie sur son modèle, mais sans pagination le CPU n'applique rien. En K0.6, `.text` et `.rodata` deviendront non inscriptibles. En revanche, l'i386 sans PAE ne permet pas de rendre les données non exécutables : il faudra PAE ou le mode long pour le bit NX.
+
+**Q5. Comment détectez-vous un débordement de pile aujourd'hui ? Et demain ?**
+Aujourd'hui, par une zone de garde peinte, vérifiée par logiciel : la détection est a posteriori. Demain (K0.6), par une page non présente qui provoque une faute de page au moment exact du débordement. Ce mécanisme matériel est fiable même pour du code non instrumenté.
+
+**Q6. Comment mesurez-vous l'utilisation de la pile ?**
+Par la technique de peinture (*stack painting*) : on remplit la pile d'un motif connu, puis on cherche la case la plus basse qui ne le contient plus. L'autotest prouve la sensibilité de la mesure avec une consommation contrôlée de 2 Kio.
+
+**Q7. Différence entre VMA et LMA ?**
+La VMA est l'adresse d'exécution, pour laquelle le code est relogé. La LMA est l'adresse de chargement physique. Elles sont égales en K0 (identité) et différeraient dans un noyau *higher-half*.
+
+## Références
 
 1. Free Software Foundation, *Multiboot Specification*, version 0.6.96, §3.1 (en-tête), §3.2 (état machine), §3.3 (structure d'information).
 2. Intel Corporation, *Intel® 64 and IA-32 Architectures Software Developer's Manual* :
@@ -479,6 +643,7 @@ Non, et aucune affirmation de ce type n'est faite. Il valide ses entrées extern
 3. *System V Application Binary Interface — Intel386 Architecture Processor Supplement*, 4e éd., chap. 3 (convention d'appel, pile).
 4. TIS Committee, *Executable and Linking Format (ELF) Specification*, version 1.2.
 5. ISO/IEC 9899:2011 (C11), §4 (conformité, implémentations autonomes) et §6.7.2.1.
-6. GNU Binutils, *ld manual*, chapitre « Linker Scripts » (`PHDRS`, `KEEP`, `ASSERT`).
+6. GNU Binutils, *ld manual*, chapitre « Linker Scripts » (`SECTIONS`, `PHDRS`, `KEEP`, `NOLOAD`, `ASSERT`, `AT`).
 7. Documentation QEMU : options `-kernel` (chargeur Multiboot), `-debugcon`, périphérique `isa-debug-exit`, option `-d cpu_reset`.
 8. A. S. Tanenbaum, H. Bos, *Modern Operating Systems*, 4e éd., Pearson, 2014, chap. 1.
+9. Intel SDM vol. 3A, §4.3 (pagination 32 bits), §4.6 (droits d'accès, bit XD/NX), §2.5 (CR0.WP).

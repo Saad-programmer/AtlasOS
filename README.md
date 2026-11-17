@@ -39,7 +39,7 @@ Le but n'est pas d'assembler des bibliothèques existantes. Il s'agit de **compr
 | Jalon | Contenu | État |
 |---|---|---|
 | K0.1 | Multiboot, point d'entrée, pile, passage à `kmain` | ✅ implémenté et vérifié |
-| K0.2 | Script de liaison, sections ELF, disposition mémoire | ⏳ à venir |
+| K0.2 | Script de liaison, sections ELF, disposition mémoire | ✅ implémenté et vérifié |
 | K0.3 | VGA texte, port série COM1, journalisation, `panic` | ⏳ à venir |
 | K0.4 | GDT, IDT, exceptions CPU | ⏳ à venir |
 | K0.5 | PIC 8259, PIT, clavier PS/2, file circulaire | ⏳ à venir |
@@ -69,15 +69,17 @@ Tout le code spécifique au processeur se trouve dans `kernel/arch/i386/`. La mi
 |---|---|---|
 | En-tête Multiboot 1 | `kernel/arch/i386/boot/entry.asm` | magic `0x1BADB002`, drapeaux alignement + info mémoire |
 | Point d'entrée `_start` | `kernel/arch/i386/boot/entry.asm` | pile de 16 KiB alignée sur 16, EFLAGS remis à 0, `.bss` effacée, appel cdecl de `kmain`, boucle `cli/hlt` |
-| Script de liaison | `kernel/arch/i386/linker.ld` | chargement à 1 MiB, 3 segments R-X / R-- / RW-, symboles de disposition |
+| Script de liaison | `kernel/arch/i386/linker.ld` | chargement à 1 MiB, 3 segments R-X / R-- / RW-, sections alignées sur 4 KiB, symboles de disposition, assertions de liaison |
+| Disposition mémoire | `kernel/core/layout.c` | table des régions du noyau et de leurs droits prévus, vérifiée à chaque démarrage |
+| Pile instrumentée | `entry.asm`, `layout.c` | section `.bootstack` précédée d'une zone de garde de 4 KiB ; peinture pour mesurer la profondeur maximale et détecter un débordement |
 | Validation du démarrage | `kernel/core/bootinfo.c` | magic, bornes des adresses Multiboot, copie bornée de la ligne de commande |
 | Canal de diagnostic | `kernel/drivers/qemu_dbg.c` | port debugcon `0xE9`, sortie `isa-debug-exit` |
 | Bibliothèque minimale | `kernel/lib/string.c` | `memset`, `memcpy`, `memmove`, `memcmp`, `strlen`, `strnlen`, `strcmp`, `strncmp`, `strlcpy` |
-| Autotests noyau | `kernel/tests/` | 42 vérifications exécutées dans le noyau sous QEMU |
+| Autotests noyau | `kernel/tests/` | 60 vérifications exécutées dans le noyau sous QEMU |
 
 ## 6. Composants en cours de développement
 
-- K0.2 : renforcement et documentation de la disposition mémoire.
+- K0.3 : affichage VGA, port série COM1, journalisation, `panic`.
 
 ## 7. Composants planifiés
 
@@ -93,12 +95,13 @@ AtlasOS/
 │   │   ├── boot/entry.asm    en-tête Multiboot + _start
 │   │   ├── linker.ld         disposition de l'image
 │   │   └── include/arch/     io.h (ports d'E/S), cpu.h (registres de contrôle)
-│   ├── core/                 kmain.c, bootinfo.c
+│   ├── core/                 kmain.c, bootinfo.c, layout.c
 │   ├── drivers/              qemu_dbg.c
 │   ├── lib/                  string.c
 │   ├── include/samos/        en-têtes internes du noyau
 │   └── tests/                autotests exécutés dans le noyau
 ├── tests/
+│   ├── tools/                tests négatifs des outils de vérification
 │   ├── host/                 tests unitaires hébergés (ASan + UBSan)
 │   └── qemu/                 tests de démarrage QEMU et vérifications GDB
 ├── tools/check_elf.sh        vérifications statiques de l'image ELF
@@ -148,7 +151,14 @@ QEMU charge directement le noyau grâce à son chargeur Multiboot intégré (`-k
 SAMOS: kernel entry (SAMOS/AtlasOS 0.1.0-k0)
 SAMOS: multiboot magic ok, info at 0x00009500, flags 0x0000024f
 SAMOS: cmdline "build/samos.elf "
-SAMOS: K0.1 boot complete, halting
+SAMOS: kernel image 0x00100000-0x0010a000
+SAMOS:   0x00100000-0x00102000 r-x  .text
+SAMOS:   0x00102000-0x00103000 r--  .rodata
+SAMOS:   0x00103000-0x00105000 rw-  .data+.bss
+SAMOS:   0x00105000-0x00106000 ---G stack-guard
+SAMOS:   0x00106000-0x0010a000 rw-  boot-stack
+SAMOS: boot stack high-water 116 bytes, guard intact
+SAMOS: K0.2 boot complete, halting
 ```
 
 Quitter avec `Ctrl+C`. Débogage : `make debug`, puis dans un autre terminal `gdb build/samos.elf -ex 'target remote :1234'`.
@@ -161,7 +171,8 @@ make test
 
 | Suite | Commande | Contenu |
 |---|---|---|
-| Statique ELF | `make check-elf` | ELF32/i386, entrée = `_start`, en-tête Multiboot (offset, alignement, somme), aucun symbole indéfini, aucun segment W+X, absence d'auto-appel de `memset`/`memcpy` |
+| Statique ELF | `make check-elf` | ELF32/i386, entrée = `_start`, en-tête Multiboot (offset, alignement, somme), aucun symbole indéfini, aucun segment W+X, sections alignées/ordonnées/NOBITS, aucune section dynamique, absence d'auto-appel de `memset`/`memcpy` |
+| Outils (négatif) | `make test-tools` | `check_elf.sh` doit rejeter une image à somme corrompue ou sans en-tête |
 | Hébergés | `make test-host` | `string.c` compilé pour l'hôte avec AddressSanitizer + UBSan |
 | QEMU | `make test-qemu` | démarrage normal (sans triple fault) et autotests noyau (`-append test`) |
 | GDB | `make test-gdb` | état exact des registres à l'entrée de `kmain` ; test négatif du magic invalide |
@@ -186,12 +197,13 @@ Seuls des outils de développement standard sont utilisés : compilateur, assemb
 - Pas encore d'IDT : toute exception CPU provoquerait un triple fault.
 - Pas d'affichage VGA ni de port série. Seule la sortie debugcon de QEMU existe, invisible sur du matériel réel.
 - Pas de pagination : les permissions des segments ne sont pas appliquées par le CPU.
-- Pas de page de garde sous la pile : un débordement de pile corromprait silencieusement `.bss`.
+- La zone de garde de pile n'est vérifiée que par logiciel, a posteriori. La page de garde matérielle (non présente) viendra avec la pagination (K0.6).
+- En i386 sans PAE, le matériel ne pourra pas rendre les données non exécutables (pas de bit NX).
 - Testé uniquement sous QEMU. Sur un PC UEFI récent, le mode texte VGA ne sera pas disponible.
 
 ## 17. Feuille de route
 
-`K0.1 ✅ → K0.2 → K0.3 → K0.4 → K0.5 → K0.6 → revue K0 → (autorisation) K1 x86-64 → processus/ordonnanceur → appels système → IPC → VFS → pilotes → A0 (IA) → V0 (voix) → I0 (agent)`
+`K0.1 ✅ → K0.2 ✅ → K0.3 → K0.4 → K0.5 → K0.6 → revue K0 → (autorisation) K1 x86-64 → processus/ordonnanceur → appels système → IPC → VFS → pilotes → A0 (IA) → V0 (voix) → I0 (agent)`
 
 ## 18. Documentation
 

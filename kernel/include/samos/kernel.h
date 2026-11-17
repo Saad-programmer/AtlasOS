@@ -28,9 +28,14 @@ extern char __data_end[];
 extern char __bss_start[];
 extern char __bss_end[];
 
-/* Pile de démarrage (entry.asm) */
+/* Zone de garde et pile de démarrage (linker.ld + entry.asm, section .bootstack) */
+extern char __stack_guard_start[];
+extern char __stack_guard_end[];
 extern char boot_stack_bottom[];
 extern char boot_stack_top[];
+
+/* Motif de peinture de la pile (doit rester identique à STACK_PAINT, entry.asm). */
+#define BOOT_STACK_PAINT 0x5AFE57ACu
 
 /* Point d'entrée C, appelé par _start (entry.asm) selon la convention cdecl. */
 SAMOS_NORETURN void kmain(uint32_t magic, uint32_t mbi_phys);

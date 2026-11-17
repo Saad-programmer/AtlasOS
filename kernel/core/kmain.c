@@ -5,17 +5,19 @@
  *   magic    : valeur d'EAX laissée par le chargeur (attendu 0x2BADB002)
  *   mbi_phys : valeur d'EBX, adresse physique de struct multiboot_info
  *
- * Séquence K0.1 :
+ * Séquence (K0.1, complétée en K0.2) :
  *   1. Annoncer l'entrée dans le noyau (canal debugcon).
  *   2. Valider le magic et la structure Multiboot (bootinfo_init).
  *      En cas d'échec : message explicite puis arrêt sûr. On ne poursuit
  *      jamais avec des informations de démarrage invalides.
- *   3. Si la ligne de commande contient `test`, exécuter les autotests.
- *   4. Sinon, s'arrêter proprement (aucun autre sous-système n'existe encore).
+ *   3. K0.2 : afficher et vérifier la disposition mémoire de l'image.
+ *   4. Si la ligne de commande contient `test`, exécuter les autotests.
+ *   5. Sinon, afficher la profondeur de pile utilisée et s'arrêter proprement (aucun autre sous-système n'existe encore).
  */
 #include <samos/bootinfo.h>
 #include <samos/kernel.h>
 #include <samos/ktest.h>
+#include <samos/layout.h>
 #include <samos/qemu_dbg.h>
 #include <arch/cpu.h>
 
@@ -54,10 +56,19 @@ void kmain(uint32_t magic, uint32_t mbi_phys)
     qemu_dbg_puts(bi->cmdline);
     qemu_dbg_puts("\"\n");
 
+    kernel_layout_print();
+    if (!kernel_layout_valid()) {
+        boot_fail("kernel layout invariants violated", (uint32_t)(uintptr_t)__kernel_end);
+    }
+
     if (cmdline_has("test")) {
         ktest_run_all();
     }
 
-    qemu_dbg_puts("SAMOS: K0.1 boot complete, halting\n");
+    qemu_dbg_puts("SAMOS: boot stack high-water ");
+    qemu_dbg_put_dec32((uint32_t)boot_stack_high_water());
+    qemu_dbg_puts(" bytes, guard ");
+    qemu_dbg_puts(boot_stack_guard_intact() ? "intact" : "CORRUPTED");
+    qemu_dbg_puts("\nSAMOS: K0.2 boot complete, halting\n");
     cpu_halt_forever();
 }

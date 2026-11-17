@@ -212,6 +212,134 @@ K0.1 fournit à tous les jalons suivants :
 ```bash
 git clone https://github.com/saad-programmer/atlasos.git && cd atlasos
 sudo apt install clang nasm binutils make qemu-system-x86 gdb gcc
-make clean && make test        # 23 vérifications [PASS] attendues, aucune [FAIL]
+make clean && make test        # historique K0.1 : 23 lignes [PASS] attendues, aucune [FAIL]
 make run                       # affiche les 4 lignes de la section F ; Ctrl+C pour quitter
+```
+
+---
+
+## Jalon K0.2 — Script de liaison, sections ELF et disposition mémoire
+
+### A. Objectif
+
+Rendre la disposition mémoire de l'image **explicite, vérifiée et exploitable** :
+
+- isoler la pile dans sa propre section, avec une zone de garde ;
+- mesurer l'utilisation de la pile ;
+- exposer une table des régions et de leurs droits, dont K0.6 aura besoin pour réserver le noyau et configurer la pagination ;
+- renforcer les vérifications statiques de l'ELF ;
+- prouver que le vérificateur sait échouer.
+
+### B. État de départ
+
+K0.1 avait déjà un script de liaison fonctionnel (1 MiB, 3 segments). La pile était dans `.bss`, directement au-dessus des autres variables globales. Un débordement les aurait corrompues sans aucun signal.
+
+### C. Fichiers créés et modifiés
+
+| Fichier | Changement |
+|---|---|
+| `kernel/arch/i386/boot/entry.asm` | pile déplacée dans `.bootstack` (alignée 4 KiB) ; constante `STACK_PAINT` ; peinture de `[__stack_guard_start, boot_stack_top)` avant l'appel de `kmain` |
+| `kernel/arch/i386/linker.ld` | section de sortie `.bootstack (NOLOAD)` : 4 KiB de garde puis la pile ; 3 nouvelles `ASSERT` (pile collée à la garde, sommet aligné sur 16, noyau < 4 MiB) |
+| `kernel/include/samos/kernel.h` | symboles `__stack_guard_start/end`, `BOOT_STACK_PAINT` |
+| `kernel/include/samos/layout.h`, `kernel/core/layout.c` | **nouveaux** : table des régions, `kernel_layout_valid()`, `kernel_layout_print()`, `boot_stack_high_water()`, `boot_stack_guard_intact()` |
+| `kernel/core/kmain.c` | affichage et vérification de la disposition (arrêt si invalide) ; affichage de la profondeur de pile |
+| `kernel/tests/test_layout.c` | **nouveau** : suite K0.2 (18 vérifications) |
+| `kernel/tests/test_boot.c` | test de placement de pile adapté (pile hors de `.bss`) |
+| `tools/check_elf.sh` | vérification des sections (présence, alignement 4 KiB, ordre, NOBITS, absence de sections dynamiques/PIC) |
+| `tests/tools/check_elf_negative.sh` | **nouveau** : tests négatifs du vérificateur |
+| `tests/qemu/cases.sh`, `Makefile` | nouveaux motifs attendus, cible `test-tools`, nouvelles sources |
+
+### D. Séquence d'implémentation
+
+1. Création de la section `.bootstack` dans `entry.asm` (`nobits alloc noexec write align=4096`).
+2. Section de sortie correspondante dans `linker.ld`, après `.bss` :
+   - `__stack_guard_start` ;
+   - `. += PAGE_SIZE` ;
+   - `__stack_guard_end` ;
+   - `KEEP(*(.bootstack))`.
+
+   La pile termine ainsi l'image : `boot_stack_top == __kernel_end`.
+3. Ajout de la peinture dans `_start`, après l'effacement de `.bss`, au moment où la pile est vide.
+4. `layout.c` : la table des régions est remplie à l'exécution, car les adresses des symboles du linker ne sont pas des constantes de compilation en C. Le code vérifie la contiguïté, l'alignement et la couverture exacte de l'image.
+5. Tests : la suite K0.2 comprend un **test négatif** qui écrit dans la garde, vérifie la détection, puis restaure le motif.
+6. `check_elf.sh` : nouvelles vérifications de sections, puis `check_elf_negative.sh`.
+
+### E. Compilation
+
+Inchangée : `make`. Nouvelle disposition (`readelf -SW build/samos.elf`) :
+
+```text
+.text      PROGBITS 0x00100000   AX  align 4096
+.rodata    PROGBITS 0x00102000   A   align 4096
+.data      PROGBITS 0x00103000   WA  align 4096
+.bss       NOBITS   0x00104000   WA  align 4096
+.bootstack NOBITS   0x00105000   WA  align 4096
+```
+
+### F. Exécution
+
+`make run`. Sortie observée :
+
+```text
+SAMOS: kernel entry (SAMOS/AtlasOS 0.1.0-k0)
+SAMOS: multiboot magic ok, info at 0x00009500, flags 0x0000024f
+SAMOS: cmdline "build/samos.elf "
+SAMOS: kernel image 0x00100000-0x0010a000
+SAMOS:   0x00100000-0x00102000 r-x  .text
+SAMOS:   0x00102000-0x00103000 r--  .rodata
+SAMOS:   0x00103000-0x00105000 rw-  .data+.bss
+SAMOS:   0x00105000-0x00106000 ---G stack-guard
+SAMOS:   0x00106000-0x0010a000 rw-  boot-stack
+SAMOS: boot stack high-water 116 bytes, guard intact
+SAMOS: K0.2 boot complete, halting
+```
+
+### G. Tests
+
+```bash
+make clean && make test
+```
+
+Résultat observé : **34 lignes `[PASS]`, aucune `[FAIL]`**, statut de sortie 0.
+
+| Test | Résultat attendu | Résultat observé |
+|---|---|---|
+| Sections présentes, alignées sur 4 KiB, ordonnées | conforme | **PASS** (5 sections) |
+| Aucune section `.got/.plt/.dynamic/.interp/.rel*/.eh_frame/.note` | aucune | **PASS** |
+| `.bss` et `.bootstack` NOBITS | oui | **PASS** |
+| `check_elf.sh` rejette une somme Multiboot corrompue | rejet, diagnostic « checksum invalide » | **PASS** |
+| `check_elf.sh` rejette une image sans en-tête | rejet, diagnostic « introuvable » | **PASS** |
+| Autotests noyau (K0.1 + K0.2) | statut 33 | **PASS** (60 vérifications, 0 échec) |
+| Garde intacte après démarrage, profondeur mesurée | intacte, 0 < profondeur < 16 KiB | **PASS** (116 octets) |
+| Sensibilité de la mesure (tableau local de 2 KiB) | profondeur ≥ 2048 | **PASS** |
+| Écriture simulée dans la garde (négatif) | détectée, puis restaurée | **PASS** |
+| Régression K0.1 (ABI GDB, magic invalide) | inchangé | **PASS** |
+
+### H. Débogage
+
+1. **Motif de test absent** `"---G  stack-guard"`. Le noyau affichait `---G stack-guard`, avec une seule espace, car la fonction `print_perms` écrit 4 caractères pour la garde contre 3 + 1 espace pour les autres régions. L'erreur était dans le motif du test, corrigé ; le noyau était correct.
+2. **Vérification du vérificateur.** Avant d'en faire un test permanent, l'octet de somme de contrôle d'une copie de l'ELF a été mis à zéro à la main. `check_elf.sh` a bien répondu `[FAIL] checksum invalide (somme=4294967045)` avec le statut 1.
+
+### I. Intégration
+
+- `layout.c` dépend uniquement des symboles du linker et du canal de diagnostic.
+- La table des régions sera consommée par l'allocateur physique (réservation de `[__kernel_start, __kernel_end)`) et par la pagination (droits par région, garde non présente) en K0.6.
+- `boot_stack_high_water()` servira à dimensionner la pile face aux interruptions (K0.4/K0.5).
+
+### J. Critères d'achèvement
+
+- [x] Toutes les sections chargées sont alignées sur 4 KiB, ordonnées, sans chevauchement (vérifié statiquement **et** à l'exécution).
+- [x] Aucune région W+X dans le modèle ni dans les segments ELF.
+- [x] Zone de garde de 4 KiB sous la pile, détection logicielle démontrée par un test négatif.
+- [x] Mesure de la profondeur de pile, avec sensibilité démontrée.
+- [x] Le vérificateur ELF prouve qu'il sait échouer.
+- [x] Aucune régression K0.1.
+- [x] Documentation à jour (`Details.md` §13-17).
+
+### K. Reproduction
+
+```bash
+git checkout <commit K0.2>
+make clean && make test    # 34 lignes [PASS], aucune [FAIL]
+make run                   # sortie de la section F
 ```

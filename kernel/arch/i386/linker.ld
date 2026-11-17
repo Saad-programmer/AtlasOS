@@ -78,6 +78,21 @@ SECTIONS
         __bss_end = .;
     } :data
 
+    /* K0.2 — Zone de garde puis pile de démarrage, dans le segment data.
+     * NOLOAD : type NOBITS (aucun octet dans le fichier).
+     *   [__stack_guard_start, __stack_guard_end) : 4 KiB jamais utilisés
+     *   volontairement. Peinte au démarrage, vérifiée par logiciel ; en K0.6
+     *   cette page sera laissée NON PRÉSENTE dans les tables de pages, de
+     *   sorte qu'un débordement de pile déclenche une faute de page.
+     *   [boot_stack_bottom, boot_stack_top) : pile de 16 KiB (entry.asm). */
+    .bootstack ALIGN(PAGE_SIZE) (NOLOAD) :
+    {
+        __stack_guard_start = .;
+        . += PAGE_SIZE;
+        __stack_guard_end = .;
+        KEEP(*(.bootstack))
+    } :data
+
     . = ALIGN(PAGE_SIZE);
     __kernel_end = .;
 
@@ -95,3 +110,8 @@ SECTIONS
 ASSERT(__kernel_start == KERNEL_LOAD_ADDR, "noyau non lie a 1 MiB")
 ASSERT((__bss_start % 4) == 0, ".bss non alignee sur 4")
 ASSERT((__bss_end % 4) == 0, "fin de .bss non alignee sur 4")
+ASSERT(boot_stack_bottom == __stack_guard_end, "la pile doit suivre immediatement la zone de garde")
+ASSERT((boot_stack_top % 16) == 0, "sommet de pile non aligne sur 16")
+/* K0.6 identifiera l'image du noyau dans la carte mémoire ; on borne sa
+ * taille pour garder des hypothèses simples (révisable). */
+ASSERT(__kernel_end <= 0x00400000, "le noyau depasse 4 MiB : reviser la disposition")

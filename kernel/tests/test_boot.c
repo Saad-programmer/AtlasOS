@@ -53,7 +53,7 @@ static void test_layout(void)
     KTEST_CHECK(__rodata_end <= __data_start);
     KTEST_CHECK(__data_end <= __bss_start);
     KTEST_CHECK(__bss_end <= __kernel_end);
-    KTEST_CHECK(boot_stack_bottom >= __bss_start && boot_stack_top <= __bss_end);
+    KTEST_CHECK(boot_stack_bottom >= __bss_end && boot_stack_top <= __kernel_end);
     /* Le code de kmain doit se trouver dans .text */
     KTEST_CHECK((char *)(uintptr_t)&kmain >= __text_start && (char *)(uintptr_t)&kmain < __text_end);
 }

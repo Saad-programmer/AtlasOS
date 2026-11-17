@@ -47,6 +47,7 @@ unsigned ktest_failures(void)
 void ktest_run_all(void)
 {
     ktest_suite_boot();
+    ktest_suite_layout();
 
     out("[TEST] checks=");
     qemu_dbg_put_dec32(g_checks);

@@ -11,9 +11,13 @@
 TIMEOUT=3 run_case k01_boot_halt "" 124 \
     "SAMOS: kernel entry" \
     "SAMOS: multiboot magic ok" \
-    "SAMOS: K0.1 boot complete, halting"
+    "SAMOS: kernel image 0x00100000-" \
+    "---G stack-guard" \
+    "bytes, guard intact" \
+    "SAMOS: K0.2 boot complete, halting"
 
 # K0.1/K0.2 — Autotests noyau.
 run_case k01_selftest "test" 33 \
     "[TEST] suite K0.1/K0.2 boot" \
+    "[TEST] suite K0.2 layout" \
     "[TEST] ALL TESTS PASSED"

@@ -67,15 +67,17 @@ ASM_SRCS := kernel/arch/$(ARCH)/boot/entry.asm
 
 C_SRCS := kernel/core/kmain.c \
           kernel/core/bootinfo.c \
+          kernel/core/layout.c \
           kernel/drivers/qemu_dbg.c \
           kernel/lib/string.c \
           kernel/tests/ktest.c \
-          kernel/tests/test_boot.c
+          kernel/tests/test_boot.c \
+          kernel/tests/test_layout.c
 
 OBJS := $(patsubst %.asm,$(BUILD)/%.o,$(ASM_SRCS)) \
         $(patsubst %.c,$(BUILD)/%.o,$(C_SRCS))
 
-.PHONY: all run debug check-elf test test-host test-qemu test-gdb clean
+.PHONY: all run debug check-elf test test-tools test-host test-qemu test-gdb clean
 
 all: $(KERNEL)
 
@@ -101,6 +103,9 @@ debug: $(KERNEL)
 check-elf: $(KERNEL)
 	tools/check_elf.sh $(KERNEL)
 
+test-tools: $(KERNEL)
+	tests/tools/check_elf_negative.sh $(KERNEL)
+
 test-host:
 	tests/host/run.sh
 
@@ -110,7 +115,7 @@ test-qemu: $(KERNEL)
 test-gdb: $(KERNEL)
 	tests/qemu/gdb_checks.sh $(KERNEL)
 
-test: check-elf test-host test-qemu test-gdb
+test: check-elf test-tools test-host test-qemu test-gdb
 
 clean:
 	rm -rf $(BUILD)

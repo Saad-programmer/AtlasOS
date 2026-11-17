@@ -78,7 +78,30 @@ while read -r va pa flg; do
 done <<<"$seg"
 [ "$nload" -ge 2 ] && pass "$nload segments PT_LOAD, aucun W+X, >= 1 MiB, identite" || bad "segments PT_LOAD inattendus"
 
-# --- 5. Récursion involontaire de memset/memcpy ---------------------------------
+# --- 5. Sections (K0.2) --------------------------------------------------------
+# Format readelf -SW : [Nr] Name Type Addr Off Size ES Flg Lk Inf Al
+secs=$(readelf -SW "$ELF" | sed 's/^ *\[ *[0-9]*\] *//' | awk 'NF >= 9 && $1 ~ /^\./ {print $1, $2, $3, $NF}')
+for want in .text .rodata .data .bss .bootstack; do
+    line=$(awk -v n="$want" '$1==n' <<<"$secs")
+    if [ -z "$line" ]; then bad "section $want absente"; continue; fi
+    read -r _ _ addr al <<<"$line"
+    if [ $((0x$addr % 4096)) -eq 0 ]; then pass "section $want a 0x$addr (alignee 4 KiB)"; else bad "section $want non alignee (0x$addr)"; fi
+done
+# Sections interdites dans un noyau statique non PIC : leur présence révélerait
+# du code dynamique/PIC ou des données de déroulement inattendues.
+forbidden=$(awk '$1 ~ /^\.(got|plt|dynamic|interp|dynsym|dynstr|rel|rela|eh_frame|note|multiboot$)/ {print $1}' <<<"$secs")
+if [ -z "$forbidden" ]; then pass "aucune section dynamique/PIC/.eh_frame/.note"; else bad "sections inattendues: $forbidden"; fi
+# Ordre croissant des adresses des sections chargées
+order=$(awk '$1 ~ /^\.(text|rodata|data|bss|bootstack)$/ {print $3}' <<<"$secs" | tr '\n' ' ')
+prev=0; ok=1
+for a in $order; do [ $((0x$a)) -gt "$prev" ] || ok=0; prev=$((0x$a)); done
+[ "$ok" -eq 1 ] && pass "ordre .text < .rodata < .data < .bss < .bootstack" || bad "ordre des sections incorrect"
+# .bss et .bootstack doivent être NOBITS (aucun octet dans le fichier)
+for nb in .bss .bootstack; do
+    awk -v n="$nb" '$1==n && $2=="NOBITS" {f=1} END {exit !f}' <<<"$secs" && pass "$nb NOBITS" || bad "$nb n'est pas NOBITS"
+done
+
+# --- 6. Récursion involontaire de memset/memcpy ---------------------------------
 for fn in memset memcpy memmove; do
     if objdump -d "$ELF" --no-show-raw-insn | awk -v f="$fn" '
         $0 ~ "<" f ">:$" { inside = 1; next }

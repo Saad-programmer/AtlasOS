@@ -46,6 +46,12 @@ MB_HEADER_CHECKSUM  equ -(MB_HEADER_MAGIC + MB_HEADER_FLAGS)
 ; multiple de 16 pour conserver l'alignement de stack_top.
 KERNEL_STACK_SIZE   equ 16384
 
+; Motif de « peinture » de la pile et de sa zone de garde (K0.2). Toute case
+; encore égale à ce motif n'a jamais été écrite : cela permet de mesurer la
+; profondeur maximale atteinte et de détecter un débordement en logiciel
+; avant que la pagination (K0.6) ne fournisse une vraie page de garde.
+STACK_PAINT         equ 0x5AFE57AC
+
 ; ---------------------------------------------------------------------------
 ; En-tête Multiboot.
 ; Section dédiée, placée en TOUT PREMIER par le script de liaison afin d'être
@@ -59,10 +65,13 @@ multiboot_header:
     dd MB_HEADER_CHECKSUM
 
 ; ---------------------------------------------------------------------------
-; Pile de démarrage, dans .bss (n'occupe pas de place dans le fichier ELF).
-; La pile x86 croît vers les adresses basses : ESP démarre à stack_top.
+; Pile de démarrage (K0.2 : section dédiée .bootstack, NOBITS).
+; Le script de liaison place sous cette section une zone de garde de 4 KiB
+; (__stack_guard_start .. __stack_guard_end). La pile x86 croît vers les
+; adresses basses : ESP démarre à boot_stack_top ; un débordement descend
+; d'abord dans la zone de garde, et non dans les variables de .bss.
 ; ---------------------------------------------------------------------------
-section .bss nobits alloc noexec write align=16
+section .bootstack nobits alloc noexec write align=4096
 global boot_stack_bottom
 global boot_stack_top
 boot_stack_bottom:
@@ -77,6 +86,7 @@ global _start
 extern kmain
 extern __bss_start                  ; définis par linker.ld
 extern __bss_end
+extern __stack_guard_start
 
 _start:
     ; Les interruptions sont déjà masquées (IF=0) selon Multiboot, mais aucune
@@ -111,7 +121,17 @@ _start:
     xor eax, eax
     rep stosd                       ; DF=0 : remplissage croissant
 
-    ; 4) Préparer l'appel cdecl : kmain(uint32_t magic, uint32_t mbi_phys)
+    ; 4) Peinture de la zone de garde et de la pile avec STACK_PAINT.
+    ;    [__stack_guard_start, boot_stack_top) est contiguë (linker.ld).
+    ;    La pile est vide à cet instant : l'écraser ne perd rien.
+    mov edi, __stack_guard_start
+    mov ecx, boot_stack_top
+    sub ecx, edi
+    shr ecx, 2
+    mov eax, STACK_PAINT
+    rep stosd
+
+    ; 5) Préparer l'appel cdecl : kmain(uint32_t magic, uint32_t mbi_phys)
     ;    Les arguments sont empilés de droite à gauche.
     ;    Règle d'alignement (ABI i386 System V, appliquée par -mstack-alignment=16) :
     ;    ESP doit être multiple de 16 JUSTE AVANT l'instruction call, de sorte
