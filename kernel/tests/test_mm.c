@@ -431,6 +431,70 @@ static void test_vmm_unmap_refs(void)
     KTEST_CHECK(total_refs() == 0 && pmm_core_check(p) == 0);
 }
 
+/* K0.7-M2.4e — Scénario E5 d'origine (docs/review/evidence, E5) rejoué :
+ * en K0.6, pmm_free_frame() acceptait un cadre encore projeté, qui était
+ * ensuite redistribué tout en restant projeté. */
+static void test_e5_scenario(void)
+{
+    const struct pmm *p = pmm_state();
+    const uint32_t va = 0xD0030000u;
+    uint32_t pa = 0;
+    /* 1, 2. Allouer A, le projeter, y écrire par la projection dynamique */
+    uint32_t A = pmm_alloc_frame();
+    KTEST_CHECK(A != 0 && vmm_map(va, A, PTE_WRITE) == SAMOS_OK);
+    KTEST_CHECK(mem_probe_write((void *)(uintptr_t)va, 0xE5E5E5E5u) == 0);
+    /* 3, 4. Libération pendant la projection : refusée */
+    uint32_t fc = p->free_count;
+    KTEST_CHECK(pmm_free_frame(A) == SAMOS_EBUSY);
+    /* 5. Contenu, type, compteur, traduction intacts */
+    KTEST_CHECK(*(volatile uint32_t *)(uintptr_t)A == 0xE5E5E5E5u);
+    KTEST_CHECK(pmm_core_type(p, A >> PAGE_SHIFT) == FRAME_ALLOCATED && pmm_refs(A) == 1);
+    KTEST_CHECK(p->free_count == fc);
+    KTEST_CHECK(vmm_translate(va, &pa, 0) && pa == A);
+    /* 6. Une nouvelle allocation ne réutilise pas A */
+    uint32_t B = pmm_alloc_frame();
+    KTEST_CHECK(B != 0 && B != A);
+    KTEST_CHECK(*(volatile uint32_t *)(uintptr_t)A == 0xE5E5E5E5u);   /* A non remis à zéro */
+    KTEST_CHECK(pmm_free_frame(B) == SAMOS_OK);
+    /* 7, 8. Retrait de la projection : compteur à 0, plus de traduction */
+    KTEST_CHECK(vmm_unmap(va, 0) == SAMOS_OK && pmm_refs(A) == 0);
+    KTEST_CHECK(!vmm_translate(va, 0, 0));
+    /* 9. Libération de A désormais acceptée */
+    KTEST_CHECK(pmm_free_frame(A) == SAMOS_OK && pmm_core_type(p, A >> PAGE_SHIFT) == FRAME_FREE);
+    /* 10. Réallocation de A (next-fit : on alloue jusqu'à le retrouver) :
+     *     aucune projection résiduelle, contenu remis à zéro. */
+    uint32_t got = 0, n = 0, first = 0, last = 0, h;
+    while ((h = pmm_alloc_frame()) != 0) {
+        if (n == 0) first = h;
+        last = h;
+        n++;
+        if (h == A) { got = h; break; }
+    }
+    KTEST_CHECK(got == A);
+    KTEST_CHECK(*(volatile uint32_t *)(uintptr_t)A == 0 && pmm_refs(A) == 0);
+    KTEST_CHECK(!vmm_translate(va, 0, 0));
+    KTEST_CHECK(mem_probe_read((const void *)(uintptr_t)va, &pa) == -1);
+    uint32_t lo = (first < last) ? first : last, hi = (first < last) ? last : first;
+    for (uint32_t ph = lo; ph <= hi && n > 0; ph += PAGE_SIZE) {
+        if (pmm_core_type(p, ph >> PAGE_SHIFT) == FRAME_ALLOCATED && pmm_refs(ph) == 0 &&
+            pmm_free_frame(ph) == SAMOS_OK) {
+            n--;
+        }
+    }
+    KTEST_CHECK(n == 0);
+
+    /* Second scénario : deux projections dynamiques vers le même cadre. */
+    uint32_t C = pmm_alloc_frame();
+    KTEST_CHECK(vmm_map(va, C, PTE_WRITE) == SAMOS_OK && vmm_map(va + PAGE_SIZE, C, 0) == SAMOS_OK);
+    KTEST_CHECK(pmm_refs(C) == 2 && pmm_free_frame(C) == SAMOS_EBUSY);
+    KTEST_CHECK(vmm_unmap(va, 0) == SAMOS_OK && pmm_refs(C) == 1);
+    KTEST_CHECK(pmm_free_frame(C) == SAMOS_EBUSY);                 /* une projection subsiste */
+    KTEST_CHECK(vmm_translate(va + PAGE_SIZE, 0, 0));
+    KTEST_CHECK(vmm_unmap(va + PAGE_SIZE, 0) == SAMOS_OK && pmm_refs(C) == 0);
+    KTEST_CHECK(pmm_free_frame(C) == SAMOS_OK);
+    KTEST_CHECK(total_refs() == 0 && pmm_core_check(p) == 0);
+}
+
 void ktest_suite_mm(void)
 {
     ktest_suite("K0.6 mm");
@@ -445,4 +509,5 @@ void ktest_suite_mm(void)
     test_kernel_refs();
     test_vmm_refs();
     test_vmm_unmap_refs();
+    test_e5_scenario();
 }

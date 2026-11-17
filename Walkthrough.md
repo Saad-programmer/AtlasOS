@@ -1134,3 +1134,14 @@ Premier sous-jalon de M2.4 (correction de E5), limité au cœur pur. `paging.c` 
 - **Contre-épreuves :** C1 (pas de décrémentation) donne un statut 35 avec des échecs ciblés ; C2 (`pmm_unref` défaillant) donne un arrêt explicite `assertion failed: e == SAMOS_OK`, statut 37 ; aucun triple fault.
 - **Validation :** `make clean && make test` donne 101 `[PASS]`, 0 `[FAIL]`, 26 cas QEMU sur 26 ; compilation parallèle propre réussie ; 341 vérifications noyau.
 - **E5 reste ouvert** (M2.4e : démonstration de bout en bout).
+
+### K0.7-M2.4e — Validation finale de E5
+
+- **`test_e5_scenario`** (noyau) : les 10 étapes du scénario d'origine, plus un second scénario à deux projections. Les autotests passent de 341 à 367 vérifications, 0 échec.
+- **Erreur de méthode corrigée.** Une première exécution affichait « 341 vérifications » alors que la compilation avait échoué (variable inutilisée) : QEMU avait démarré l'ancien binaire. Les exécutions suivantes sont conditionnées à la réussite de la compilation.
+- **Contre-épreuves** (statut 35, échecs relevés *dans* le scénario E5, sans triple fault) :
+  - X1 (pas de `pmm_ref`) et X2 (pas de refus `EBUSY`) reproduisent E5 d'origine : A est libéré puis redistribué comme B, et son contenu est écrasé ;
+  - X3 (pas de `pmm_unref`) : le compteur reste à 1 et A n'est plus jamais libérable.
+- **Ordre de `vmm_unmap()`** : l'analyse montre que `pmm_unref()` ne peut pas échouer dans un état valide (hypothèse documentée dans la conception, section 15). Aucune modification nécessaire.
+- **Validation :** `make clean && make test` donne 101 `[PASS]`, 0 `[FAIL]`, 26 cas QEMU sur 26 (RAM de 16 MiB à 4 GiB, autotests à 128 et 512 MiB, fautes de page, débordement de pile, production) ; compilation parallèle propre réussie.
+- **E5 corrigé et démontré.** E3 reste ouvert (M2.5).
