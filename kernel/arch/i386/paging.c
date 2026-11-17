@@ -130,19 +130,50 @@ samos_err_t vmm_map(uint32_t va, uint32_t pa, uint32_t flags)
     return map_page(va, pa, flags, true);
 }
 
+/*
+ * K0.7-M2.4d — Suppression transactionnelle d'une projection dynamique.
+ * Distinction compté / non compté, sans état supplémentaire :
+ *   (a) toute adresse < idmap_top appartient à l'identité permanente, complète
+ *       dès paging_init (vmm_map ne peut rien y ajouter : chaque page y est
+ *       présente, sauf la page nulle et la garde, interdites par E1/E2)
+ *       => refusée (EPERM), jamais supprimée ;
+ *   (b) au-delà, la PTE vient de vmm_map (compté). Le type d'un cadre ne peut
+ *       pas changer tant qu'il est projeté (ALLOCATED référencé non libérable ;
+ *       KERNEL, RESERVED, PAGETABLE sans transition) : « ALLOCATED maintenant »
+ *       équivaut donc à « une référence a été prise au map ».
+ * Ordre : vérifier que la référence existe, PUIS effacer la PTE et invalider
+ * le TLB, PUIS relâcher la référence (ne peut plus échouer). En cas de refus,
+ * la projection reste intacte ; aucune PTE présente ne désigne jamais un
+ * cadre ALLOCATED sans référence.
+ */
 samos_err_t vmm_unmap(uint32_t va, uint32_t *pa)
 {
-    uint32_t *pt = get_table(va & PTE_FRAME, false);
+    if ((va & 0xFFFu) != 0) {
+        return SAMOS_EINVAL;                   /* K0.6 arrondissait silencieusement */
+    }
+    if (va < g_idmap_top) {
+        return SAMOS_EPERM;                    /* identité permanente */
+    }
+    uint32_t *pt = get_table(va, false);
     if (pt == 0 || !(pt[PT_INDEX(va)] & PTE_PRESENT)) {
         return SAMOS_ENOENT;
     }
+    uint32_t frame = pt[PT_INDEX(va)] & PTE_FRAME;
+    bool counted = pmm_core_type(pmm_state(), frame >> PAGE_SHIFT) == FRAME_ALLOCATED;
+    if (counted && pmm_refs(frame) == 0) {
+        return SAMOS_EINVAL;                   /* incohérence : on ne touche à rien */
+    }
     if (pa != 0) {
-        *pa = pt[PT_INDEX(va)] & PTE_FRAME;
+        *pa = frame;
     }
     pt[PT_INDEX(va)] = 0;
     /* Indispensable : sans INVLPG, le TLB peut conserver l'ancienne
      * traduction et l'accès continuerait de réussir (vérifié par autotest). */
-    cpu_invlpg((const void *)(uintptr_t)(va & PTE_FRAME));
+    cpu_invlpg((const void *)(uintptr_t)va);
+    if (counted) {
+        samos_err_t e = pmm_unref(frame);
+        KASSERT(e == SAMOS_OK);                /* garanti par la vérification préalable */
+    }
     return SAMOS_OK;
 }
 

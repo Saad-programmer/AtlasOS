@@ -181,9 +181,8 @@ static void test_map_unmap(void)
     KTEST_CHECK(mem_probe_write((void *)(uintptr_t)va, 1) == -1);
     KTEST_CHECK(mem_probe_read((const void *)(uintptr_t)va, &out) == 0 && out == 0xA5A5A5A5u);
     KTEST_CHECK(vmm_unmap(va, 0) == SAMOS_OK);
-    KTEST_CHECK(pmm_refs(frame) == 2);   /* 2 projections réussies ; EEXIST et EINVAL sans référence */
-    /* K0.7-M2.4c : vmm_unmap ne relâche pas encore la référence (M2.4d) : relâchement explicite temporaire. */
-    KTEST_CHECK(pmm_unref(frame) == SAMOS_OK && pmm_unref(frame) == SAMOS_OK);
+    /* M2.4d : 2 projections réussies puis 2 retraits => 0 ; EEXIST et EINVAL n'ont rien compté. */
+    KTEST_CHECK(pmm_refs(frame) == 0);
     KTEST_CHECK(pmm_free_frame(frame) == SAMOS_OK);
 }
 
@@ -210,9 +209,7 @@ static void test_forbidden_mappings(void)
     /* Une adresse voisine légitime reste projetable (pas de refus excessif). */
     KTEST_CHECK(vmm_map(0xD0002000u, frame, PTE_WRITE) == SAMOS_OK);
     KTEST_CHECK(vmm_unmap(0xD0002000u, 0) == SAMOS_OK);
-    KTEST_CHECK(pmm_refs(frame) == 1);   /* 1 projection réussie ; 4 refus E1/E2 sans référence */
-    /* K0.7-M2.4c : vmm_unmap ne relâche pas encore la référence (M2.4d) : relâchement explicite temporaire. */
-    KTEST_CHECK(pmm_unref(frame) == SAMOS_OK);
+    KTEST_CHECK(pmm_refs(frame) == 0);   /* M2.4d : 1 projection, 1 retrait ; 4 refus E1/E2 sans référence */
     KTEST_CHECK(pmm_free_frame(frame) == SAMOS_OK);
 }
 
@@ -383,12 +380,55 @@ static void test_vmm_refs(void)
     }
     KTEST_CHECK(n == 0);
 
-    /* Nettoyage (temporaire jusqu'à M2.4d : vmm_unmap ne relâche pas la référence). */
+    /* Nettoyage : vmm_unmap relâche lui-même les références (M2.4d). */
     KTEST_CHECK(vmm_unmap(va1, 0) == SAMOS_OK && vmm_unmap(va2, 0) == SAMOS_OK);
-    KTEST_CHECK(pmm_unref(f) == SAMOS_OK && pmm_unref(f) == SAMOS_OK);
+    KTEST_CHECK(pmm_refs(f) == 0);
     KTEST_CHECK(pmm_free_frame(f) == SAMOS_OK && total_refs() == 0);
     KTEST_CHECK(pmm_free_frame(paging_directory()) == SAMOS_EINVAL);   /* E4 toujours refusé */
     KTEST_CHECK(pmm_core_check(p) == 0);
+}
+
+/* K0.7-M2.4d — vmm_unmap() relâche exactement une référence par retrait
+ * réussi. E5 reste ouvert jusqu'à la démonstration de bout en bout (M2.4e). */
+static void test_vmm_unmap_refs(void)
+{
+    const struct pmm *p = pmm_state();
+    const uint32_t a = 0xD0020000u, b = 0xD0021000u;
+    uint32_t f = pmm_alloc_frame(), out = 0, v = 0;
+    KTEST_CHECK(f != 0);
+    /* 1. map -> 1 -> unmap -> 0 */
+    KTEST_CHECK(vmm_map(a, f, PTE_WRITE) == SAMOS_OK && pmm_refs(f) == 1);
+    KTEST_CHECK(vmm_unmap(a, &out) == SAMOS_OK && out == f && pmm_refs(f) == 0);
+    /* 9. traduction et TLB cohérents après suppression */
+    KTEST_CHECK(!vmm_translate(a, 0, 0));
+    KTEST_CHECK(mem_probe_read((const void *)(uintptr_t)a, &v) == -1);
+    /* 2, 3, 4, 5. deux adresses */
+    KTEST_CHECK(vmm_map(a, f, PTE_WRITE) == SAMOS_OK && vmm_map(b, f, 0) == SAMOS_OK);
+    KTEST_CHECK(pmm_refs(f) == 2);
+    KTEST_CHECK(vmm_unmap(a, 0) == SAMOS_OK && pmm_refs(f) == 1);
+    KTEST_CHECK(pmm_free_frame(f) == SAMOS_EBUSY);                 /* 4 */
+    KTEST_CHECK(mem_probe_read((const void *)(uintptr_t)b, &v) == 0); /* b toujours projetée */
+    KTEST_CHECK(vmm_unmap(b, 0) == SAMOS_OK && pmm_refs(f) == 0);
+    /* 6. double retrait : refusé, pas de sous-dépassement */
+    KTEST_CHECK(vmm_unmap(b, 0) == SAMOS_ENOENT && pmm_refs(f) == 0);
+    /* 7. adresses invalides : refus sans effet */
+    KTEST_CHECK(vmm_map(a, f, 0) == SAMOS_OK);
+    KTEST_CHECK(vmm_unmap(a + 4, 0) == SAMOS_EINVAL && pmm_refs(f) == 1);
+    KTEST_CHECK(vmm_translate(a, 0, 0));                           /* projection intacte */
+    KTEST_CHECK(vmm_unmap(0xD0022000u, 0) == SAMOS_ENOENT && pmm_refs(f) == 1);
+    KTEST_CHECK(vmm_unmap(a, 0) == SAMOS_OK && pmm_refs(f) == 0);
+    KTEST_CHECK(pmm_free_frame(f) == SAMOS_OK);                    /* 5 */
+    /* 8. identité permanente jamais supprimée */
+    uint32_t kpage = (uint32_t)(uintptr_t)&kmain & PTE_FRAME;
+    KTEST_CHECK(vmm_unmap(kpage, 0) == SAMOS_EPERM);
+    KTEST_CHECK(vmm_unmap(0xB8000u, 0) == SAMOS_EPERM);
+    KTEST_CHECK(vmm_translate(kpage, 0, 0) && mem_probe_read((const void *)&kmain, &v) == 0);
+    /* 10. E1, E2, E4 */
+    KTEST_CHECK(vmm_unmap(0, 0) == SAMOS_EPERM);
+    KTEST_CHECK(mem_probe_read((const void *)0, &v) == -1);
+    KTEST_CHECK(mem_probe_read((const void *)(uintptr_t)__stack_guard_start, &v) == -1);
+    KTEST_CHECK(pmm_free_frame(paging_directory()) == SAMOS_EINVAL);
+    KTEST_CHECK(total_refs() == 0 && pmm_core_check(p) == 0);
 }
 
 void ktest_suite_mm(void)
@@ -404,4 +444,5 @@ void ktest_suite_mm(void)
     test_pagetable_frames();
     test_kernel_refs();
     test_vmm_refs();
+    test_vmm_unmap_refs();
 }

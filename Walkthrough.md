@@ -1114,3 +1114,23 @@ Premier sous-jalon de M2.4 (correction de E5), limité au cœur pur. `paging.c` 
 - **Contre-épreuve** (prise de référence supprimée) : statut 35, 16 échecs, premiers : `vmm_map(va1, f, PTE_WRITE) == SAMOS_OK && pmm_refs(f) == 1` et `pmm_free_frame(f) == SAMOS_EBUSY` ; aucun triple fault.
 - Validation : `make clean && make test` donne 101 `[PASS]`, 0 `[FAIL]`, 26 cas QEMU sur 26, dont `selftest_512M` ; compilation parallèle propre réussie.
 - **E5 reste ouvert** (M2.4d : relâchement dans `vmm_unmap`).
+
+### K0.7-M2.4d — Références relâchées par vmm_unmap
+
+- `paging.c` : `vmm_unmap()` refuse une adresse non alignée (`EINVAL`) et les adresses de l'identité (`EPERM`). Pour un cadre `ALLOCATED`, il vérifie que la référence existe, efface la PTE, exécute `INVLPG`, puis appelle `pmm_unref()` (vérifié par `KASSERT`).
+- **Défauts existants trouvés et corrigés :** arrondi silencieux des adresses non alignées ; possibilité de supprimer une projection de l'identité, y compris celle du code du noyau.
+- **Tests :**
+  - les relâchements temporaires de M2.4c échouaient bien une fois `vmm_unmap()` corrigé (le sous-dépassement est refusé). Ils sont retirés, et les tests vérifient maintenant 0 référence après les retraits ;
+  - nouveau `test_vmm_unmap_refs` :
+    - 1 → 0 référence ;
+    - 2 → 1 → 0 avec deux adresses ;
+    - libération refusée puis autorisée ;
+    - double retrait refusé sans sous-dépassement ;
+    - `EINVAL` et `ENOENT` sans effet ;
+    - identité (`kmain`, VGA, page 0) refusée et intacte ;
+    - traduction et TLB cohérents après retrait ;
+    - E1, E2 et E4 intacts ;
+    - `pmm_core_check` à 0.
+- **Contre-épreuves :** C1 (pas de décrémentation) donne un statut 35 avec des échecs ciblés ; C2 (`pmm_unref` défaillant) donne un arrêt explicite `assertion failed: e == SAMOS_OK`, statut 37 ; aucun triple fault.
+- **Validation :** `make clean && make test` donne 101 `[PASS]`, 0 `[FAIL]`, 26 cas QEMU sur 26 ; compilation parallèle propre réussie ; 341 vérifications noyau.
+- **E5 reste ouvert** (M2.4e : démonstration de bout en bout).
