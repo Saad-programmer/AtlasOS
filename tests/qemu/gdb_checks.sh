@@ -16,6 +16,10 @@
 #     dans GDB avant que kmain ne le lise, et on vérifie que le noyau refuse
 #     de démarrer avec un message explicite (aucun chargeur réel ne permet
 #     de provoquer ce cas).
+#
+#  3. vga_memory (K0.3) : après un démarrage normal, GDB lit la mémoire vidéo
+#     0xB8000 DEPUIS L'EXTÉRIEUR du noyau et on décode les octets de
+#     caractères (un octet sur deux) : le texte attendu doit être à l'écran.
 # =============================================================================
 set -u
 KERNEL="${1:?usage: gdb_checks.sh build/samos.elf}"
@@ -24,6 +28,7 @@ PORT="${GDB_PORT:-1234}"
 fail=0
 
 start_qemu() {   # $1 = journal debugcon
+    rm -f "$1"       # jamais de journal périmé d'une exécution précédente
     qemu-system-i386 -m 128M -display none -no-reboot -kernel "$KERNEL" \
         -debugcon "file:$1" -gdb "tcp::$PORT" -S </dev/null >/dev/null 2>&1 &
     QPID=$!
@@ -66,12 +71,36 @@ gdb -q -batch -nx "$KERNEL" \
     -ex 'delete' -ex 'detach' > "$OUT/gdb_bad_magic.log" 2>&1
 sleep 1
 stop_qemu
-if grep -q 'SAMOS: FATAL: invalid multiboot magic (0xdeadbeef)' "$BLOG" &&
-   grep -q 'SAMOS: system halted' "$BLOG" &&
+if grep -q 'KERNEL PANIC: invalid multiboot magic 0xdeadbeef' "$BLOG" &&
+   grep -q '\*\*\* system halted' "$BLOG" &&
    ! grep -q 'boot complete' "$BLOG"; then
     echo "[PASS] gdb: magic invalide -> refus explicite et arret"
 else
     echo "[FAIL] gdb: magic invalide non detecte (voir $BLOG)"; fail=1
+fi
+
+# ---- 3. Contenu réel de la mémoire VGA ------------------------------------------
+VLOG="$OUT/gdb_vga.debugcon.log"
+# Supprimer le journal précédent AVANT de lancer QEMU : sinon la boucle
+# d'attente ci-dessous trouve « boot complete » dans l'ancien fichier, GDB
+# s'attache pendant que le CPU est encore dans le BIOS, et le test échoue de
+# façon intermittente (défaut réellement observé, voir Walkthrough K0.3 §H).
+rm -f "$VLOG" "$OUT/vga.bin" "$OUT/vga.txt"
+qemu-system-i386 -m 128M -display none -no-reboot -kernel "$KERNEL" \
+    -debugcon "file:$VLOG" -gdb "tcp::$PORT" </dev/null >/dev/null 2>&1 &
+QPID=$!
+# Attendre que le noyau ait terminé son démarrage (message final sur debugcon).
+for _ in $(seq 1 50); do grep -q 'boot complete' "$VLOG" 2>/dev/null && break; sleep 0.1; done
+gdb -q -batch -nx "$KERNEL" -ex "target remote :$PORT" \
+    -ex "dump binary memory $OUT/vga.bin 0xb8000 0xb8fa0" -ex 'kill' > "$OUT/gdb_vga.log" 2>&1
+stop_qemu
+# Octets pairs = caractères, octets impairs = attributs ; 80 caractères par ligne.
+od -An -v -tu1 "$OUT/vga.bin" | tr -s ' ' '\n' | sed '/^$/d' | awk 'NR % 2 == 1' |
+    awk '{ printf "%c", ($1 >= 32 && $1 < 127) ? $1 : 32; if (NR % 80 == 0) printf "\n" }' > "$OUT/vga.txt"
+if grep -q 'SAMOS: kernel entry' "$OUT/vga.txt" && grep -q 'K0.3 boot complete' "$OUT/vga.txt"; then
+    echo "[PASS] gdb: texte de demarrage present en memoire VGA 0xB8000"
+else
+    echo "[FAIL] gdb: texte absent de la memoire VGA (voir $OUT/vga.txt)"; fail=1
 fi
 
 exit $fail

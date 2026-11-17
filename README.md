@@ -40,7 +40,7 @@ Le but n'est pas d'assembler des bibliothèques existantes. Il s'agit de **compr
 |---|---|---|
 | K0.1 | Multiboot, point d'entrée, pile, passage à `kmain` | ✅ implémenté et vérifié |
 | K0.2 | Script de liaison, sections ELF, disposition mémoire | ✅ implémenté et vérifié |
-| K0.3 | VGA texte, port série COM1, journalisation, `panic` | ⏳ à venir |
+| K0.3 | VGA texte, port série COM1, journalisation, `panic` | ✅ implémenté et vérifié |
 | K0.4 | GDT, IDT, exceptions CPU | ⏳ à venir |
 | K0.5 | PIC 8259, PIT, clavier PS/2, file circulaire | ⏳ à venir |
 | K0.6 | Carte mémoire, allocateur physique, pagination, protections | ⏳ à venir |
@@ -73,17 +73,23 @@ Tout le code spécifique au processeur se trouve dans `kernel/arch/i386/`. La mi
 | Disposition mémoire | `kernel/core/layout.c` | table des régions du noyau et de leurs droits prévus, vérifiée à chaque démarrage |
 | Pile instrumentée | `entry.asm`, `layout.c` | section `.bootstack` précédée d'une zone de garde de 4 KiB ; peinture pour mesurer la profondeur maximale et détecter un débordement |
 | Validation du démarrage | `kernel/core/bootinfo.c` | magic, bornes des adresses Multiboot, copie bornée de la ligne de commande |
-| Canal de diagnostic | `kernel/drivers/qemu_dbg.c` | port debugcon `0xE9`, sortie `isa-debug-exit` |
+| Canal de diagnostic QEMU | `kernel/drivers/qemu_dbg.c` | port debugcon `0xE9`, sortie `isa-debug-exit` |
+| Pilote VGA texte | `kernel/drivers/vga.c` | 80×25, couleurs, défilement, tabulation, curseur matériel CRTC |
+| Pilote série | `kernel/drivers/serial.c` | UART 16550 COM1 115200 8N1, test de présence et de boucle locale, attente bornée |
+| Journalisation | `kernel/core/log.c` | `kprintf`/`klog` vers debugcon + série + VGA, troncature signalée |
+| Panique | `kernel/core/panic.c` | message, fichier/ligne, trace de pile validée (chaîne EBP), garde de récursion, `KASSERT` |
+| Formatage | `kernel/lib/format.c` | `ksnprintf` indépendant (`%c %s %d %i %u %x %X %p`, drapeaux, largeur, précision, `l/ll/z`), testé contre la libc |
+| Arithmétique 64 bits | `kernel/lib/math64.c` | division 64/32 sans libgcc (division longue binaire) |
 | Bibliothèque minimale | `kernel/lib/string.c` | `memset`, `memcpy`, `memmove`, `memcmp`, `strlen`, `strnlen`, `strcmp`, `strncmp`, `strlcpy` |
-| Autotests noyau | `kernel/tests/` | 60 vérifications exécutées dans le noyau sous QEMU |
+| Autotests noyau | `kernel/tests/` | 87 vérifications exécutées dans le noyau sous QEMU |
 
 ## 6. Composants en cours de développement
 
-- K0.3 : affichage VGA, port série COM1, journalisation, `panic`.
+- K0.4 : GDT, IDT, exceptions CPU.
 
 ## 7. Composants planifiés
 
-K0.3 à K0.6 (voir le tableau ci-dessus). Plus tard, sous réserve d'autorisation : x86-64, TSS/IST, Ring 3, processus, ordonnanceur, appels système, IPC, VFS, pilotes de stockage et audio, moteur numérique, reconnaissance et synthèse vocales, agent.
+K0.4 à K0.6 (voir le tableau ci-dessus). Plus tard, sous réserve d'autorisation : x86-64, TSS/IST, Ring 3, processus, ordonnanceur, appels système, IPC, VFS, pilotes de stockage et audio, moteur numérique, reconnaissance et synthèse vocales, agent.
 
 ## 8. Structure du dépôt
 
@@ -95,9 +101,9 @@ AtlasOS/
 │   │   ├── boot/entry.asm    en-tête Multiboot + _start
 │   │   ├── linker.ld         disposition de l'image
 │   │   └── include/arch/     io.h (ports d'E/S), cpu.h (registres de contrôle)
-│   ├── core/                 kmain.c, bootinfo.c, layout.c
-│   ├── drivers/              qemu_dbg.c
-│   ├── lib/                  string.c
+│   ├── core/                 kmain.c, bootinfo.c, layout.c, log.c, panic.c
+│   ├── drivers/              qemu_dbg.c, vga.c, serial.c
+│   ├── lib/                  string.c, format.c, math64.c
 │   ├── include/samos/        en-têtes internes du noyau
 │   └── tests/                autotests exécutés dans le noyau
 ├── tests/
@@ -145,23 +151,24 @@ Le résultat est `build/samos.elf` (ELF 32 bits, Multiboot 1). La carte de liais
 make run
 ```
 
-QEMU charge directement le noyau grâce à son chargeur Multiboot intégré (`-kernel`). Les messages du noyau s'affichent dans le terminal via le port debugcon. Sortie attendue :
+QEMU charge directement le noyau grâce à son chargeur Multiboot intégré (`-kernel`). Les messages du noyau arrivent dans le terminal par le **port série COM1**, et sont aussi copiés dans `build/debugcon.log` et sur l'écran VGA. Sortie attendue :
 
 ```text
 SAMOS: kernel entry (SAMOS/AtlasOS 0.1.0-k0)
+[info ] console: debugcon + serial COM1 115200 8N1 + VGA 80x25
 SAMOS: multiboot magic ok, info at 0x00009500, flags 0x0000024f
 SAMOS: cmdline "build/samos.elf "
-SAMOS: kernel image 0x00100000-0x0010a000
-SAMOS:   0x00100000-0x00102000 r-x  .text
-SAMOS:   0x00102000-0x00103000 r--  .rodata
-SAMOS:   0x00103000-0x00105000 rw-  .data+.bss
-SAMOS:   0x00105000-0x00106000 ---G stack-guard
-SAMOS:   0x00106000-0x0010a000 rw-  boot-stack
-SAMOS: boot stack high-water 116 bytes, guard intact
-SAMOS: K0.2 boot complete, halting
+SAMOS: kernel image 0x00100000-0x0010d000
+SAMOS:   0x00100000-0x00104000 r-x  .text
+SAMOS:   0x00104000-0x00106000 r--  .rodata
+SAMOS:   0x00106000-0x00108000 rw-  .data+.bss
+SAMOS:   0x00108000-0x00109000 ---G stack-guard
+SAMOS:   0x00109000-0x0010d000 rw-  boot-stack
+SAMOS: boot stack high-water 792 bytes, guard intact
+SAMOS: K0.3 boot complete, halting
 ```
 
-Quitter avec `Ctrl+C`. Débogage : `make debug`, puis dans un autre terminal `gdb build/samos.elf -ex 'target remote :1234'`.
+Quitter avec `Ctrl+C`. `make run-vga` ouvre en plus la fenêtre de l'écran VGA ; il faut un affichage graphique. En cas de panique, l'adresse de chaque cadre de la trace se traduit en nom de fonction avec `addr2line -f -e build/samos.elf 0x...`. Débogage : `make debug`, puis dans un autre terminal `gdb build/samos.elf -ex 'target remote :1234'`.
 
 ## 13. Tests
 
@@ -173,9 +180,9 @@ make test
 |---|---|---|
 | Statique ELF | `make check-elf` | ELF32/i386, entrée = `_start`, en-tête Multiboot (offset, alignement, somme), aucun symbole indéfini, aucun segment W+X, sections alignées/ordonnées/NOBITS, aucune section dynamique, absence d'auto-appel de `memset`/`memcpy` |
 | Outils (négatif) | `make test-tools` | `check_elf.sh` doit rejeter une image à somme corrompue ou sans en-tête |
-| Hébergés | `make test-host` | `string.c` compilé pour l'hôte avec AddressSanitizer + UBSan |
-| QEMU | `make test-qemu` | démarrage normal (sans triple fault) et autotests noyau (`-append test`) |
-| GDB | `make test-gdb` | état exact des registres à l'entrée de `kmain` ; test négatif du magic invalide |
+| Hébergés | `make test-host` | `string.c`, `format.c` (comparaison différentielle avec `snprintf` de la libc) et `math64.c` (100 000 divisions comparées à la division native), sous AddressSanitizer + UBSan |
+| QEMU | `make test-qemu` | démarrage normal (sans triple fault), sortie série de bout en bout, autotests noyau (`-append test`), chemin de panique (`test=panic`, statut 37), refus d'un mode de test inconnu |
+| GDB | `make test-gdb` | état exact des registres à l'entrée de `kmain` ; test négatif du magic invalide ; lecture de la mémoire VGA `0xB8000` depuis l'extérieur du noyau |
 
 Le noyau transmet son verdict à QEMU via le périphérique `isa-debug-exit` (statut 33 = succès, 35 = échec, 37 = panic).
 
@@ -195,7 +202,8 @@ Seuls des outils de développement standard sont utilisés : compilateur, assemb
 ## 16. Limitations actuelles
 
 - Pas encore d'IDT : toute exception CPU provoquerait un triple fault.
-- Pas d'affichage VGA ni de port série. Seule la sortie debugcon de QEMU existe, invisible sur du matériel réel.
+- Le port série est en émission seule, par scrutation (pas d'IRQ 4, pas de réception).
+- Le journal n'est pas réentrant : les futurs gestionnaires d'IRQ ne devront pas journaliser.
 - Pas de pagination : les permissions des segments ne sont pas appliquées par le CPU.
 - La zone de garde de pile n'est vérifiée que par logiciel, a posteriori. La page de garde matérielle (non présente) viendra avec la pagination (K0.6).
 - En i386 sans PAE, le matériel ne pourra pas rendre les données non exécutables (pas de bit NX).
@@ -203,7 +211,7 @@ Seuls des outils de développement standard sont utilisés : compilateur, assemb
 
 ## 17. Feuille de route
 
-`K0.1 ✅ → K0.2 ✅ → K0.3 → K0.4 → K0.5 → K0.6 → revue K0 → (autorisation) K1 x86-64 → processus/ordonnanceur → appels système → IPC → VFS → pilotes → A0 (IA) → V0 (voix) → I0 (agent)`
+`K0.1 ✅ → K0.2 ✅ → K0.3 ✅ → K0.4 → K0.5 → K0.6 → revue K0 → (autorisation) K1 x86-64 → processus/ordonnanceur → appels système → IPC → VFS → pilotes → A0 (IA) → V0 (voix) → I0 (agent)`
 
 ## 18. Documentation
 
@@ -218,6 +226,8 @@ Seuls des outils de développement standard sont utilisés : compilateur, assemb
 - *System V Application Binary Interface, Intel386 Architecture Processor Supplement*, 4e éd.
 - *Tool Interface Standard (TIS) Executable and Linking Format (ELF) Specification*, v1.2.
 - Documentation de GNU ld (scripts de liaison), de NASM et de QEMU (`isa-debug-exit`, `debugcon`).
+- National Semiconductor, fiche technique PC16550D (UART).
+- ISO/IEC 9899:2011 (C11), §7.21.6 (fonctions de formatage).
 - A. S. Tanenbaum, H. Bos, *Modern Operating Systems*, 4e éd., Pearson.
 
 ## 20. Licence

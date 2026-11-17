@@ -28,6 +28,10 @@ Le texte distingue systématiquement :
 15. Pile de démarrage : zone de garde et peinture (K0.2)
 16. Sécurité du jalon K0.2
 17. Questions de jury et réponses (K0.2)
+18. Affichage et diagnostic : VGA, UART 16550, journal, panique (K0.3)
+19. Formatage de texte et arithmétique 64 bits sans libgcc (K0.3)
+20. Sécurité du jalon K0.3
+21. Questions de jury et réponses (K0.3)
 - Références
 
 ---
@@ -529,7 +533,7 @@ Une assertion de liaison transforme une hypothèse en erreur de compilation. SAM
 
 ### 14.1 Carte de l'image (build actuel)
 
-Valeurs réellement affichées au démarrage par `kernel_layout_print()` :
+Valeurs réellement affichées au démarrage par `kernel_layout_print()` **au jalon K0.2** (les adresses évoluent avec la taille du code ; en K0.3, `.text` occupe 4 pages et l'image se termine à `0x0010d000`) :
 
 ```text
 SAMOS: kernel image 0x00100000-0x0010a000
@@ -633,6 +637,226 @@ Par la technique de peinture (*stack painting*) : on remplit la pile d'un motif 
 **Q7. Différence entre VMA et LMA ?**
 La VMA est l'adresse d'exécution, pour laquelle le code est relogé. La LMA est l'adresse de chargement physique. Elles sont égales en K0 (identité) et différeraient dans un noyau *higher-half*.
 
+## 18. Affichage et diagnostic : VGA, UART 16550, journal, panique (K0.3)
+
+### 18.1 Le mode texte VGA
+
+**Historique.** La norme VGA (IBM, 1987) a hérité du CGA/EGA un **mode texte** dans lequel la carte graphique génère elle-même les glyphes à partir d'une police en ROM. Le processeur n'écrit que des codes de caractères. Le BIOS initialise ce mode (mode 3 : 80×25, 16 couleurs) avant de démarrer le chargeur.
+
+**[ARCH] Le tampon de texte.** En mode couleur, la carte décode les adresses physiques `0xB8000`–`0xBFFFF`. Le premier écran occupe $80 \times 25 \times 2 = 4000$ octets. La cellule $(l, c)$ se trouve à :
+
+$$\text{adresse}(l, c) = \texttt{0xB8000} + 2\,(80\,l + c)$$
+
+Format d'une cellule de 16 bits (petit-boutiste) :
+
+```text
+ 15  14 13 12  11 10 9 8   7 6 5 4 3 2 1 0
+┌───┬────────┬──────────┬─────────────────┐
+│ B │  fond  │  texte   │ code caractère  │
+└───┴────────┴──────────┴─────────────────┘
+  B = clignotement (ou fond intense, selon le registre de mode de l'ATC)
+```
+
+Exemple vérifié par un autotest : jaune (14 = `0xE`) sur bleu (1) donne l'attribut `0x1E`.
+
+**Pourquoi `volatile` ?** Pour le compilateur, écrire deux fois dans la même case, ou écrire sans jamais relire, est une opération éliminable. Or chaque écriture vers la mémoire vidéo a un **effet observable** (l'affichage). `volatile` impose au compilateur d'émettre chaque accès, dans l'ordre (ISO C11, §6.7.3 et §5.1.2.3).
+
+**Le curseur matériel.** Il est piloté par le **CRTC** (*Cathode Ray Tube Controller*), accessible par deux ports d'E/S : un registre d'index (`0x3D4`) et un registre de données (`0x3D5`). On écrit le numéro de registre dans l'index, puis la valeur dans les données. La position du curseur est un index linéaire $80\,l + c$ réparti sur les registres `0x0E` (octet fort) et `0x0F` (octet faible). Le bit 0 du *Miscellaneous Output Register* (lu au port `0x3CC`) indique si la carte est configurée en couleur (ports `0x3Dx`) ou en monochrome (`0x3Bx`). Le pilote le lit au lieu de supposer.
+
+**Défilement.** Quand on écrit un retour à la ligne sur la dernière ligne, les lignes 1 à 24 sont copiées sur 0 à 23 et la ligne 24 est effacée. Le coût est de $80 \times 24 = 1920$ copies de 16 bits. **Alternative non retenue :** modifier le registre CRTC *Start Address* (`0x0C/0x0D`) pour faire défiler sans copie, ce qui est plus rapide mais complique le retour au début du tampon.
+
+**[CHOIX] Optimisation mesurée et justifiée :** `vga_write` ne met à jour le curseur matériel (4 E/S, coûteuses sur un vrai bus ISA) qu'une fois par appel, et non une fois par caractère.
+
+**Limite fondamentale :** un firmware UEFI pur ne fournit pas le mode texte VGA, seulement un framebuffer graphique (GOP). Sur l'EliteBook du développeur, l'écran VGA ne fonctionnera probablement pas. Un pilote de framebuffer avec une police bitmap serait nécessaire (hors K0).
+
+### 18.2 L'UART 16550 (port série COM1)
+
+**Principe.** Une UART (*Universal Asynchronous Receiver-Transmitter*) sérialise des octets sur une ligne. Chaque trame comprend un bit de start (0), 5 à 8 bits de données (bit de poids faible en premier), un bit de parité optionnel et 1 ou 2 bits de stop (1). Il n'y a pas d'horloge partagée : les deux extrémités doivent être réglées sur le **même débit** (*baud rate*). Le 16550 (National Semiconductor) est le modèle standard des PC. Il possède des FIFO de 16 octets.
+
+**Calcul du débit.** L'UART divise une horloge de 1,8432 MHz par 16 (suréchantillonnage de chaque bit), puis par un **diviseur** programmable sur 16 bits :
+
+$$\text{débit} = \frac{1\,843\,200}{16 \times \text{diviseur}} \quad\Rightarrow\quad \text{diviseur} = 1 \Rightarrow 115\,200 \text{ bauds}$$
+
+Le choix de 1,8432 MHz donne des débits standards exacts : $1\,843\,200 / 16 = 115\,200 = 2^9 \cdot 3^2 \cdot 5^2$.
+
+**Séquence d'initialisation (`serial_init`) et justification :**
+
+| Étape | Écriture | Pourquoi |
+|---|---|---|
+| 0 | SCR ← `0x5A`, relecture | test de présence : sur un bus sans périphérique, la lecture renvoie en général `0xFF` |
+| 1 | IER ← 0 | aucune interruption : le noyau n'a pas encore d'IDT |
+| 2 | LCR ← `0x80` (DLAB = 1) | les registres 0 et 1 deviennent DLL/DLM (diviseur) |
+| 3 | DLL ← 1, DLM ← 0 | 115 200 bauds |
+| 4 | LCR ← `0x03` | 8 bits, pas de parité, 1 stop (« 8N1 »), DLAB = 0 |
+| 5 | FCR ← `0xC7` | FIFO activée et vidée, seuil de 14 octets |
+| 6 | MCR ← `0x1E`, envoi de `0xAE`, attente de LSR.DR, relecture | **boucle locale** : l'émetteur est relié au récepteur dans la puce. On vérifie de bout en bout que la puce répond |
+| 7 | MCR ← `0x0F` | mode normal (DTR, RTS, OUT1, OUT2) |
+
+**Émission par scrutation (*polling*).** Avant chaque octet, on attend que LSR.THRE (bit 5) indique que le registre d'émission est vide. **[CHOIX] Attente bornée :** après 100 000 lectures sans succès, le caractère est abandonné et compté (`serial_dropped()`). Un UART défaillant ne doit jamais bloquer le noyau, et en particulier pas une panique qui cherche à s'afficher.
+
+**Fin de ligne.** Les terminaux série attendent `CR LF` (`\r\n`) : `\n` seul ferait descendre le curseur sans le ramener en colonne 0. Le pilote insère `\r`.
+
+### 18.3 Le journal multi-puits
+
+`console_write()` diffuse chaque octet vers trois puits : debugcon (toujours), série (si le test de boucle locale a réussi) et VGA. `kprintf()` formate dans un **tampon de pile** de 256 octets.
+
+**[CHOIX] Pas d'allocation dynamique.** Il n'existe pas encore d'allocateur, et un journal qui alloue peut échouer précisément quand la mémoire est le problème. Une ligne trop longue est tronquée, puis le marqueur ` [...truncated]` est ajouté et un compteur incrémenté. La troncature n'est donc jamais silencieuse, ce que vérifie un autotest.
+
+**Coût mesuré sur la pile :** la profondeur maximale au démarrage est passée de 116 octets (K0.2) à 792 octets (K0.3), à cause du tampon de 256 octets et des tampons de conversion du formateur. C'est l'utilité de l'instrument de K0.2 : la consommation reste inférieure à 5 % des 16 Kio.
+
+### 18.4 La panique et la trace de pile
+
+**Rôle.** Une panique signifie qu'un invariant est violé et que poursuivre risquerait de corrompre des données ou de masquer le défaut. **[CHOIX]** SAMOS suit le principe *fail-stop* : il s'arrête de façon visible et diagnosticable.
+
+**Séquence de `panic_at()` :**
+
+1. `cli` : aucune interruption ne doit exécuter de code par-dessus un état incohérent. Sans effet en K0.3, mais essentiel à partir de K0.5.
+2. **Garde de récursion.** Si `panic` est appelé pendant `panic` (par exemple parce que le journal est lui-même défectueux), une sortie minimale sur debugcon est faite, puis le CPU s'arrête. Cela évite une boucle infinie de paniques.
+3. Message, fichier et ligne (macro `panic()` qui injecte `__FILE__` et `__LINE__`), en blanc sur rouge à l'écran.
+4. **Trace de pile.** Elle est obtenue en parcourant la chaîne des EBP.
+5. En mode test : `qemu_exit(0x12)`, soit le statut 37. Sinon `cpu_halt_forever()`.
+
+**[ARCH] La chaîne des pointeurs de cadre.** Avec `-fno-omit-frame-pointer`, chaque fonction commence par `push ebp ; mov ebp, esp`. Donc `[EBP]` contient l'EBP de l'appelant et `[EBP+4]` l'adresse de retour. Les cadres forment une liste chaînée qu'on remonte :
+
+```text
+EBP courant ──► [ EBP appelant ] ──► [ EBP grand-appelant ] ──► ... ──► 0
+                [ retour       ]     [ retour             ]
+```
+
+`_start` met EBP à 0 avant `call kmain` : c'est le **terminateur** de la liste. Sans cela, la remontée suivrait la valeur résiduelle laissée par le chargeur.
+
+**Validation défensive de chaque cadre.** La trace est produite quand le système est déjà dans un état anormal : la pile elle-même peut être corrompue. `stack_collect()` exige donc, pour chaque cadre :
+
+- qu'il soit dans la pile de démarrage ;
+- qu'il soit aligné sur 4 ;
+- que le cadre suivant soit **strictement plus haut** dans la pile, ce qui garantit la terminaison même sur une chaîne cyclique ;
+
+le tout avec au plus 16 cadres. Les tests vérifient le refus d'un cadre hors pile, non aligné ou nul.
+
+**Résultat réel** du test `panic_path`, symbolisé avec `addr2line -f -e build/samos.elf` :
+
+```text
+#0 0x001025c9  deliberate_panic_inner
+#1 0x001025ab  deliberate_panic
+#2 0x0010251f  ktest_run_all
+#3 0x001001e3  kmain
+#4 0x0010005d  _start (instruction suivant call kmain)
+```
+
+**Limites :**
+
+- les fonctions *feuilles* très optimisées peuvent ne pas créer de cadre ;
+- une adresse de retour désigne l'instruction **suivant** l'appel, d'où la ligne parfois décalée d'une unité dans `addr2line` ;
+- après K0.4, une exception survenant pendant une interruption produira une chaîne qui traverse le cadre matériel de l'interruption, qui n'a pas la forme d'un cadre C. La remontée s'y arrêtera ou devra être spécialisée.
+
+### 18.5 Journalisation et interruptions (préparation de K0.5)
+
+`kprintf` n'est **pas réentrant** vis-à-vis de l'écran : si une interruption journalisait pendant qu'un `kprintf` modifie `g_row`/`g_col` dans le pilote VGA, l'état du curseur serait corrompu. **[CHOIX]** Règle pour K0.5 : les gestionnaires d'IRQ ne journalisent pas. Ils déposent des événements dans une file circulaire, que le code normal traite. Une panique depuis une interruption reste permise, car elle ne revient jamais.
+
+---
+
+## 19. Formatage de texte et arithmétique 64 bits sans libgcc (K0.3)
+
+### 19.1 Pourquoi écrire son propre `printf` ?
+
+Sans libc, il n'y a pas de `printf`. Le formateur est aussi un composant **critique pour la sécurité** : il manipule des tampons, des longueurs et des arguments variadiques. Les bogues de formatage (*format string bugs*, débordements de `sprintf`) sont une classe de vulnérabilités historiquement majeure (CWE-134, CWE-120).
+
+### 19.2 Conception
+
+**Invariant central.** Tous les caractères passent par `out_char()`, **seule** fonction qui écrit dans le tampon. Elle n'écrit que si `len < cap − 1`, et compte toujours le caractère. Il en découle que :
+
+1. aucune écriture ne dépasse `buf[size − 1]` ;
+2. le terminateur `'\0'` est toujours écrit si `size > 0` ;
+3. la valeur de retour est la longueur **complète** qui aurait été produite, comme le spécifie C11 §7.21.6.5 pour `snprintf`. L'appelant détecte la troncature par `ret >= size`.
+
+Analyse d'une spécification `%[drapeaux][largeur][.précision][longueur]conversion` : c'est un automate qui lit les caractères dans cet ordre. Les nombres de largeur et de précision sont bornés à 100 000 pour exclure tout débordement d'`int`.
+
+**Arguments variadiques.** `va_arg(ap, T)` lit le prochain argument en supposant le type `T`. Lire un `long long` (8 octets) quand l'appelant a passé un `int` (4 octets) désynchronise tous les arguments suivants. C'est un comportement indéfini. La protection est l'attribut `format(printf, …)` (`SAMOS_PRINTF`) : le compilateur vérifie à **chaque appel** la concordance entre les conversions et les types. Avec `-Wformat=2 -Werror`, une discordance, ou un format qui n'est pas une chaîne littérale (`-Wformat-nonliteral`), devient une erreur de compilation. Cela interdit aussi, par construction, l'attaque *format string* où une donnée non fiable serait utilisée comme format.
+
+**Écarts volontaires et documentés par rapport à la libc :**
+
+| Cas | glibc | SAMOS | Raison |
+|---|---|---|---|
+| `%p` | `0x1000`, `(nil)` | `0x00001000` (largeur fixe) | colonnes alignées dans les journaux d'adresses |
+| conversion inconnue (`%q`) | comportement indéfini | recopiée telle quelle, aucun argument consommé | pas d'UB dans le noyau |
+| `%s` avec `NULL` | `(null)` (extension) | `(null)` | défensif |
+| flottants `%f` | supportés | absents | aucun flottant dans le noyau (`-mgeneral-regs-only`) |
+
+### 19.3 Vérification différentielle
+
+**Méthode.** Pour 32 formats (certains combinant plusieurs conversions) couvrant les extrêmes (`INT32_MIN`, `INT64_MIN`, `UINT64_MAX`), les drapeaux, la largeur, la précision et les arguments `*` négatifs, on compare **octet par octet**, valeur de retour comprise, la sortie de `ksnprintf` à celle du `snprintf` de la glibc, prise comme référence C11. C'est un **oracle de test** indépendant. Le tout tourne sous ASan et UBSan. Résultat : 0 différence.
+
+Exemple de subtilité vérifiée : `%.0d` avec 0 ne produit **aucun chiffre** (C11 §7.21.6.1 : « the result of converting a zero value with a precision of zero is no characters »), et une précision explicite annule le drapeau `0`.
+
+**La magnitude d'un entier négatif.** Pour afficher `INT64_MIN`, calculer `-v` en signé déborde, ce qui est un comportement indéfini, car $2^{63}$ n'est pas représentable. Le formateur calcule `(uint64_t)0 - (uint64_t)v`, qui est défini (arithmétique modulo $2^{64}$) et donne exactement $2^{63}$.
+
+### 19.4 Division 64 bits sans libgcc
+
+**[ARCH] Le problème.** L'instruction `DIV r/m32` divise EDX:EAX (64 bits) par un opérande 32 bits et produit un quotient **32 bits** (exception #DE si le quotient déborde). Il n'existe pas de division 64/64 en mode 32 bits. Pour `uint64_t / uint32_t`, le compilateur appelle `__udivdi3`, fournie par libgcc. **[CHOIX]** SAMOS ne lie pas libgcc. Le formateur utilise donc `u64_divmod_u32()`, écrite dans SAMOS.
+
+**Algorithme : division longue binaire avec restauration.** C'est la division « à la main » en base 2. Pour $i = 63$ jusqu'à $0$ :
+
+$$r \leftarrow 2r + n_i ;\qquad \text{si } r \ge d :\ r \leftarrow r - d,\ q_i \leftarrow 1$$
+
+**Invariant :** avant chaque itération, $0 \le r < d$. Après le décalage, $r < 2d \le 2^{33}$, ce qui tient dans un `uint64_t`, sans débordement. Après la soustraction éventuelle, $r < d$ de nouveau. À la fin, $n = q \cdot d + r$ avec $0 \le r < d$, ce qui est la définition de la division euclidienne.
+
+**Complexité :** 64 itérations, chacune faite de décalages et de comparaisons 64 bits que le compilateur traduit en instructions natives (`shld`, `cmp/sbb`, `sub/sbb`), sans aucun appel externe. Un chemin rapide utilise directement `DIV` quand $n < 2^{32}$. Pour la base 16, le formateur utilise des décalages de 4 bits et aucune division.
+
+**Vérification :**
+
+1. 100 000 divisions pseudo-aléatoires (générateur xorshift64) comparées à la division native de l'hôte ;
+2. le cas $d = 0$ est **défini**, et non UB : il renvoie `UINT64_MAX` et un reste de 0 ;
+3. `nm -u` sur le noyau reste vide, preuve qu'aucun `__udivdi3` n'a été introduit ;
+4. `%llu` de `UINT64_MAX` et `%lld` de `INT64_MIN` sont vérifiés **dans le noyau i386**.
+
+---
+
+## 20. Sécurité du jalon K0.3
+
+| Aspect | K0.3 |
+|---|---|
+| **Actifs** | intégrité de la mémoire du noyau face au code d'affichage ; disponibilité du diagnostic en cas de panne ; exactitude des journaux |
+| **Frontières** | matériel (UART, VGA) → noyau : un périphérique absent ou défaillant ; appelants → formateur : formats et arguments |
+| **Menaces** | écriture hors du tampon VGA (curseur hors bornes) ; débordement du tampon de formatage ; format non littéral (*format string attack*) ; désynchronisation des arguments variadiques ; UART bloqué figeant le noyau ; panique récursive ; trace de pile suivant un pointeur corrompu ; troncature silencieuse d'un message |
+| **Invariants** | `g_row < 25`, `g_col < 80` à la sortie de toute fonction VGA ; aucune écriture au-delà de `buf[size−1]` ; chaque attente matérielle est bornée ; chaque cadre parcouru est dans la pile, aligné, croissant ; au plus 16 cadres |
+| **Protections** | bornage dans `vga_set_pos` et `vga_cell` ; `out_char()` unique point d'écriture ; `-Wformat=2 -Werror` ; boucles de scrutation bornées avec compteur de pertes ; garde de récursion de `panic` ; validation de `stack_collect` ; marqueur de troncature |
+| **Tests** | 27 vérifications noyau K0.3, dont : bornes VGA, cellule hors écran, refus de cadres invalides, troncature du journal ; test différentiel hébergé du formateur sous ASan/UBSan ; division 64 bits sur 100 000 cas ; chemin de panique de bout en bout (statut 37 + trace) ; mode de test inconnu refusé |
+| **Limites** | journal non réentrant (règle : pas de journal en IRQ) ; la trace de pile ne fait pas foi si la pile est délibérément falsifiée ; aucune confidentialité des journaux (les adresses du noyau sont affichées, ce qui faciliterait un attaquant face à une future ASLR, sans objet en K0) ; série en émission seulement |
+
+---
+
+## 21. Questions de jury et réponses (K0.3)
+
+**Q1. Pourquoi deux mécanismes différents pour l'écran (mémoire) et le port série (ports d'E/S) ?**
+C'est un choix historique de conception matérielle. Le tampon VGA est une **mémoire** que la carte lit en continu pour générer l'image : on le projette donc dans l'espace d'adresses physiques. L'UART expose des **registres de contrôle** dont la lecture a des effets de bord (lire RBR retire un octet de la FIFO) : ils sont dans l'espace d'E/S, accessibles par `IN`/`OUT`.
+
+**Q2. Comment savez-vous que votre pilote série fonctionne réellement ?**
+Par trois preuves :
+1. le test de boucle locale interne à l'UART à l'initialisation ;
+2. le test QEMU `serial_output`, qui cherche les messages **uniquement** dans le fichier capturé sur COM1 ;
+3. `serial_dropped() == 0`, qui montre qu'aucun caractère n'a été perdu par délai dépassé.
+
+**Q3. Comment avez-vous vérifié l'affichage sans regarder l'écran ?**
+Les autotests relisent la mémoire vidéo depuis le noyau. Surtout, le test GDB arrête QEMU après le démarrage, **extrait les 4000 octets à `0xB8000` depuis l'extérieur du noyau** et décode un octet sur deux : le texte de démarrage y figure. Cela vérifie ce que l'émulateur de carte VGA affiche réellement.
+
+**Q4. Pourquoi votre `printf` renvoie-t-il une longueur supérieure à la taille du tampon ?**
+C'est la sémantique de `snprintf` en C11 : la valeur de retour est la longueur de la sortie complète. L'appelant peut ainsi détecter la troncature (`ret >= size`) et, s'il le souhaite, réessayer avec un tampon plus grand.
+
+**Q5. Qu'est-ce qu'une vulnérabilité de chaîne de format, et comment l'évitez-vous ?**
+Si une donnée contrôlée par un attaquant est passée comme format (`kprintf(user_string)`), les `%x` qu'elle contient lisent des valeurs arbitraires sur la pile, et `%n` permet même d'écrire. SAMOS l'évite de deux façons : il n'implémente pas `%n`, et `-Wformat=2 -Werror` rejette à la compilation tout format non littéral.
+
+**Q6. Pourquoi ne pas simplement lier libgcc pour la division 64 bits ?**
+Ce serait légitime techniquement. Le projet a choisi de ne pas lier de bibliothèque d'exécution et d'écrire les routines nécessaires, ici une seule, pour pouvoir les expliquer. L'algorithme est la division longue binaire, avec un invariant ($r < d$) qui garantit l'absence de débordement. Il est vérifié sur 100 000 cas.
+
+**Q7. Comment fonctionne votre trace de pile ? Est-elle fiable ?**
+Elle remonte la liste chaînée des cadres formée par `push ebp ; mov ebp, esp`. Elle est fiable pour du code compilé avec pointeurs de cadre et une pile intacte. Elle se protège contre une pile corrompue (chaque cadre est validé, la chaîne doit être strictement croissante, au plus 16 cadres), mais elle ne prouve rien si la pile a été falsifiée intentionnellement.
+
+**Q8. Que se passe-t-il si `panic` est appelé pendant `panic` ?**
+Le drapeau `g_in_panic` le détecte. On écrit alors un message minimal sur debugcon, le canal le plus simple et sans état, puis on arrête le CPU. On évite ainsi une récursion infinie, par exemple si c'est le pilote VGA qui provoque la faute.
+
+**Q9. Pourquoi la pile a-t-elle grossi de 116 à 792 octets ?**
+À cause du tampon de ligne de 256 octets de `kprintf` et des tampons de conversion du formateur (2 × 64 octets). Cette valeur a été mesurée par l'instrument de peinture de pile de K0.2, et non estimée.
+
 ## Références
 
 1. Free Software Foundation, *Multiboot Specification*, version 0.6.96, §3.1 (en-tête), §3.2 (état machine), §3.3 (structure d'information).
@@ -647,3 +871,8 @@ La VMA est l'adresse d'exécution, pour laquelle le code est relogé. La LMA est
 7. Documentation QEMU : options `-kernel` (chargeur Multiboot), `-debugcon`, périphérique `isa-debug-exit`, option `-d cpu_reset`.
 8. A. S. Tanenbaum, H. Bos, *Modern Operating Systems*, 4e éd., Pearson, 2014, chap. 1.
 9. Intel SDM vol. 3A, §4.3 (pagination 32 bits), §4.6 (droits d'accès, bit XD/NX), §2.5 (CR0.WP).
+10. National Semiconductor, *PC16550D Universal Asynchronous Receiver/Transmitter with FIFOs*, fiche technique (registres, diviseur, mode loopback).
+11. IBM, *Personal System/2 and Personal Computer BIOS Interface Technical Reference* et documentation VGA (registres CRTC, tampon texte `0xB8000`).
+12. ISO/IEC 9899:2011, §7.16 (`<stdarg.h>`), §7.21.6.1 (`fprintf` : drapeaux, largeur, précision), §7.21.6.5 (`snprintf`).
+13. MITRE, CWE-134 *Use of Externally-Controlled Format String* ; CWE-120 *Buffer Copy without Checking Size of Input*.
+14. D. E. Knuth, *The Art of Computer Programming*, vol. 2 (*Seminumerical Algorithms*), §4.3.1 (arithmétique multiprécision, division).

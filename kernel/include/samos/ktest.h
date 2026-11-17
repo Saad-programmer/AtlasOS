@@ -23,5 +23,6 @@ _Noreturn void ktest_run_all(void);
 /* Suites (une par jalon), définies dans kernel/tests/. */
 void ktest_suite_boot(void);       /* K0.1 */
 void ktest_suite_layout(void);     /* K0.2 */
+void ktest_suite_console(void);    /* K0.3 */
 
 #endif /* SAMOS_KTEST_H */

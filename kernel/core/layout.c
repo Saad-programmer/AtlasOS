@@ -4,7 +4,7 @@
  */
 #include <samos/layout.h>
 #include <samos/kernel.h>
-#include <samos/qemu_dbg.h>
+#include <samos/log.h>
 
 #define PAGE_MASK 0xFFFu
 
@@ -47,37 +47,23 @@ bool kernel_layout_valid(void)
     return expected == (uintptr_t)__kernel_end;
 }
 
-static void print_perms(uint32_t p)
+static const char *perms_str(uint32_t p)
 {
     if (p & LAYOUT_GUARD) {
-        qemu_dbg_puts("---G");
-        return;
+        return "---G";
     }
-    qemu_dbg_putc((p & LAYOUT_R) ? 'r' : '-');
-    qemu_dbg_putc((p & LAYOUT_W) ? 'w' : '-');
-    qemu_dbg_putc((p & LAYOUT_X) ? 'x' : '-');
-    qemu_dbg_putc(' ');
+    static const char *const tbl[8] = { "--- ", "r-- ", "-w- ", "rw- ", "--x ", "r-x ", "-wx ", "rwx " };
+    return tbl[p & 7u];
 }
 
 void kernel_layout_print(void)
 {
     const struct kernel_region *r;
     size_t n = kernel_layout(&r);
-    qemu_dbg_puts("SAMOS: kernel image ");
-    qemu_dbg_put_hex32((uint32_t)(uintptr_t)__kernel_start);
-    qemu_dbg_puts("-");
-    qemu_dbg_put_hex32((uint32_t)(uintptr_t)__kernel_end);
-    qemu_dbg_puts("\n");
+    kprintf("SAMOS: kernel image %p-%p\n", (void *)__kernel_start, (void *)__kernel_end);
     for (size_t i = 0; i < n; i++) {
-        qemu_dbg_puts("SAMOS:   ");
-        qemu_dbg_put_hex32((uint32_t)r[i].start);
-        qemu_dbg_puts("-");
-        qemu_dbg_put_hex32((uint32_t)r[i].end);
-        qemu_dbg_puts(" ");
-        print_perms(r[i].perms);
-        qemu_dbg_puts(" ");
-        qemu_dbg_puts(r[i].name);
-        qemu_dbg_puts("\n");
+        kprintf("SAMOS:   %p-%p %s %s\n", (void *)r[i].start, (void *)r[i].end,
+                perms_str(r[i].perms), r[i].name);
     }
 }
 

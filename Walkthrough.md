@@ -343,3 +343,152 @@ git checkout <commit K0.2>
 make clean && make test    # 34 lignes [PASS], aucune [FAIL]
 make run                   # sortie de la section F
 ```
+
+---
+
+## Jalon K0.3 — VGA, port série, journalisation et panique
+
+### A. Objectif
+
+Doter le noyau de vrais canaux de diagnostic, indépendants de QEMU :
+
+- l'écran VGA texte ;
+- le port série COM1 ;
+- une journalisation formatée commune aux trois canaux ;
+- un chemin d'erreur fatale (`panic`) qui explique où et pourquoi le système s'arrête.
+
+### B. État de départ
+
+Seul le port debugcon `0xE9` de QEMU permettait d'observer le noyau, avec des fonctions d'affichage ad hoc (`qemu_dbg_put_hex32`…). Une erreur fatale appelait `boot_fail()`, propre à `kmain.c`.
+
+### C. Fichiers créés et modifiés
+
+| Fichier | Changement |
+|---|---|
+| `kernel/include/samos/vga.h`, `kernel/drivers/vga.c` | **nouveaux** : pilote VGA texte 80×25 |
+| `kernel/include/samos/serial.h`, `kernel/drivers/serial.c` | **nouveaux** : UART 16550 COM1 |
+| `kernel/include/samos/format.h`, `kernel/lib/format.c` | **nouveaux** : `ksnprintf`/`kvsnprintf` |
+| `kernel/include/samos/math64.h`, `kernel/lib/math64.c` | **nouveaux** : division 64/32 sans libgcc |
+| `kernel/include/samos/log.h`, `kernel/core/log.c` | **nouveaux** : journal multi-puits, `kprintf`, `klog` |
+| `kernel/include/samos/panic.h`, `kernel/core/panic.c` | **nouveaux** : `panic`, `KASSERT`, `stack_collect` |
+| `kernel/arch/i386/boot/entry.asm` | `xor ebp, ebp` avant `call kmain` (terminateur de la chaîne de cadres) |
+| `kernel/core/kmain.c` | réécrit : journal d'abord, `panic()` à la place de `boot_fail()`, journal formaté |
+| `kernel/core/layout.c` | affichage via `kprintf` |
+| `kernel/tests/ktest.c` | sortie via `kprintf` ; modes `test=panic` et refus d'un mode inconnu |
+| `kernel/tests/test_console.c` | **nouveau** : suite K0.3 (27 vérifications) |
+| `tests/host/test_format.c` | **nouveau** : test différentiel contre la libc + `math64` |
+| `tests/qemu/run.sh`, `tests/qemu/cases.sh` | motifs `serial:` (série seule) et `!` (interdit) ; 3 nouveaux cas |
+| `tests/qemu/gdb_checks.sh` | panique attendue pour le magic invalide ; lecture de la mémoire VGA |
+| `Makefile` | nouvelles sources ; `-Wformat=2` ; `make run` sur série ; `make run-vga` |
+
+### D. Séquence d'implémentation
+
+1. **`math64.c` puis `format.c`, testés sur l'hôte avant toute intégration.** Le formateur est le composant le plus exposé (tampons, arguments variadiques). La division 64 bits a été écrite d'abord, car le formateur en dépend pour `%llu`/`%lld`. Le test différentiel a révélé une lacune de conception avant même l'exécution : la précision des entiers (`%.5d`) n'était pas traitée. Elle a été implémentée selon C11 plutôt que documentée comme manquante.
+2. **`vga.c`.** Tampon `volatile`, défilement, `\n\r\t\b`, curseur CRTC, avec détection couleur ou mono via le port `0x3CC`.
+3. **`serial.c`.** Test du registre SCR, initialisation à 115 200 bauds 8N1, test en boucle locale, émission par scrutation bornée.
+4. **`log.c`.** Diffusion vers les trois puits, tampon de pile de 256 octets, troncature signalée.
+5. **`panic.c`.** Garde de récursion, trace EBP validée, sortie QEMU en mode test. Dans `entry.asm`, EBP est mis à 0 avant `kmain`.
+6. **Intégration dans `kmain`.** Le journal est initialisé en premier.
+7. **Tests.** Suite noyau K0.3, cas QEMU série et panique, contrôle de la mémoire VGA par GDB.
+
+### E. Compilation
+
+`make`. Nouvelle option : `-Wformat=2`, qui fait d'un format non littéral une erreur (`-Wformat-nonliteral`, `-Wformat-security`). La liaison reste sans aucun symbole indéfini : `nm -u` est vide, malgré l'usage d'entiers 64 bits.
+
+### F. Exécution
+
+```bash
+make run
+```
+
+Sortie observée sur le terminal, via COM1 :
+
+```text
+SAMOS: kernel entry (SAMOS/AtlasOS 0.1.0-k0)
+[info ] console: debugcon + serial COM1 115200 8N1 + VGA 80x25
+SAMOS: multiboot magic ok, info at 0x00009500, flags 0x0000024f
+SAMOS: cmdline "build/samos.elf "
+SAMOS: kernel image 0x00100000-0x0010d000
+SAMOS:   0x00100000-0x00104000 r-x  .text
+SAMOS:   0x00104000-0x00106000 r--  .rodata
+SAMOS:   0x00106000-0x00108000 rw-  .data+.bss
+SAMOS:   0x00108000-0x00109000 ---G stack-guard
+SAMOS:   0x00109000-0x0010d000 rw-  boot-stack
+SAMOS: boot stack high-water 792 bytes, guard intact
+SAMOS: K0.3 boot complete, halting
+```
+
+Le même texte a été relu dans la mémoire VGA à `0xB8000` par GDB (`build/tests/vga.txt`).
+
+Panique volontaire :
+
+```bash
+qemu-system-i386 -kernel build/samos.elf -append test=panic -serial stdio -display none -device isa-debug-exit,iobase=0xf4,iosize=0x04
+```
+
+Sortie observée :
+
+```text
+*** KERNEL PANIC: deliberate test panic (42)
+*** at kernel/tests/ktest.c:44
+*** stack trace (5 frames, addr2line -e build/samos.elf <addr>):
+***   #0 0x001025c9
+***   #1 0x001025ab
+***   #2 0x0010251f
+***   #3 0x001001e3
+***   #4 0x0010005d
+*** system halted
+```
+
+`addr2line -f -e build/samos.elf` traduit ces adresses en `deliberate_panic_inner`, `deliberate_panic`, `ktest_run_all`, `kmain` et `_start`, soit exactement la chaîne d'appels réelle.
+
+### G. Tests
+
+```bash
+make clean && make test
+```
+
+Résultat observé : **39 lignes `[PASS]`, aucune `[FAIL]`**, statut 0.
+
+| Test | Résultat attendu | Observé |
+|---|---|---|
+| Formateur vs `snprintf` glibc (32 formats) + cas propres à SAMOS + troncature | 0 différence, 0 erreur ASan/UBSan | **PASS** (43 vérifications) |
+| `u64_divmod_u32` vs division native (100 000 cas, d = 0 défini) | identique | **PASS** |
+| Suite noyau K0.3 (VGA, série, formatage i386, troncature, trace de pile) | 27/27 | **PASS** |
+| Total des autotests noyau | statut 33 | **PASS** (87 vérifications, 0 échec) |
+| `serial_output` : messages présents dans le **seul** journal COM1 | présents | **PASS** |
+| `panic_path` : message, `at ktest.c:`, trace, `#1 0x001…`, `system halted`, statut 37 | conforme | **PASS** |
+| `unknown_mode` : `test=nope` refusé, statut 35 | conforme | **PASS** |
+| `boot_halt` : aucune panique, pas de triple fault | conforme | **PASS** |
+| GDB : texte de démarrage dans la mémoire VGA `0xB8000` | présent | **PASS** |
+| GDB : magic invalide → `KERNEL PANIC: invalid multiboot magic 0xdeadbeef` | conforme | **PASS** |
+| Régressions K0.1/K0.2 (ELF, ABI, garde de pile) | inchangé | **PASS** |
+
+### H. Débogage
+
+1. **Le compilateur a refusé les formats de test volontairement invalides.** Avec `-Werror=format`, GCC a rejeté `"%-05d"` (« '0' flag ignored with '-' flag »), `"a%qb"` et `"fin%"` dans `test_format.c`. C'est la preuve que l'attribut `SAMOS_PRINTF` fonctionne. Comme ces cas sont exactement ce que le test veut exercer, les avertissements de format ont été désactivés **dans ce seul fichier de test**, par `#pragma`, avec un commentaire.
+2. **`SAME("100%%")` sans argument** : le macro variadique exige au moins un argument. Il a été remplacé par `SAME("100%%%s", "")`.
+3. **Mesure de pile.** La profondeur maximale est passée de 116 à 792 octets, ce qui correspond à l'ajout du tampon de 256 octets de `kprintf` et des tampons de conversion. C'est cohérent et largement sous les 16 Kio.
+4. **Test GDB VGA intermittent (défaut du script, pas du noyau).** Un second `make test` a échoué : `[FAIL] gdb: texte absent de la memoire VGA`. Le journal GDB montrait un arrêt à `0xfffeb2e7`, c'est-à-dire dans le BIOS. Le noyau n'avait pas encore démarré. **Cause :** la boucle d'attente cherchait `boot complete` dans le journal debugcon, mais le fichier de l'exécution **précédente** existait encore. La boucle se terminait immédiatement, avant que QEMU ne recrée le fichier. **Correction :** suppression des journaux avant chaque lancement de QEMU (`rm -f`). **Vérification :** 10 exécutions consécutives de `gdb_checks.sh`, avec 8/8 `[PASS]` à chaque fois. Leçon : un test qui attend un état doit d'abord détruire toute trace de l'état précédent.
+
+### I. Intégration
+
+- Tout le noyau journalise désormais via `kprintf`/`klog`, et toute erreur fatale passe par `panic`.
+- `qemu_dbg` reste le canal de secours de la panique récursive.
+- K0.4 s'appuiera sur `panic` pour les exceptions CPU, et sur la règle « pas de journal en IRQ » (Details §18.5) pour K0.5.
+
+### J. Critères d'achèvement
+
+- [x] VGA : écriture, retour à la ligne, défilement, couleurs, curseur matériel, bornes vérifiés.
+- [x] Série : présence, boucle locale, transmission de bout en bout vérifiées.
+- [x] Formateur conforme à C11 sur le sous-ensemble supporté, sans débordement possible, sans libgcc.
+- [x] Panique : message, emplacement, trace de pile correcte et symbolisable, récursion gérée.
+- [x] Aucune régression.
+- [x] Documentation à jour (Details §18 à 21).
+
+### K. Reproduction
+
+```bash
+make clean && make test    # 39 lignes [PASS], aucune [FAIL]
+make run                   # sortie de la section F sur le terminal
+```

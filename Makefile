@@ -3,7 +3,8 @@
 # -----------------------------------------------------------------------------
 # Cibles principales :
 #   make            construit build/samos.elf
-#   make run        démarre le noyau sous QEMU (sortie debugcon/série sur le terminal)
+#   make run        démarre le noyau sous QEMU (sortie série sur le terminal)
+#   make run-vga    idem avec la fenêtre d'écran VGA
 #   make debug      démarre QEMU en attente de GDB sur localhost:1234
 #   make check-elf  vérifications statiques de l'image ELF (tools/check_elf.sh)
 #   make test       check-elf + tests hébergés + autotests QEMU + vérifications GDB
@@ -40,7 +41,7 @@ CFLAGS := --target=$(TARGET) -march=i686 -std=c11 \
           -fno-omit-frame-pointer -fno-asynchronous-unwind-tables -fno-unwind-tables \
           -fno-common -O2 -g \
           -Wall -Wextra -Werror -Wshadow -Wstrict-prototypes -Wmissing-prototypes \
-          -Wpointer-arith -Wundef -Wvla -Wimplicit-fallthrough -Wcast-qual \
+          -Wpointer-arith -Wundef -Wvla -Wimplicit-fallthrough -Wcast-qual -Wformat=2 \
           -Ikernel/include -Ikernel/arch/$(ARCH)/include \
           -MMD -MP
 
@@ -60,7 +61,7 @@ LDFLAGS := -m elf_i386 -T kernel/arch/$(ARCH)/linker.ld -nostdlib \
            -z max-page-size=0x1000 -z noexecstack --build-id=none \
            --fatal-warnings -Map=$(BUILD)/samos.map
 
-QEMU_FLAGS := -m 128M -display none -no-reboot -no-shutdown
+QEMU_FLAGS := -m 128M -no-reboot -no-shutdown
 
 # --- Sources ---
 ASM_SRCS := kernel/arch/$(ARCH)/boot/entry.asm
@@ -68,16 +69,23 @@ ASM_SRCS := kernel/arch/$(ARCH)/boot/entry.asm
 C_SRCS := kernel/core/kmain.c \
           kernel/core/bootinfo.c \
           kernel/core/layout.c \
+          kernel/core/log.c \
+          kernel/core/panic.c \
           kernel/drivers/qemu_dbg.c \
+          kernel/drivers/serial.c \
+          kernel/drivers/vga.c \
+          kernel/lib/format.c \
+          kernel/lib/math64.c \
           kernel/lib/string.c \
           kernel/tests/ktest.c \
           kernel/tests/test_boot.c \
-          kernel/tests/test_layout.c
+          kernel/tests/test_layout.c \
+          kernel/tests/test_console.c
 
 OBJS := $(patsubst %.asm,$(BUILD)/%.o,$(ASM_SRCS)) \
         $(patsubst %.c,$(BUILD)/%.o,$(C_SRCS))
 
-.PHONY: all run debug check-elf test test-tools test-host test-qemu test-gdb clean
+.PHONY: all run run-vga debug check-elf test test-tools test-host test-qemu test-gdb clean
 
 all: $(KERNEL)
 
@@ -93,12 +101,17 @@ $(BUILD)/%.o: %.asm
 	@mkdir -p $(dir $@)
 	$(AS) $(ASFLAGS) $< -o $@
 
+# make run     : sans fenêtre ; port série COM1 sur le terminal, debugcon dans build/debugcon.log
+# make run-vga : fenêtre QEMU affichant l'écran VGA (nécessite un affichage graphique)
 run: $(KERNEL)
-	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL) -debugcon stdio
+	$(QEMU) $(QEMU_FLAGS) -display none -kernel $(KERNEL) -serial stdio -debugcon file:$(BUILD)/debugcon.log
+
+run-vga: $(KERNEL)
+	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL) -serial stdio -debugcon file:$(BUILD)/debugcon.log
 
 debug: $(KERNEL)
 	@echo "QEMU attend GDB : gdb $(KERNEL) -ex 'target remote :1234'"
-	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL) -debugcon stdio -s -S
+	$(QEMU) $(QEMU_FLAGS) -display none -kernel $(KERNEL) -serial stdio -debugcon file:$(BUILD)/debugcon.log -s -S
 
 check-elf: $(KERNEL)
 	tools/check_elf.sh $(KERNEL)

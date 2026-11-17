@@ -48,9 +48,18 @@ run_case() {
         echo "  reset CPU inattendu ($resets resets dans $qlog)"
         ok=0
     fi
+    # Motif "serial:TEXTE" : recherché uniquement dans la sortie série
+    # (prouve que le pilote COM1 fonctionne de bout en bout). Motif "!TEXTE" :
+    # ne doit apparaître nulle part. Sinon : debugcon ou série.
     for pat in "$@"; do
-        if ! grep -qF -- "$pat" "$dlog" "$slog" 2>/dev/null; then
-            echo "  motif absent : $pat"
+        local files=("$dlog" "$slog") want=1
+        case "$pat" in
+            serial:*) pat="${pat#serial:}"; files=("$slog") ;;
+            '!'*)     pat="${pat#!}"; want=0 ;;
+        esac
+        if grep -qF -- "$pat" "${files[@]}" 2>/dev/null; then found=1; else found=0; fi
+        if [ "$found" -ne "$want" ]; then
+            if [ "$want" -eq 1 ]; then echo "  motif absent : $pat"; else echo "  motif interdit present : $pat"; fi
             ok=0
         fi
     done

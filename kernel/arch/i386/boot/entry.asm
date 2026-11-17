@@ -150,6 +150,11 @@ _start:
     test esp, 0xF
     jnz .halt
 
+    ; 6) EBP = 0 : termine la chaîne des cadres de pile. La trace de pile de
+    ;    panic() (K0.3) remonte les EBP sauvegardés et s'arrête sur 0, au lieu
+    ;    de suivre une valeur résiduelle laissée par le chargeur.
+    xor ebp, ebp
+
     call kmain
 
     ; kmain est déclarée _Noreturn. Si elle revenait malgré tout, on tombe ici.
