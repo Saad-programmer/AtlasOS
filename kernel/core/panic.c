@@ -3,21 +3,51 @@
  * Panique du noyau et trace de pile. Voir panic.h et Details.md §18.4.
  */
 #include <stdarg.h>
+#include <samos/config.h>
 #include <samos/kernel.h>
 #include <samos/log.h>
 #include <samos/panic.h>
 #include <samos/qemu_dbg.h>
+#include <samos/serial.h>
 #include <samos/vga.h>
 #include <arch/cpu.h>
 
 #define PANIC_MAX_FRAMES 16
 
 static volatile int g_in_panic;
-static bool g_qemu_exit;
+
+#if CONFIG_KTEST
+/* Image de test : une panique termine QEMU (statut 37) pour que le banc de
+ * test obtienne un verdict immédiat, même hors du mode « test » (cas de
+ * démarrage avec peu de RAM, par exemple). */
+static bool g_qemu_exit = true;
 
 void panic_set_qemu_exit(bool enabled)
 {
     g_qemu_exit = enabled;
+}
+
+static void test_exit_if_enabled(void)
+{
+    if (g_qemu_exit) {
+        qemu_exit(QEMU_EXIT_PANIC);
+    }
+}
+#else
+static void test_exit_if_enabled(void)
+{
+    /* Production : jamais de sortie vers QEMU. */
+}
+#endif
+
+/* Sortie d'urgence, sans formatage ni pilote VGA : debugcon (si présent) et
+ * octets bruts sur le port série. Utilisée en cas de panique récursive. */
+static void emergency_puts(const char *s)
+{
+    qemu_dbg_puts(s);
+    for (; *s != '\0'; s++) {
+        serial_putc(*s);
+    }
 }
 
 /*
@@ -54,10 +84,8 @@ void panic_at(const char *file, int line, const char *fmt, ...)
     if (g_in_panic) {
         /* Panique pendant la panique : le journal lui-même est peut-être en
          * cause. Sortie minimale sur debugcon uniquement, puis arrêt. */
-        qemu_dbg_puts("\nSAMOS: RECURSIVE PANIC\n");
-        if (g_qemu_exit) {
-            qemu_exit(QEMU_EXIT_PANIC);
-        }
+        emergency_puts("\nSAMOS: RECURSIVE PANIC\n");
+        test_exit_if_enabled();
         cpu_halt_forever();
     }
     g_in_panic = 1;
@@ -78,8 +106,6 @@ void panic_at(const char *file, int line, const char *fmt, ...)
     }
     kprintf("*** system halted\n");
 
-    if (g_qemu_exit) {
-        qemu_exit(QEMU_EXIT_PANIC);
-    }
+    test_exit_if_enabled();
     cpu_halt_forever();
 }

@@ -11,7 +11,8 @@
 # Code de sortie : 0 si tout passe, 1 sinon.
 # =============================================================================
 set -u
-ELF="${1:?usage: check_elf.sh build/samos.elf}"
+ELF="${1:?usage: check_elf.sh build/samos.elf [--production|--test]}"
+MODE="${2:-}"
 fail=0
 pass() { printf '[PASS] %s\n' "$1"; }
 bad()  { printf '[FAIL] %s\n' "$1"; fail=1; }
@@ -113,5 +114,33 @@ for fn in memset memcpy memmove; do
         pass "$fn sans auto-appel"
     fi
 done
+
+# --- 7. Séparation production / test (K0.7) --------------------------------------
+# Symboles qui ne doivent exister QUE dans l'image de test : autotests, modes de
+# faute volontaire, sortie QEMU. Leur présence dans l'image de production
+# signifierait qu'un mode destructif y est accessible.
+TEST_ONLY_SYMS="ktest_run_all ktest_fatal_mode qemu_exit ktest_check"
+syms=$(nm "$ELF" | awk '{print $3}')
+case "$MODE" in
+    --production)
+        for s in $TEST_ONLY_SYMS; do
+            if grep -qx "$s" <<<"$syms"; then bad "production: symbole de test present ($s)"; fi
+        done
+        # Aucune instruction écrivant sur les ports QEMU 0xE9 / 0xF4.
+        if objdump -d --no-show-raw-insn "$ELF" | grep -qE 'out +%(al|ax|eax),\$0x(e9|f4)'; then
+            bad "production: ecriture sur un port QEMU (0xE9/0xF4)"
+        else
+            pass "production: aucun symbole de test, aucun acces aux ports QEMU"
+        fi
+        ;;
+    --test)
+        for s in $TEST_ONLY_SYMS; do
+            grep -qx "$s" <<<"$syms" || bad "test: symbole attendu absent ($s)"
+        done
+        pass "test: autotests et modes de faute presents"
+        ;;
+    "") ;;
+    *) bad "mode inconnu: $MODE" ;;
+esac
 
 exit $fail

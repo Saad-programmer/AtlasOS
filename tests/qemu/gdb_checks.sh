@@ -27,17 +27,17 @@ OUT="$(dirname "$KERNEL")/tests"; mkdir -p "$OUT"
 PORT="${GDB_PORT:-1234}"
 fail=0
 
-start_qemu() {   # $1 = journal debugcon
+start_qemu() {   # $1 = journal série (image de production : pas de debugcon)
     rm -f "$1"       # jamais de journal périmé d'une exécution précédente
     qemu-system-i386 -m 128M -display none -no-reboot -kernel "$KERNEL" \
-        -debugcon "file:$1" -gdb "tcp::$PORT" -S </dev/null >/dev/null 2>&1 &
+        -serial "file:$1" -gdb "tcp::$PORT" -S </dev/null >/dev/null 2>&1 &
     QPID=$!
     sleep 0.5
 }
 stop_qemu() { kill "$QPID" 2>/dev/null; wait "$QPID" 2>/dev/null; }
 
 # ---- 1. ABI à l'entrée de kmain ----------------------------------------------
-start_qemu "$OUT/gdb_abi.debugcon.log"
+start_qemu "$OUT/gdb_abi.serial.log"
 gdb -q -batch -nx "$KERNEL" \
     -ex "target remote :$PORT" \
     -ex 'break *kmain' -ex 'continue' \
@@ -62,7 +62,7 @@ check "ESP dans la pile de demarrage" "INSTACK=1"
 # ---- 2. Magic invalide (test négatif) ----------------------------------------
 # Après modification de l'argument, `detach` laisse le CPU reprendre
 # l'exécution ; le noyau doit afficher l'erreur puis s'arrêter par HLT.
-BLOG="$OUT/gdb_bad_magic.debugcon.log"
+BLOG="$OUT/gdb_bad_magic.serial.log"
 start_qemu "$BLOG"
 gdb -q -batch -nx "$KERNEL" \
     -ex "target remote :$PORT" \
@@ -80,16 +80,16 @@ else
 fi
 
 # ---- 3. Contenu réel de la mémoire VGA ------------------------------------------
-VLOG="$OUT/gdb_vga.debugcon.log"
+VLOG="$OUT/gdb_vga.serial.log"
 # Supprimer le journal précédent AVANT de lancer QEMU : sinon la boucle
 # d'attente ci-dessous trouve « boot complete » dans l'ancien fichier, GDB
 # s'attache pendant que le CPU est encore dans le BIOS, et le test échoue de
 # façon intermittente (défaut réellement observé, voir Walkthrough K0.3 §H).
 rm -f "$VLOG" "$OUT/vga.bin" "$OUT/vga.txt"
 qemu-system-i386 -m 128M -display none -no-reboot -kernel "$KERNEL" \
-    -debugcon "file:$VLOG" -gdb "tcp::$PORT" </dev/null >/dev/null 2>&1 &
+    -serial "file:$VLOG" -gdb "tcp::$PORT" </dev/null >/dev/null 2>&1 &
 QPID=$!
-# Attendre que le noyau ait terminé son démarrage (message final sur debugcon).
+# Attendre que le noyau ait terminé son démarrage (message final sur la série).
 for _ in $(seq 1 50); do grep -q 'boot complete' "$VLOG" 2>/dev/null && break; sleep 0.1; done
 gdb -q -batch -nx "$KERNEL" -ex "target remote :$PORT" \
     -ex "dump binary memory $OUT/vga.bin 0xb8000 0xb8fa0" -ex 'kill' > "$OUT/gdb_vga.log" 2>&1

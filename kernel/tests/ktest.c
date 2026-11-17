@@ -18,9 +18,29 @@
 
 static unsigned g_checks;
 static unsigned g_failures;
+static const char *g_suite;          /* suite en cours */
+static unsigned g_suite_checks0;     /* compteurs au début de la suite */
+static unsigned g_suite_fail0;
+static unsigned g_suites;
+
+/* Bilan de la suite en cours. Le banc de test exige pour CHAQUE suite une
+ * ligne « done: N checks » avec N > 0 : une suite qui ne serait plus appelée,
+ * ou qui ne vérifierait plus rien, ne peut donc pas passer inaperçue. */
+static void suite_close(void)
+{
+    if (g_suite != 0) {
+        kprintf("[TEST] suite %s done: %u checks, %u failures\n", g_suite,
+                g_checks - g_suite_checks0, g_failures - g_suite_fail0);
+    }
+}
 
 void ktest_suite(const char *name)
 {
+    suite_close();
+    g_suite = name;
+    g_suite_checks0 = g_checks;
+    g_suite_fail0 = g_failures;
+    g_suites++;
     kprintf("[TEST] suite %s\n", name);
 }
 
@@ -78,7 +98,8 @@ void ktest_run_all(void)
     ktest_suite_irq();
     ktest_suite_mm();
 
-    kprintf("[TEST] checks=%u failures=%u\n", g_checks, g_failures);
+    suite_close();
+    kprintf("[TEST] suites=%u checks=%u failures=%u\n", g_suites, g_checks, g_failures);
     if (g_failures == 0) {
         kprintf("[TEST] ALL TESTS PASSED\n");
         qemu_exit(QEMU_EXIT_SUCCESS);

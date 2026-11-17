@@ -38,7 +38,8 @@ void qemu_dbg_puts(const char *s);
 void qemu_dbg_put_hex32(uint32_t v);
 void qemu_dbg_put_dec32(uint32_t v);
 
-/* Termine QEMU si isa-debug-exit est présent ; sinon arrête le CPU. */
+/* Termine QEMU si isa-debug-exit est présent ; sinon arrête le CPU.
+ * Défini UNIQUEMENT dans l'image de test (CONFIG_KTEST = 1). */
 SAMOS_NORETURN void qemu_exit(uint32_t code);
 
 #endif /* SAMOS_QEMU_DBG_H */

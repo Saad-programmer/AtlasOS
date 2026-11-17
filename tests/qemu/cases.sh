@@ -3,14 +3,13 @@
 # SAMOS / AtlasOS — tests/qemu/cases.sh
 # Liste des cas de test QEMU, chargée par run.sh. Un cas par appel :
 #   run_case NOM "LIGNE_DE_COMMANDE" STATUT_ATTENDU "motif 1" "motif 2" ...
-# Motifs : "texte" (debugcon ou série), "serial:texte" (série uniquement),
-#          "!texte" (ne doit apparaître nulle part).
+# Motifs : voir l'en-tête de run.sh ("texte", "serial:", "re:", "!").
+# IMG=prod : image de production ; par défaut : image de test.
 # =============================================================================
 
-# Démarrage normal : le noyau valide Multiboot puis s'arrête par HLT.
-# QEMU ne se termine pas seul : on attend le timeout (124) et on vérifie
-# l'absence de triple fault.
-TIMEOUT=3 run_case boot_halt "" 124 \
+# Démarrage normal de l'image de PRODUCTION : le noyau reste ensuite inactif,
+# QEMU ne se termine pas seul : timeout (124) attendu, sans triple fault.
+IMG=prod TIMEOUT=3 run_case boot_halt "" 124 \
     "SAMOS: kernel entry" \
     "SAMOS: multiboot magic ok" \
     "SAMOS: kernel image 0x00100000-" \
@@ -26,9 +25,19 @@ TIMEOUT=3 run_case boot_halt "" 124 \
     "!KERNEL PANIC"
 
 # K0.3 — Le pilote série transmet réellement : motifs lus dans le seul journal COM1.
-TIMEOUT=3 run_case serial_output "" 124 \
+# K0.7 — Image de production : aucun octet sur le port debugcon 0xE9.
+IMG=prod TIMEOUT=3 run_case serial_output "" 124 \
     "serial:SAMOS: kernel entry" \
-    "serial:console: debugcon + serial COM1 115200 8N1 + VGA 80x25" \
+    "serial:console: serial COM1 115200 8N1 VGA 80x25 (production image)" \
+    "!console: debugcon"
+[ -s "$OUT/serial_output.debugcon.log" ] && { echo "[FAIL] production: octets écrits sur debugcon"; fail=1; }
+
+# K0.7 — L'image de production REFUSE les modes de test, y compris destructifs :
+# elle démarre normalement, sans panique ni sortie QEMU.
+IMG=prod TIMEOUT=3 run_case prod_refuses_test "test=wtext" 124 \
+    "serial:test mode requested but not available in the production image" \
+    "serial:SAMOS: K0.6 boot complete" \
+    "!KERNEL PANIC" "![TEST]"
     "serial:SAMOS: K0.6 boot complete"
 
 # Autotests noyau, toutes suites.
@@ -39,6 +48,12 @@ run_case selftest "test" 33 \
     "[TEST] suite K0.4 cpu" \
     "[TEST] suite K0.5 irq" \
     "[TEST] suite K0.6 mm" \
+    "re:suite K0.1/K0.2 boot done: [1-9][0-9]* checks, 0 failures" \
+    "re:suite K0.2 layout done: [1-9][0-9]* checks, 0 failures" \
+    "re:suite K0.3 console done: [1-9][0-9]* checks, 0 failures" \
+    "re:suite K0.4 cpu done: [1-9][0-9]* checks, 0 failures" \
+    "re:suite K0.5 irq done: [1-9][0-9]* checks, 0 failures" \
+    "re:suite K0.6 mm done: [1-9][0-9]* checks, 0 failures" \
     "[TEST] ALL TESTS PASSED" \
     "![FAIL]"
 

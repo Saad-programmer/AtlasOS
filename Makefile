@@ -13,7 +13,13 @@
 
 ARCH      := i386
 BUILD     := build
-KERNEL    := $(BUILD)/samos.elf
+# K0.7 : deux images distinctes construites à partir des mêmes sources.
+#   build/samos.elf       PRODUCTION : sans autotests, sans modes de faute
+#                         volontaire, sans écriture sur les ports QEMU 0xE9/0xF4
+#   build/samos-test.elf  TEST : autotests + modes de faute (ligne de commande
+#                         « test », « test=<mode> »), réservée aux bancs de test
+KERNEL      := $(BUILD)/samos.elf
+TEST_KERNEL := $(BUILD)/samos-test.elf
 
 CC        := clang
 AS        := nasm
@@ -34,6 +40,8 @@ TARGET    := i686-unknown-none-elf
 #                         System V) ; sans cette option la cible i686-elf de
 #                         Clang ne garantit que 4 octets (vérifié par désassemblage)
 #   -fno-omit-frame-pointer : chaîne EBP conservée (traces de pile en panic)
+#   -ffile-prefix-map    : chemins relatifs dans DWARF et __FILE__ ; l'image ne
+#                          dépend plus du répertoire de compilation (build reproductible)
 CFLAGS := --target=$(TARGET) -march=i686 -std=c11 \
           -ffreestanding -nostdlibinc -fno-pic -fno-pie \
           -fno-stack-protector -fcf-protection=none \
@@ -43,7 +51,8 @@ CFLAGS := --target=$(TARGET) -march=i686 -std=c11 \
           -Wall -Wextra -Werror -Wshadow -Wstrict-prototypes -Wmissing-prototypes \
           -Wpointer-arith -Wundef -Wvla -Wimplicit-fallthrough -Wcast-qual -Wformat=2 \
           -Ikernel/include -Ikernel/arch/$(ARCH)/include \
-          -MMD -MP
+          -MMD -MP \
+          -ffile-prefix-map=$(CURDIR)=.
 
 # --- Options de l'assembleur NASM ---
 #   -f elf32        : objets ELF 32 bits
@@ -59,9 +68,13 @@ ASFLAGS := -f elf32 -g -F dwarf -w+all -w+error
 #   --fatal-warnings         : avertissements (ex. segment RWX) = erreurs
 LDFLAGS := -m elf_i386 -T kernel/arch/$(ARCH)/linker.ld -nostdlib \
            -z max-page-size=0x1000 -z noexecstack --build-id=none \
-           --fatal-warnings -Map=$(BUILD)/samos.map
+           --fatal-warnings
 
 QEMU_FLAGS := -m 128M -no-reboot -no-shutdown
+
+# Configuration par image (macros testées par #if dans le code).
+PROD_DEFS := -DCONFIG_KTEST=0 -DCONFIG_QEMU_DEBUGCON=0
+TEST_DEFS := -DCONFIG_KTEST=1 -DCONFIG_QEMU_DEBUGCON=1
 
 # --- Sources ---
 ASM_SRCS := kernel/arch/$(ARCH)/boot/entry.asm \
@@ -89,69 +102,97 @@ C_SRCS := kernel/arch/$(ARCH)/gdt.c \
           kernel/lib/format.c \
           kernel/lib/math64.c \
           kernel/lib/ringbuf.c \
+          kernel/lib/string.c \
           kernel/mm/memmap.c \
           kernel/mm/mm.c \
           kernel/mm/pmm.c \
-          kernel/mm/pmm_core.c \
-          kernel/lib/string.c \
-          kernel/tests/ktest.c \
-          kernel/tests/test_boot.c \
-          kernel/tests/test_layout.c \
-          kernel/tests/test_console.c \
-          kernel/tests/test_cpu.c \
-          kernel/tests/test_faults.c \
-          kernel/tests/test_irq.c \
-          kernel/tests/test_mm.c
+          kernel/mm/pmm_core.c
 
-OBJS := $(patsubst %.asm,$(BUILD)/%.o,$(ASM_SRCS)) \
-        $(patsubst %.c,$(BUILD)/%.o,$(C_SRCS))
+# Sources présentes UNIQUEMENT dans l'image de test.
+TEST_SRCS := kernel/tests/ktest.c \
+             kernel/tests/test_boot.c \
+             kernel/tests/test_layout.c \
+             kernel/tests/test_console.c \
+             kernel/tests/test_cpu.c \
+             kernel/tests/test_faults.c \
+             kernel/tests/test_irq.c \
+             kernel/tests/test_mm.c
 
-.PHONY: all run run-vga debug check-elf test test-tools test-host test-qemu test-gdb clean
+objs = $(patsubst %.asm,$(BUILD)/$(1)/%.o,$(ASM_SRCS)) $(patsubst %.c,$(BUILD)/$(1)/%.o,$(2))
+PROD_OBJS := $(call objs,prod,$(C_SRCS))
+TEST_OBJS := $(call objs,test,$(C_SRCS) $(TEST_SRCS))
 
-all: $(KERNEL)
+.PHONY: all run run-vga run-test debug check-elf test test-tools test-host test-qemu \
+        test-gdb test-mutation test-repro clean
 
-$(KERNEL): $(OBJS) kernel/arch/$(ARCH)/linker.ld
+all: $(KERNEL) $(TEST_KERNEL)
+
+$(KERNEL): $(PROD_OBJS) kernel/arch/$(ARCH)/linker.ld
 	@mkdir -p $(dir $@)
-	$(LD) $(LDFLAGS) -o $@ $(OBJS)
+	$(LD) $(LDFLAGS) -Map=$(BUILD)/samos.map -o $@ $(PROD_OBJS)
 
-$(BUILD)/%.o: %.c
+$(TEST_KERNEL): $(TEST_OBJS) kernel/arch/$(ARCH)/linker.ld
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(LD) $(LDFLAGS) -Map=$(BUILD)/samos-test.map -o $@ $(TEST_OBJS)
 
-$(BUILD)/%.o: %.asm
+$(BUILD)/prod/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(PROD_DEFS) -c $< -o $@
+
+$(BUILD)/test/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(TEST_DEFS) -c $< -o $@
+
+$(BUILD)/prod/%.o $(BUILD)/test/%.o: %.asm
 	@mkdir -p $(dir $@)
 	$(AS) $(ASFLAGS) $< -o $@
 
-# make run     : sans fenêtre ; port série COM1 sur le terminal, debugcon dans build/debugcon.log
-# make run-vga : fenêtre QEMU affichant l'écran VGA (nécessite un affichage graphique)
+# make run      : image de PRODUCTION, sans fenêtre ; port série COM1 sur le terminal
+# make run-vga  : idem avec la fenêtre de l'écran VGA (affichage graphique requis)
+# make run-test : image de TEST (debugcon dans build/debugcon.log)
 run: $(KERNEL)
-	$(QEMU) $(QEMU_FLAGS) -display none -kernel $(KERNEL) -serial stdio -debugcon file:$(BUILD)/debugcon.log
+	$(QEMU) $(QEMU_FLAGS) -display none -kernel $(KERNEL) -serial stdio
 
 run-vga: $(KERNEL)
-	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL) -serial stdio -debugcon file:$(BUILD)/debugcon.log
+	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL) -serial stdio
+
+run-test: $(TEST_KERNEL)
+	$(QEMU) $(QEMU_FLAGS) -display none -kernel $(TEST_KERNEL) -serial stdio -debugcon file:$(BUILD)/debugcon.log
 
 debug: $(KERNEL)
 	@echo "QEMU attend GDB : gdb $(KERNEL) -ex 'target remote :1234'"
-	$(QEMU) $(QEMU_FLAGS) -display none -kernel $(KERNEL) -serial stdio -debugcon file:$(BUILD)/debugcon.log -s -S
+	$(QEMU) $(QEMU_FLAGS) -display none -kernel $(KERNEL) -serial stdio -s -S
 
-check-elf: $(KERNEL)
-	tools/check_elf.sh $(KERNEL)
+check-elf: $(KERNEL) $(TEST_KERNEL)
+	tools/check_elf.sh $(KERNEL) --production
+	tools/check_elf.sh $(TEST_KERNEL) --test
 
-test-tools: $(KERNEL)
-	tests/tools/check_elf_negative.sh $(KERNEL)
+test-tools: $(KERNEL) $(TEST_KERNEL)
+	tests/tools/check_elf_negative.sh $(TEST_KERNEL)
+	tests/tools/harness_selftest.sh $(KERNEL) $(TEST_KERNEL)
 
 test-host:
 	tests/host/run.sh
 
-test-qemu: $(KERNEL)
-	tests/qemu/run.sh $(KERNEL)
+test-qemu: $(KERNEL) $(TEST_KERNEL)
+	tests/qemu/run.sh $(KERNEL) $(TEST_KERNEL)
 
 test-gdb: $(KERNEL)
 	tests/qemu/gdb_checks.sh $(KERNEL)
+
+# Vérification du banc de tests lui-même (K0.7) : défauts injectés dans une
+# copie isolée des sources ; chaque défaut doit être DÉTECTÉ. Plusieurs minutes.
+test-mutation:
+	tests/mutation/run.sh
+
+# Reproductibilité : deux compilations dans deux répertoires différents
+# doivent produire des images identiques octet pour octet.
+test-repro:
+	tests/tools/repro_check.sh
 
 test: check-elf test-tools test-host test-qemu test-gdb
 
 clean:
 	rm -rf $(BUILD)
 
--include $(OBJS:.o=.d)
+-include $(PROD_OBJS:.o=.d) $(TEST_OBJS:.o=.d)

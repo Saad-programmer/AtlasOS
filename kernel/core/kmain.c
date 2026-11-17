@@ -19,6 +19,7 @@
  *   8. Sinon : STI puis boucle d'inactivité (écho clavier).
  */
 #include <samos/bootinfo.h>
+#include <samos/config.h>
 #include <samos/kernel.h>
 #include <samos/ktest.h>
 #include <samos/layout.h>
@@ -68,9 +69,11 @@ void kmain(uint32_t magic, uint32_t mbi_phys)
 
     unsigned sinks = log_init();
     kprintf("SAMOS: kernel entry (" SAMOS_NAME " " SAMOS_VERSION ")\n");
-    klog(LOG_INFO, "console: debugcon%s%s\n",
-         (sinks & LOG_SINK_SERIAL) ? " + serial COM1 115200 8N1" : " (serial absent)",
-         (sinks & LOG_SINK_VGA) ? " + VGA 80x25" : "");
+    klog(LOG_INFO, "console:%s%s%s (%s image)\n",
+         (sinks & LOG_SINK_DEBUGCON) ? " debugcon" : "",
+         (sinks & LOG_SINK_SERIAL) ? " serial COM1 115200 8N1" : " (serial absent)",
+         (sinks & LOG_SINK_VGA) ? " VGA 80x25" : "",
+         CONFIG_KTEST ? "test" : "production");
 
     /* K0.4 : GDT propre au noyau puis IDT. Avant ce point, toute exception
      * provoquait un triple fault ; après, elle produit un rapport et panic(). */
@@ -118,10 +121,17 @@ void kmain(uint32_t magic, uint32_t mbi_phys)
         klog(LOG_WARN, "keyboard: unavailable (%s)\n", keyboard_error());
     }
 
+#if CONFIG_KTEST
     if (cmdline_has("test")) {
         panic_set_qemu_exit(true);
         ktest_run_all();
     }
+#else
+    if (cmdline_has("test")) {
+        /* Production : les autotests et modes de faute ne sont pas compilés. */
+        klog(LOG_WARN, "test mode requested but not available in the production image\n");
+    }
+#endif
 
     kprintf("SAMOS: boot stack high-water %zu bytes, guard page %s\n",
             boot_stack_high_water(), boot_stack_guard_intact() ? "unmapped (MMU-enforced)" : "MAPPED (unsafe)");

@@ -1,0 +1,37 @@
+/* PREUVE TEMPORAIRE (non commitée) : défauts de K0.6 reproduits sur le code d'origine. */
+#include <arch/paging.h>
+#include <samos/kernel.h>
+#include <samos/log.h>
+#include <samos/pmm.h>
+#include <samos/ktest.h>
+void evidence_run(void);
+void evidence_run(void)
+{
+    uint32_t v = 0;
+    /* E1 : projeter la page NULL annule la protection contre le déréférencement de NULL */
+    uint32_t f1 = pmm_alloc_frame();
+    kprintf("[EVID] E1 vmm_map(0x0) = %d\n", vmm_map(0, f1, PTE_WRITE));
+    kprintf("[EVID] E1 read NULL after map: probe=%d (0 = NULL deref no longer faults)\n", mem_probe_read((void *)0, &v));
+    /* E2 : projeter la page de garde annule la détection de débordement de pile */
+    uint32_t f2 = pmm_alloc_frame();
+    kprintf("[EVID] E2 vmm_map(guard) = %d\n", vmm_map((uint32_t)(uintptr_t)__stack_guard_start, f2, PTE_WRITE));
+    /* E3 : alias INSCRIPTIBLE du code noyau (.text) à une autre adresse */
+    uint32_t text_page = (uint32_t)(uintptr_t)&kmain & ~0xFFFu;
+    kprintf("[EVID] E3 vmm_map(0xD0000000 -> .text, W) = %d\n", vmm_map(0xD0000000u, text_page, PTE_WRITE));
+    uint32_t off = (uint32_t)(uintptr_t)&kmain & 0xFFFu;
+    uint32_t before = *(volatile uint32_t *)&kmain;
+    int w = mem_probe_write((void *)(uintptr_t)(0xD0000000u + off), 0xCCCCCCCCu);
+    kprintf("[EVID] E3 write via alias = %d, kmain first word %08x -> %08x\n", w, before, *(volatile uint32_t *)&kmain);
+    *(volatile uint32_t *)(uintptr_t)(0xD0000000u + off) = before;   /* restauration */
+    /* E4 : libérer une table de pages VIVANTE (celle qui projette le noyau) est accepté */
+    uint32_t pd = paging_directory();
+    uint32_t pt_kernel = ((uint32_t *)(uintptr_t)pd)[0x100000u >> 22] & 0xFFFFF000u;
+    kprintf("[EVID] E4 pmm_free_frame(live page table %08x) = %d (0 = accepted)\n", pt_kernel, pmm_free_frame(pt_kernel));
+    /* E5 : libérer un cadre encore projeté est accepté ; il est redistribué en restant projeté */
+    uint32_t f5 = pmm_alloc_frame();
+    vmm_map(0xD0001000u, f5, PTE_WRITE);
+    kprintf("[EVID] E5 pmm_free_frame(still mapped) = %d\n", pmm_free_frame(f5));
+    uint32_t g5 = pmm_alloc_frame();
+    kprintf("[EVID] E5 realloc returned %08x (same frame=%d) while 0xD0001000 still maps it\n", g5, g5 == f5);
+    
+}

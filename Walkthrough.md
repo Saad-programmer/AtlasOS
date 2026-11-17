@@ -898,3 +898,56 @@ Résultat observé : **61 lignes `[PASS]`, aucune `[FAIL]`**, statut 0.
 make clean && make test    # 61 lignes [PASS], aucune [FAIL]
 qemu-system-i386 -m 128M -kernel build/samos.elf -append test=stack -serial stdio -display none -device isa-debug-exit,iobase=0xf4,iosize=0x04
 ```
+
+---
+
+## Phase K0.7 — Durcissement, vérification indépendante et préparation de la publication
+
+Phase autorisée par le développeur après la revue de K0. Elle ne comporte **aucune** fonctionnalité de K1 et aucun travail de portage 64 bits. Le compte rendu complet se trouve dans `docs/review/K0.7-review.md`. Les étapes ci-dessous sont consignées dans l'ordre réel d'exécution.
+
+### K0.7.0 — Nouvel audit et preuves des défauts mémoire
+
+Le noyau a été relu en entier, sans s'appuyer sur la revue K0. Les défauts de l'API mémoire ont d'abord été **reproduits sur le code d'origine** (commit `697dc01`), dans un *worktree* Git isolé, à l'aide d'un fichier de test temporaire non commité. Ce fichier est conservé sous `docs/review/evidence/k06-evidence.c.txt`, et le journal sous `docs/review/evidence/k06-memory-defects.log` :
+
+```text
+[EVID] E1 vmm_map(0x0) = 0
+[EVID] E1 read NULL after map: probe=0 (0 = NULL deref no longer faults)
+[EVID] E2 vmm_map(guard) = 0
+[EVID] E3 vmm_map(0xD0000000 -> .text, W) = 0
+[EVID] E3 write via alias = 0, kmain first word 53e58955 -> cccccccc
+[EVID] E4 pmm_free_frame(live page table 00137000) = 0 (0 = accepted)
+[EVID] E5 pmm_free_frame(still mapped) = 0
+[EVID] E5 realloc returned 0015a000 (same frame=1) while 0xD0001000 still maps it
+```
+
+Ces résultats contredisent la revue K0, qui classait ces risques MEDIUM (« sans objet en K0 »). Ils sont reclassés **HIGH** : l'API du noyau permet de violer les invariants qu'il prétend garantir.
+
+### K0.7.1 — Images de production et de test séparées ; vérification du banc
+
+**Fichiers.**
+
+- `Makefile` : deux images (`build/samos.elf`, `build/samos-test.elf`), objets séparés (`build/prod/`, `build/test/`), macros `CONFIG_KTEST` et `CONFIG_QEMU_DEBUGCON`, option `-ffile-prefix-map`, cibles `run-test`, `test-mutation` et `test-repro`.
+- `kernel/include/samos/config.h` : **erreur de compilation** si une macro de configuration manque. Une image ne peut donc pas recevoir le code de test par oubli.
+- `kmain.c`, `panic.c`, `log.c`, `qemu_dbg.c` : code de test, `qemu_exit` et debugcon conditionnés. En production, une panique récursive écrit sur le port série ; une ligne de commande `test=...` est refusée avec un avertissement.
+- `kernel/tests/ktest.c` : bilan par suite (`suite X done: N checks, F failures`).
+- `tools/check_elf.sh` : mode `--production`, qui exige l'absence des symboles de test et de toute instruction `out` vers `0xE9`/`0xF4` ; mode `--test`.
+- `tests/qemu/run.sh` : réécrit, avec une seule fonction de verdict pour les deux types de cas. Ajouts : `IMG=prod|test`, motifs `re:`, échec si QEMU ou l'image est absent, si le journal QEMU est vide ou si aucun cas n'a été exécuté.
+- `tests/qemu/cases.sh` : démarrages de production ; cas `prod_refuses_test` ; bilan de chaque suite exigé avec N > 0 et 0 échec.
+- `tests/qemu/gdb_checks.sh` : image de production, journaux série.
+- `tests/tools/check_elf_negative.sh` : l'image de test présentée comme production doit être rejetée.
+- `tests/tools/harness_selftest.sh` : **nouveau**, 8 scénarios où le banc QEMU doit échouer, plus une contre-épreuve.
+
+**Vérification de la vérification.** Avant d'en faire un test permanent, `check_elf.sh --production` a été lancé sur l'image de test. Il a rejeté l'image avec 5 diagnostics : 4 symboles de test et l'écriture sur un port QEMU, alors que l'image de test contient 14 instructions `out` vers ces ports. Pour chaque scénario de `harness_selftest.sh`, la **cause** de l'échec a été vérifiée dans le journal correspondant :
+
+| Scénario | Cause observée |
+|---|---|
+| H1 QEMU introuvable | `QEMU introuvable` |
+| H2 image absente | `image absente` |
+| H3 motif inexistant | `motif absent` |
+| H4 statut incorrect | `statut QEMU 37, attendu 33` |
+| H5 motif interdit | `motif interdit present` |
+| H6 aucun cas | `aucun cas exécuté` |
+| H7 triple fault non attendu | `triple fault ou reset inattendu (triple=1, resets=2)` |
+| H8 image inconnue | `statut QEMU 1, attendu 124` |
+
+**Résultat :** `make test` donne 24 cas QEMU sur 24, les vérifications GDB, les tests hébergés et les tests d'outils au vert. Statut 0.

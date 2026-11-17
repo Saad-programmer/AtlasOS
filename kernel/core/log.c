@@ -2,6 +2,7 @@
  * SAMOS / AtlasOS — kernel/core/log.c
  * Journalisation multi-puits. Voir log.h.
  */
+#include <samos/config.h>
 #include <samos/format.h>
 #include <samos/log.h>
 #include <samos/qemu_dbg.h>
@@ -9,7 +10,11 @@
 #include <samos/string.h>
 #include <samos/vga.h>
 
+#if CONFIG_QEMU_DEBUGCON
 static unsigned g_sinks = LOG_SINK_DEBUGCON;   /* debugcon utilisable avant toute init */
+#else
+static unsigned g_sinks;                       /* production : pas de port 0xE9 */
+#endif
 static unsigned g_truncations;
 
 unsigned log_init(void)

@@ -6,11 +6,11 @@
 # exige que l'outil les rejette.
 # =============================================================================
 set -u
-ELF="${1:?usage: check_elf_negative.sh build/samos.elf}"
+ELF="${1:?usage: check_elf_negative.sh build/samos-test.elf}"
 TMP="$(dirname "$ELF")/tests/neg"; mkdir -p "$TMP"
 fail=0
 expect_reject() {   # NOM FICHIER MOTIF_ATTENDU
-    if out=$(tools/check_elf.sh "$2" 2>&1); then
+    if out=$(tools/check_elf.sh "$2" --production 2>&1); then
         echo "[FAIL] check_elf accepte une image alteree : $1"; fail=1
     elif grep -qF "$3" <<<"$out"; then
         echo "[PASS] check_elf rejette : $1"
@@ -28,4 +28,7 @@ expect_reject "somme Multiboot corrompue" "$TMP/bad_checksum.elf" "checksum inva
 cp "$ELF" "$TMP/no_magic.elf"
 printf '\x00\x00\x00\x00' | dd of="$TMP/no_magic.elf" bs=1 seek=$((MB_OFF)) conv=notrunc status=none
 expect_reject "en-tete Multiboot absent" "$TMP/no_magic.elf" "introuvable"
+# 3. Image de TEST présentée comme image de production : doit être rejetée
+#    (prouve que la vérification de séparation K0.7 sait échouer).
+expect_reject "image de test declaree production" "$ELF" "symbole de test present"
 exit $fail

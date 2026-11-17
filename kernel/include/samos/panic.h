@@ -10,7 +10,7 @@
  *      au strict minimum,
  *   3. affiche le message, le fichier/la ligne et une trace de pile (chaîne
  *      des EBP) sur tous les puits de journalisation,
- *   4. en mode test, termine QEMU avec QEMU_EXIT_PANIC ; sinon arrête le CPU.
+ *   4. image de test : termine QEMU avec QEMU_EXIT_PANIC ; sinon arrête le CPU.
  */
 #ifndef SAMOS_PANIC_H
 #define SAMOS_PANIC_H
@@ -33,7 +33,8 @@ SAMOS_NORETURN void panic_at(const char *file, int line, const char *fmt, ...) S
         }                                                          \
     } while (0)
 
-/* En mode test, la panique termine QEMU (statut 37) au lieu d'arrêter le CPU. */
+/* Image de test uniquement : la panique termine QEMU (statut 37) au lieu
+ * d'arrêter le CPU (activé par défaut dans cette image). */
 void panic_set_qemu_exit(bool enabled);
 
 /*
