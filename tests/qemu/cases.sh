@@ -16,7 +16,10 @@ TIMEOUT=3 run_case boot_halt "" 124 \
     "SAMOS: kernel image 0x00100000-" \
     "---G stack-guard" \
     "bytes, guard intact" \
-    "SAMOS: K0.4 boot complete, halting" \
+    "SAMOS: K0.5 boot complete, interrupts enabled" \
+    "irq: 8259 PIC remapped to vectors 0x20-0x2f" \
+    "timer: PIT channel 0, 100 Hz (divisor 11932)" \
+    "keyboard: 8042 self-test ok, PS/2 keyboard reset ok, IRQ1 enabled" \
     "cpu: GDT loaded" \
     "cpu: IDT loaded (32 exception gates, #DF task gate)" \
     "!KERNEL PANIC"
@@ -25,7 +28,7 @@ TIMEOUT=3 run_case boot_halt "" 124 \
 TIMEOUT=3 run_case serial_output "" 124 \
     "serial:SAMOS: kernel entry" \
     "serial:console: debugcon + serial COM1 115200 8N1 + VGA 80x25" \
-    "serial:SAMOS: K0.4 boot complete, halting"
+    "serial:SAMOS: K0.5 boot complete"
 
 # Autotests noyau, toutes suites.
 run_case selftest "test" 33 \
@@ -33,6 +36,7 @@ run_case selftest "test" 33 \
     "[TEST] suite K0.2 layout" \
     "[TEST] suite K0.3 console" \
     "[TEST] suite K0.4 cpu" \
+    "[TEST] suite K0.5 irq" \
     "[TEST] ALL TESTS PASSED" \
     "![FAIL]"
 
@@ -66,10 +70,11 @@ run_case exc_gp "test=gp" 37 \
     "serial:selector error: GDT index 480" \
     "serial:KERNEL PANIC: unhandled General Protection (#GP)"
 
-# INT 0x20 : porte de type valide mais P = 0 => #NP, code = 0x20*8 + 2 (bit IDT).
+# INT 0x2E (IRQ 14, inutilisée) : porte de type valide mais P = 0 => #NP,
+# code = 0x2E*8 + 2 (bit IDT) = 0x172.
 run_case exc_np "test=np" 37 \
-    "serial:*** CPU exception 11: Segment Not Present (#NP), error code 0x00000102" \
-    "serial:selector error: IDT index 32" \
+    "serial:*** CPU exception 11: Segment Not Present (#NP), error code 0x00000172" \
+    "serial:selector error: IDT index 46" \
     "serial:KERNEL PANIC: unhandled Segment Not Present (#NP)"
 
 # INT 0x80 : entrée entièrement nulle (type de porte invalide). Le CPU vérifie
@@ -90,3 +95,14 @@ run_case exc_df "test=df" 37 \
 EXPECT_TRIPLE=1 run_case exc_triple "test=triple" 0 \
     "[TEST] fatal mode 'triple'" \
     "!KERNEL PANIC"
+
+# ---------------------------------------------------------------------------
+# K0.5 — Clavier de bout en bout : frappes réelles injectées par le moniteur
+# QEMU -> contrôleur 8042 émulé -> IRQ 1 -> file circulaire -> décodeur.
+# Majuscules par Shift, chiffres et ponctuation, Entrée termine la ligne.
+# ---------------------------------------------------------------------------
+TIMEOUT=20 run_case_keys keyboard_e2e "test=kbd" 33 \
+    "shift-s a m o s spc shift-k 0 dot 5 spc shift-1 ret" \
+    "serial:[TEST] kbd ready" \
+    "serial:[TEST] kbd line: 'Samos K0.5 !'" \
+    "serial:dropped=0"

@@ -25,6 +25,8 @@ void ktest_suite_boot(void);       /* K0.1 */
 void ktest_suite_layout(void);     /* K0.2 */
 void ktest_suite_console(void);    /* K0.3 */
 void ktest_suite_cpu(void);        /* K0.4 */
+void ktest_suite_irq(void);        /* K0.5 */
+void ktest_keyboard_line(void);    /* K0.5, mode test=kbd */
 
 /* Déclenche volontairement une faute fatale (modes test=ud, de, gp, np,
  * intbad, df, triple). Retourne false si le mode est inconnu. */

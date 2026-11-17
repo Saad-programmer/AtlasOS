@@ -91,7 +91,9 @@ static void test_idt(void)
     }
     KTEST_CHECK(exc_ok);                                            /* portes d'interruption DPL0 */
     KTEST_CHECK(t[EXC_DF].type_attr == 0x85 && t[EXC_DF].selector == GDT_TSS_DF_SEL);  /* tâche */
-    KTEST_CHECK((t[32].type_attr & IDT_PRESENT) == 0);              /* IRQ pas encore activées */
+    /* IRQ 15 (vecteur 0x2F) : aucun pilote ne l'utilise => non présente.
+     * (En K0.4 ce test portait sur le vecteur 32, devenu l'IRQ 0 du PIT en K0.5.) */
+    KTEST_CHECK((t[0x2F].type_attr & IDT_PRESENT) == 0);
     KTEST_CHECK((t[255].type_attr & IDT_PRESENT) == 0);
     KTEST_CHECK(!interrupt_register(EXC_BP, 0));                    /* gestionnaire nul refusé */
 }

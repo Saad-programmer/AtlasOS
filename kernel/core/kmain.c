@@ -12,8 +12,10 @@
  *   2. GDT + IDT (K0.4) : toute exception devient diagnosticable.
  *   3. Validation Multiboot (K0.1) : en cas d'échec -> panic().
  *   4. Disposition mémoire (K0.2) : affichage et vérification -> panic().
- *   5. Mode test (`test` sur la ligne de commande) : autotests sous QEMU.
- *   6. Sinon : rapport final et arrêt sûr.
+ *   5. Interruptions matérielles (K0.5) : PIC remappé et tout masqué, puis
+ *      PIT (IRQ 0) et clavier (IRQ 1). IF reste à 0 jusqu'à l'étape 7.
+ *   6. Mode test (`test` sur la ligne de commande) : autotests sous QEMU.
+ *   7. Sinon : STI puis boucle d'inactivité (écho clavier).
  */
 #include <samos/bootinfo.h>
 #include <samos/kernel.h>
@@ -25,8 +27,38 @@
 #include <arch/cpu.h>
 #include <arch/gdt.h>
 #include <arch/interrupt.h>
+#include <arch/pic.h>
+#include <samos/keyboard.h>
+#include <samos/pit.h>
 
 uintptr_t kmain_frame_address;
+
+/*
+ * Boucle d'inactivité (K0.5) : traite les touches en dehors du contexte
+ * d'interruption, puis dort jusqu'à la prochaine interruption.
+ * Le test « rien à faire ? » est fait avec IF = 0, puis cpu_idle() exécute
+ * « sti ; hlt » : une IRQ survenue entre le test et HLT ne peut pas être
+ * manquée (Details.md §28.5).
+ */
+static SAMOS_NORETURN void idle_loop(void)
+{
+    struct key_event ev;
+    for (;;) {
+        cpu_cli();
+        if (!keyboard_get_event(&ev)) {
+            /* File vide, vérifiée avec IF = 0 : dormir immédiatement.
+             * NE PAS réactiver IF avant (sti ... cli ... hlt) : une IRQ
+             * arrivée entre les deux déposerait une touche, puis le CPU
+             * dormirait avec cette touche en attente (réveil perdu). */
+            cpu_idle();
+            continue;
+        }
+        cpu_sti();
+        if (ev.pressed && ev.ascii != 0) {
+            kprintf("%c", ev.ascii);
+        }
+    }
+}
 
 void kmain(uint32_t magic, uint32_t mbi_phys)
 {
@@ -63,6 +95,20 @@ void kmain(uint32_t magic, uint32_t mbi_phys)
         panic("kernel layout invariants violated");
     }
 
+    pic_init();
+    klog(LOG_INFO, "irq: 8259 PIC remapped to vectors 0x%02x-0x%02x, all lines masked\n",
+         PIC_IRQ_BASE, PIC_IRQ_BASE + PIC_IRQ_COUNT - 1);
+    if (!pit_init(PIT_DEFAULT_HZ)) {
+        panic("PIT initialisation failed");
+    }
+    klog(LOG_INFO, "timer: PIT channel 0, %u Hz (divisor %u)\n", pit_hz(), pit_divisor());
+    if (keyboard_init()) {
+        klog(LOG_INFO, "keyboard: 8042 self-test ok, PS/2 keyboard reset ok, IRQ1 enabled\n");
+    } else {
+        /* Pas fatal : le noyau reste utilisable sans clavier (port série). */
+        klog(LOG_WARN, "keyboard: unavailable (%s)\n", keyboard_error());
+    }
+
     if (cmdline_has("test")) {
         panic_set_qemu_exit(true);
         ktest_run_all();
@@ -70,6 +116,6 @@ void kmain(uint32_t magic, uint32_t mbi_phys)
 
     kprintf("SAMOS: boot stack high-water %zu bytes, guard %s\n",
             boot_stack_high_water(), boot_stack_guard_intact() ? "intact" : "CORRUPTED");
-    kprintf("SAMOS: K0.4 boot complete, halting\n");
-    cpu_halt_forever();
+    kprintf("SAMOS: K0.5 boot complete, interrupts enabled, keyboard echo active\n");
+    idle_loop();
 }

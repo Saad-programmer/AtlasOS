@@ -42,7 +42,7 @@ Le but n'est pas d'assembler des bibliothèques existantes. Il s'agit de **compr
 | K0.2 | Script de liaison, sections ELF, disposition mémoire | ✅ implémenté et vérifié |
 | K0.3 | VGA texte, port série COM1, journalisation, `panic` | ✅ implémenté et vérifié |
 | K0.4 | GDT, IDT, exceptions CPU | ✅ implémenté et vérifié |
-| K0.5 | PIC 8259, PIT, clavier PS/2, file circulaire | ⏳ à venir |
+| K0.5 | PIC 8259, PIT, clavier PS/2, file circulaire | ✅ implémenté et vérifié |
 | K0.6 | Carte mémoire, allocateur physique, pagination, protections | ⏳ à venir |
 
 Après K0.6, le développement fonctionnel s'arrête pour une revue complète, avant toute phase K1 (x86-64, processus, ordonnanceur, appels système).
@@ -82,17 +82,23 @@ Tout le code spécifique au processeur se trouve dans `kernel/arch/i386/`. La mi
 | GDT et TSS | `kernel/arch/i386/gdt.c`, `gdt_flush.asm` | segments plats code/données noyau, TSS principal, TSS de double faute avec pile dédiée |
 | IDT et exceptions | `kernel/arch/i386/idt.c`, `isr_stubs.asm`, `exceptions.c` | 32 portes d'exception, cadre uniforme, `cld` et réalignement ABI, gestionnaires enregistrables, rapport complet (code d'erreur décodé, registres, CR0/2/3) puis `panic` |
 | Double faute | `exceptions.c`, `gdt.c` | porte de tâche vers une pile dédiée : survit à une pile noyau épuisée |
+| PIC 8259A | `kernel/arch/i386/pic.c` | remappage 0x20-0x2F, masquage par défaut, EOI, lecture ISR/IRR |
+| Couche IRQ | `kernel/arch/i386/irq.c` | enregistrement (démasque + porte présente), EOI centralisé, IRQ parasites, compteurs |
+| PIT 8254 | `kernel/drivers/pit.c` | 100 Hz (diviseur 11932), compteur 64 bits lu sans déchirure, temps écoulé exact, `pit_sleep_ms` |
+| Clavier PS/2 | `kernel/drivers/ps2kbd.c`, `kbd_decode.c` | init complète du 8042 et reset du clavier, ISR minimal, automate jeu 1 (Shift, Ctrl, Alt, Verr. Maj, touches étendues, Pause), US QWERTY |
+| File circulaire | `kernel/lib/ringbuf.c` | SPSC sans verrou, indices libres, perte comptée |
+| Boucle d'inactivité | `kernel/core/kmain.c` | écho clavier, sommeil `sti; hlt` sans réveil perdu |
 | Arithmétique 64 bits | `kernel/lib/math64.c` | division 64/32 sans libgcc (division longue binaire) |
 | Bibliothèque minimale | `kernel/lib/string.c` | `memset`, `memcpy`, `memmove`, `memcmp`, `strlen`, `strnlen`, `strcmp`, `strncmp`, `strlcpy` |
-| Autotests noyau | `kernel/tests/` | 127 vérifications exécutées dans le noyau sous QEMU, plus 8 démarrages volontairement fatals |
+| Autotests noyau | `kernel/tests/` | 163 vérifications exécutées dans le noyau sous QEMU, plus 8 démarrages volontairement fatals et 1 test clavier interactif |
 
 ## 6. Composants en cours de développement
 
-- K0.5 : PIC 8259, PIT, clavier PS/2, file circulaire.
+- K0.6 : carte mémoire, allocateur physique, pagination, protections.
 
 ## 7. Composants planifiés
 
-K0.5 et K0.6 (voir le tableau ci-dessus). Plus tard, sous réserve d'autorisation : x86-64, TSS/IST, Ring 3, processus, ordonnanceur, appels système, IPC, VFS, pilotes de stockage et audio, moteur numérique, reconnaissance et synthèse vocales, agent.
+K0.6 (voir le tableau ci-dessus). Plus tard, sous réserve d'autorisation : x86-64, TSS/IST, Ring 3, processus, ordonnanceur, appels système, IPC, VFS, pilotes de stockage et audio, moteur numérique, reconnaissance et synthèse vocales, agent.
 
 ## 8. Structure du dépôt
 
@@ -106,10 +112,11 @@ AtlasOS/
 │   │   ├── gdt.c, gdt_flush.asm      GDT et TSS
 │   │   ├── idt.c, isr_stubs.asm      IDT et points d'entrée des interruptions
 │   │   ├── exceptions.c      répartition, rapport d'exception, tâche de double faute
-│   │   └── include/arch/     io.h, cpu.h, gdt.h, idt.h, interrupt.h
+│   │   ├── pic.c, irq.c      PIC 8259A et couche IRQ
+│   │   └── include/arch/     io.h, cpu.h, gdt.h, idt.h, interrupt.h, pic.h, irq.h
 │   ├── core/                 kmain.c, bootinfo.c, layout.c, log.c, panic.c
-│   ├── drivers/              qemu_dbg.c, vga.c, serial.c
-│   ├── lib/                  string.c, format.c, math64.c
+│   ├── drivers/              qemu_dbg.c, vga.c, serial.c, pit.c, ps2kbd.c, kbd_decode.c
+│   ├── lib/                  string.c, format.c, math64.c, ringbuf.c
 │   ├── include/samos/        en-têtes internes du noyau
 │   └── tests/                autotests exécutés dans le noyau
 ├── tests/
@@ -166,15 +173,16 @@ SAMOS: kernel entry (SAMOS/AtlasOS 0.1.0-k0)
 [info ] cpu: IDT loaded (32 exception gates, #DF task gate)
 SAMOS: multiboot magic ok, info at 0x00009500, flags 0x0000024f
 SAMOS: cmdline "build/samos.elf "
-SAMOS: kernel image 0x00100000-0x00110000
-SAMOS:   0x00100000-0x00105000 r-x  .text
-SAMOS:   0x00105000-0x00107000 r--  .rodata
-SAMOS:   0x00107000-0x0010b000 rw-  .data+.bss
-SAMOS:   0x0010b000-0x0010c000 ---G stack-guard
-SAMOS:   0x0010c000-0x00110000 rw-  boot-stack
+SAMOS: kernel image 0x00100000-0x00112000
+  ... (régions de l'image)
+[info ] irq: 8259 PIC remapped to vectors 0x20-0x2f, all lines masked
+[info ] timer: PIT channel 0, 100 Hz (divisor 11932)
+[info ] keyboard: 8042 self-test ok, PS/2 keyboard reset ok, IRQ1 enabled
 SAMOS: boot stack high-water 792 bytes, guard intact
-SAMOS: K0.4 boot complete, halting
+SAMOS: K0.5 boot complete, interrupts enabled, keyboard echo active
 ```
+
+Le noyau reste ensuite actif. Les touches tapées dans la fenêtre QEMU (`make run-vga`) sont décodées et renvoyées à l'écran et sur le port série. Disposition US QWERTY.
 
 Quitter avec `Ctrl+C`. `make run-vga` ouvre en plus la fenêtre de l'écran VGA ; il faut un affichage graphique. En cas de panique, l'adresse de chaque cadre de la trace se traduit en nom de fonction avec `addr2line -f -e build/samos.elf 0x...`. Débogage : `make debug`, puis dans un autre terminal `gdb build/samos.elf -ex 'target remote :1234'`.
 
@@ -188,8 +196,8 @@ make test
 |---|---|---|
 | Statique ELF | `make check-elf` | ELF32/i386, entrée = `_start`, en-tête Multiboot (offset, alignement, somme), aucun symbole indéfini, aucun segment W+X, sections alignées/ordonnées/NOBITS, aucune section dynamique, absence d'auto-appel de `memset`/`memcpy` |
 | Outils (négatif) | `make test-tools` | `check_elf.sh` doit rejeter une image à somme corrompue ou sans en-tête |
-| Hébergés | `make test-host` | `string.c`, `format.c` (comparaison différentielle avec `snprintf` de la libc) et `math64.c` (100 000 divisions comparées à la division native), sous AddressSanitizer + UBSan |
-| QEMU | `make test-qemu` | démarrage normal (sans triple fault), sortie série de bout en bout, autotests noyau (`-append test`), chemin de panique (`test=panic`, statut 37), refus d'un mode de test inconnu, exceptions fatales `test=ud/de/gp/np/intbad`, double faute par porte de tâche (`test=df`), triple fault volontaire détecté (`test=triple`) |
+| Hébergés | `make test-host` | `string.c` ; `format.c` (comparaison différentielle avec `snprintf` de la libc) ; `math64.c` (100 000 divisions comparées à la division native) ; `ringbuf.c` (1 million d'opérations comparées à un modèle) ; `kbd_decode.c` (automate et 65 536 paires d'octets) ; le tout sous AddressSanitizer + UBSan |
+| QEMU | `make test-qemu` | démarrage normal (sans triple fault), sortie série de bout en bout, clavier de bout en bout (frappes injectées par `sendkey`), autotests noyau (`-append test`), chemin de panique (`test=panic`, statut 37), refus d'un mode de test inconnu, exceptions fatales `test=ud/de/gp/np/intbad`, double faute par porte de tâche (`test=df`), triple fault volontaire détecté (`test=triple`) |
 | GDB | `make test-gdb` | état exact des registres à l'entrée de `kmain` ; test négatif du magic invalide ; lecture de la mémoire VGA `0xB8000` depuis l'extérieur du noyau |
 
 Le noyau transmet son verdict à QEMU via le périphérique `isa-debug-exit` (statut 33 = succès, 35 = échec, 37 = panic).
@@ -209,7 +217,8 @@ Seuls des outils de développement standard sont utilisés : compilateur, assemb
 
 ## 16. Limitations actuelles
 
-- Les IRQ matérielles ne sont pas encore activées (PIC non programmé, vecteurs 32-47 non présents).
+- PIC 8259 uniquement (pas d'APIC/IOAPIC) : monoprocesseur ; la file clavier repose sur l'ordonnancement mémoire d'un seul cœur x86.
+- Clavier : disposition US QWERTY uniquement ; IRQ parasites gérées mais non testées (non reproductibles sous QEMU).
 - NMI et Machine Check ne sont pas traités spécifiquement : ils mènent à une panique.
 - Pas de segments ni de code ring 3 (prévu en K1).
 - Le port série est en émission seule, par scrutation (pas d'IRQ 4, pas de réception).
@@ -221,7 +230,7 @@ Seuls des outils de développement standard sont utilisés : compilateur, assemb
 
 ## 17. Feuille de route
 
-`K0.1 ✅ → K0.2 ✅ → K0.3 ✅ → K0.4 ✅ → K0.4 → K0.5 → K0.6 → revue K0 → (autorisation) K1 x86-64 → processus/ordonnanceur → appels système → IPC → VFS → pilotes → A0 (IA) → V0 (voix) → I0 (agent)`
+`K0.1 ✅ → K0.2 ✅ → K0.3 ✅ → K0.4 ✅ → K0.5 ✅ → K0.4 → K0.5 → K0.6 → revue K0 → (autorisation) K1 x86-64 → processus/ordonnanceur → appels système → IPC → VFS → pilotes → A0 (IA) → V0 (voix) → I0 (agent)`
 
 ## 18. Documentation
 

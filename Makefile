@@ -71,23 +71,30 @@ ASM_SRCS := kernel/arch/$(ARCH)/boot/entry.asm \
 C_SRCS := kernel/arch/$(ARCH)/gdt.c \
           kernel/arch/$(ARCH)/idt.c \
           kernel/arch/$(ARCH)/exceptions.c \
+          kernel/arch/$(ARCH)/pic.c \
+          kernel/arch/$(ARCH)/irq.c \
           kernel/core/kmain.c \
           kernel/core/bootinfo.c \
           kernel/core/layout.c \
           kernel/core/log.c \
           kernel/core/panic.c \
+          kernel/drivers/kbd_decode.c \
+          kernel/drivers/pit.c \
+          kernel/drivers/ps2kbd.c \
           kernel/drivers/qemu_dbg.c \
           kernel/drivers/serial.c \
           kernel/drivers/vga.c \
           kernel/lib/format.c \
           kernel/lib/math64.c \
+          kernel/lib/ringbuf.c \
           kernel/lib/string.c \
           kernel/tests/ktest.c \
           kernel/tests/test_boot.c \
           kernel/tests/test_layout.c \
           kernel/tests/test_console.c \
           kernel/tests/test_cpu.c \
-          kernel/tests/test_faults.c
+          kernel/tests/test_faults.c \
+          kernel/tests/test_irq.c
 
 OBJS := $(patsubst %.asm,$(BUILD)/%.o,$(ASM_SRCS)) \
         $(patsubst %.c,$(BUILD)/%.o,$(C_SRCS))

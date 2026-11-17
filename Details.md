@@ -38,6 +38,11 @@ Le texte distingue systématiquement :
 25. Double faute, porte de tâche et triple fault (K0.4)
 26. Sécurité du jalon K0.4
 27. Questions de jury et réponses (K0.4)
+28. Interruptions matérielles : PIC 8259A, PIT 8254, couche IRQ (K0.5)
+29. Concurrence entre interruption et code normal : file SPSC (K0.5)
+30. Contrôleur PS/2 8042 et décodage du clavier (K0.5)
+31. Sécurité du jalon K0.5
+32. Questions de jury et réponses (K0.5)
 - Références
 
 ---
@@ -1171,6 +1176,265 @@ L'entrée 128 est nulle, donc son type de porte est invalide. Le CPU vérifie le
 **Q10. Pourquoi le bit « Accessed » est-il pré-positionné ?**
 Sinon le processeur écrit dans la GDT au premier chargement d'un segment (constaté : `0x92` devenait `0x93`). Une table que le matériel modifie ne peut pas être protégée en écriture. Pré-positionné, ce bit rend la table stable et protégeable.
 
+## 28. Interruptions matérielles : PIC 8259A, PIT 8254, couche IRQ (K0.5)
+
+### 28.1 Pourquoi des interruptions ?
+
+Sans interruptions, le noyau doit **scruter** chaque périphérique (*polling*), comme le fait le pilote série en émission. C'est simple, mais le CPU gaspille son temps à attendre, et il manque les événements qui surviennent pendant qu'il fait autre chose. Avec les interruptions, le **périphérique** signale qu'il a besoin d'attention, et le CPU suspend ce qu'il fait pour exécuter un gestionnaire. C'est la base de tout système réactif : horloge, clavier, disque, carte son pour l'interface vocale future.
+
+### 28.2 Le 8259A
+
+**Architecture.** Le PC/AT utilise deux 8259A en **cascade** :
+
+```text
+ IRQ0 PIT ──┐
+ IRQ1 clav. ─┤  MAÎTRE   INT ──────────► broche INTR du CPU
+ IRQ2 ◄──────┤ 0x20/0x21
+   ...       │               ┌── IRQ8 RTC
+ IRQ7 ───────┘               ├── ...
+              ▲ cascade      │ ESCLAVE
+              └──────────────┤ 0xA0/0xA1
+                             └── IRQ15
+```
+
+Chaque contrôleur a trois registres de 8 bits :
+
+- **IRR** (*Interrupt Request*) : lignes qui demandent une interruption ;
+- **ISR** (*In-Service*) : interruptions acquittées par le CPU mais pas encore terminées ;
+- **IMR** (*Interrupt Mask*) : lignes masquées.
+
+**Cycle d'une IRQ :**
+
+1. la ligne passe à 1, et le bit de l'IRR est positionné ;
+2. si la ligne n'est pas masquée et qu'aucune IRQ de priorité supérieure n'est en service, le PIC active INTR ;
+3. si IF = 1, le CPU termine l'instruction courante et répond par deux cycles INTA ;
+4. le PIC transfère le bit de l'IRR vers l'ISR et place le **numéro de vecteur** sur le bus ;
+5. le CPU entre par la porte IDT correspondante ;
+6. le gestionnaire **doit** envoyer un **EOI** (*End Of Interrupt*, commande `0x20`). Sinon le bit de l'ISR reste positionné, et le PIC ne délivre plus aucune IRQ de priorité égale ou inférieure.
+
+**Le remappage (ICW1-ICW4).** Le BIOS configure le maître sur les vecteurs 8-15, qui **coïncident** avec les exceptions du mode protégé : l'IRQ 0 du timer arriverait sur le vecteur 8 (#DF) et l'IRQ 5 sur le vecteur 13 (#GP). Le noyau ne pourrait plus distinguer une IRQ d'une exception. La séquence d'initialisation de `pic_init()` :
+
+| Mot | Maître | Esclave | Signification |
+|---|---|---|---|
+| ICW1 | `0x11` | `0x11` | initialisation, ICW4 attendu, cascade, déclenchement sur front |
+| ICW2 | `0x20` | `0x28` | vecteur de base (multiple de 8) |
+| ICW3 | `0x04` | `0x02` | maître : bitmap des esclaves (bit 2) ; esclave : son identité (2) |
+| ICW4 | `0x01` | `0x01` | mode 8086, EOI manuel |
+| OCW1 | `0xFF` | `0xFF` | tout masquer |
+
+**[CHOIX] Tout masquer, puis démasquer explicitement.** `irq_register()` démasque une ligne seulement quand un gestionnaire existe. Une IRQ sans gestionnaire est impossible par construction ; le compteur `irq_unhandled_count()` le vérifie et vaut 0.
+
+`io_wait()` (écriture sur le port `0x80`) entre les mots ICW laisse au 8259A, un composant lent sur un vrai bus ISA, le temps de traiter chaque octet.
+
+### 28.3 Le PIT 8254 et le temps
+
+Le PIT reçoit une horloge de $1\,193\,182$ Hz, soit $14{,}31818 \text{ MHz} / 12$. Ce quartz NTSC de l'IBM PC d'origine a été conservé pour la compatibilité. En **mode 2** (*rate generator*), le compteur 16 bits du canal 0 est rechargé avec le diviseur $D$ à chaque passage à 1, ce qui produit une IRQ 0 :
+
+$$f = \frac{1\,193\,182}{D},\qquad D = \operatorname{round}\!\left(\frac{1\,193\,182}{100}\right) = 11\,932 \;\Rightarrow\; f = 99{,}998\ \text{Hz}$$
+
+**Dérive due à l'arrondi.** Supposer 100 Hz exactement ferait dériver l'horloge de $2 \times 10^{-5}$, soit 1,7 s par jour. `pit_uptime_ms()` calcule donc avec le diviseur réel :
+
+$$t_{\text{ms}} = \frac{\text{ticks} \times D \times 1000}{1\,193\,182}$$
+
+Cette division est faite par `u64_divmod_u32` (§19.4), sans libgcc. **[CHOIX]** 100 Hz est un compromis : une résolution de 10 ms, suffisante pour K0, contre un coût d'environ 100 interruptions par seconde.
+
+**Étalonnage indépendant.** Le test mesure le nombre de ticks entre deux changements de seconde de l'**horloge CMOS** (RTC MC146818, ports `0x70/0x71`), une source de temps physiquement distincte. Résultat observé : **100 ticks par seconde**. Sous QEMU, PIT et RTC dérivent tous deux de l'horloge virtuelle, ce qui rend la mesure stable même sur un hôte chargé. Sur matériel réel, l'écart serait mesuré entre deux quartz différents.
+
+### 28.4 Lecture « déchirée » d'un compteur 64 bits
+
+Le compteur de ticks est un `uint64_t`. Sur i386, sa lecture prend **deux** instructions 32 bits. Si l'IRQ 0 survient entre les deux, au moment où la moitié basse passe de `0xFFFFFFFF` à 0, on peut lire « ancienne moitié haute + nouvelle moitié basse », soit une valeur fausse de $2^{32}$. `pit_ticks()` lit donc sous `irq_save()/irq_restore()`. Ces fonctions sauvegardent EFLAGS et ne réactivent IF que s'il était actif, ce qui permet l'imbrication. Le gestionnaire, lui, incrémente avec IF = 0 (porte d'interruption) : son écriture n'est jamais interrompue sur un monoprocesseur.
+
+### 28.5 La boucle d'inactivité sans réveil perdu
+
+Le code naïf contient une **course** :
+
+```c
+if (file_vide()) {        // (1) vide
+                          // (2) ← l'IRQ clavier arrive ICI et dépose une touche
+    sti(); hlt();         // (3) le CPU dort alors qu'une touche attend
+}
+```
+
+Le CPU ne se réveillera qu'à la prochaine interruption, jusqu'à 10 ms plus tard (timer), voire jamais si aucune autre IRQ n'arrive. **Solution :** tester avec IF = 0, puis exécuter `sti; hlt`. **[ARCH]** `STI` n'autorise les interruptions qu'**après l'instruction suivante** (*interrupt shadow*, SDM vol. 2, STI). Aucune interruption ne peut donc être livrée entre `STI` et `HLT`. Une IRQ arrivée pendant le test reste **en attente** au PIC et réveille `HLT` immédiatement. C'est `cpu_idle()`.
+
+La première version de `idle_loop()` contenait justement une variante de cette course (`sti` après le test, puis `cli; sti; hlt`). Elle a été détectée à la relecture et corrigée avant toute exécution.
+
+### 28.6 IRQ parasites et INT logiciel
+
+**IRQ parasite.** Si une ligne retombe pendant le cycle INTA, le 8259A délivre quand même un vecteur, celui de sa ligne de plus basse priorité (7 ou 15), **sans** positionner le bit correspondant dans l'ISR. Envoyer un EOI acquitterait alors à tort une **autre** IRQ réellement en service. `irq_dispatch` lit l'ISR (OCW3 `0x0B`) pour les IRQ 7 et 15, et ignore l'interruption si le bit est absent. Pour une IRQ 15 parasite, le maître a bien vu une IRQ 2 réelle et reçoit un EOI. **Statut : NOT TESTED.** Le chemin ne peut pas être déclenché de façon déterministe sous QEMU. L'autotest vérifie seulement que le compteur vaut 0 en fonctionnement normal.
+
+**INT logiciel vers un vecteur d'IRQ.** Constat de K0.5 : les tests K0.4 utilisaient `INT 0x20` pour provoquer #NP. Depuis K0.5, le vecteur 0x20 est l'IRQ 0. Un `INT 0x20` logiciel exécute alors le gestionnaire du timer (un tick fantôme) et envoie au PIC un **EOI que personne n'attendait**, susceptible d'acquitter une IRQ réellement en service. En K0, seul le noyau exécute `INT`. En K1, le DPL 0 de ces portes fera échouer un tel `INT` depuis le ring 3 avec #GP. C'est une raison concrète de ne jamais donner DPL 3 aux portes d'IRQ. Les tests ont été déplacés sur le vecteur 0x2E (IRQ 14, inutilisée).
+
+---
+
+## 29. Concurrence entre interruption et code normal : file SPSC (K0.5)
+
+### 29.1 Le problème
+
+Le gestionnaire d'IRQ 1 et le code normal partagent les touches reçues. Un gestionnaire d'interruption **ne peut pas attendre** : il ne doit ni prendre un verrou détenu par le code qu'il interrompt (sur un monoprocesseur, ce serait un interblocage immédiat), ni bloquer sur une file pleine.
+
+### 29.2 La file circulaire à indices libres
+
+**Structure :** un tableau de capacité $C = 2^k$ et deux compteurs 32 bits `head` (écritures) et `tail` (lectures), **jamais ramenés modulo $C$**. Pour un élément d'indice $i$, la case est $i \mathbin{\&} (C-1)$, ce qui vaut $i \bmod C$ quand $C$ est une puissance de 2.
+
+**Nombre d'éléments :** $n = (\text{head} - \text{tail}) \bmod 2^{32}$. L'égalité reste vraie après le débordement des compteurs, car la soustraction non signée est définie modulo $2^{32}$ (C11 §6.2.5 p9). Si $C$ divise $2^{32}$, ce qui est le cas de toute puissance de 2 inférieure à $2^{32}$, l'indexation reste cohérente au passage de $2^{32} - 1$ à 0.
+
+**Avantage sur la version « une case vide » :** vide ($n = 0$) et plein ($n = C$) se distinguent sans sacrifier de case.
+
+### 29.3 Pourquoi pas de verrou ?
+
+**Règle de propriété :**
+
+- seul le **producteur** (l'ISR) écrit `head` et les cases `[tail + n …]` ;
+- seul le **consommateur** écrit `tail`.
+
+Chaque variable n'a donc qu'un seul écrivain : il n'y a pas d'écriture concurrente, seulement des lectures concurrentes d'une valeur qui ne fait qu'augmenter.
+
+**Ordre des accès.** Le producteur doit écrire la donnée **avant** de publier `head + 1`, sinon le consommateur pourrait lire une case pas encore remplie. Deux contraintes s'appliquent :
+
+1. le **compilateur** ne doit pas réordonner ces écritures : c'est le rôle de la barrière `asm volatile("" ::: "memory")` et de `volatile` ;
+2. le **processeur** : x86 ne réordonne pas deux écritures entre elles (modèle TSO, SDM vol. 3A §9.2). De plus l'ISR et le consommateur s'exécutent sur le **même cœur**. Aucune instruction de barrière matérielle (`mfence`) n'est nécessaire.
+
+**Limite :** sur un multiprocesseur, ou sur une architecture à mémoire faiblement ordonnée (ARM), il faudrait des opérations atomiques C11 (`atomic_store_explicit(..., memory_order_release)`).
+
+### 29.4 Politique en cas de file pleine
+
+**[CHOIX]** Le producteur **abandonne** l'octet et incrémente `dropped`. Il ne bloque jamais. 256 octets représentent environ 128 frappes en attente. Une perte est visible : le test de bout en bout exige `dropped=0`.
+
+### 29.5 Vérification par modèle
+
+Le test hébergé applique **un million** d'opérations aléatoires à la file SAMOS et à un modèle de référence trivial, et compare à chaque pas le résultat de chaque opération, la valeur lue et le nombre d'éléments. Les compteurs démarrent à $2^{32} - 5$ pour **exercer le débordement**. Le test vérifie à la fin que `head` a bien franchi $2^{32}$. Résultat : 0 divergence, sous ASan et UBSan.
+
+---
+
+## 30. Contrôleur PS/2 8042 et décodage du clavier (K0.5)
+
+### 30.1 Le 8042
+
+Le « contrôleur clavier » de l'IBM AT est un micro-contrôleur Intel 8042. Il dialogue en série avec le clavier, et parfois la souris, et expose au CPU deux ports :
+
+- `0x60` (données) ;
+- `0x64` (état en lecture, commandes en écriture).
+
+Bits d'état :
+
+- **OBF** (bit 0) : un octet attend le CPU ;
+- **IBF** (bit 1) : le contrôleur n'a pas encore consommé le dernier octet écrit.
+
+**Toute écriture doit attendre IBF = 0, et toute lecture OBF = 1.** Chaque attente est **bornée** : un contrôleur absent, fréquent sur les machines modernes sans PS/2 réel, ne doit pas figer le noyau.
+
+### 30.2 Séquence d'initialisation de `keyboard_init()`
+
+| # | Action | Vérification | Raison |
+|---|---|---|---|
+| 1 | `0xAD`, `0xA7` | — | désactiver les ports pendant la configuration |
+| 2 | vider le tampon (≤ 64 lectures) | — | octets résiduels laissés par le BIOS |
+| 3 | `0x20` lire la config ; effacer IRQ1/IRQ12 ; activer la traduction (bit 6) ; couper l'horloge du port 2 ; `0x60` écrire | — | pas d'IRQ pendant l'initialisation |
+| 4 | `0xAA` auto-test du contrôleur | réponse `0x55` | puis réécrire la config, que certains contrôleurs réinitialisent |
+| 5 | `0xAB` test de l'interface du port 1 | réponse `0x00` | lignes horloge et données |
+| 6 | `0xAE` activer le port 1 ; `0xFF` réinitialiser le clavier | `0xFA` (ACK) puis `0xAA` (BAT réussi) | auto-test du clavier lui-même |
+| 7 | `0xF4` activer le balayage ; réécrire la config avec IRQ1 | `0xFA` | début des interruptions |
+
+En cas d'échec, `keyboard_error()` indique l'étape. **[CHOIX]** L'absence de clavier n'est **pas** fatale : le noyau reste utilisable par le port série.
+
+**Défaut réel rencontré et corrigé.** La première version recopiait à l'étape 7 l'octet de configuration lu à l'étape 3. Or la commande `0xAD` de l'étape 1 avait positionné le **bit 4** (horloge du port 1 coupée), et la réécriture annulait l'activation de l'étape 6. Symptôme : initialisation réussie, mais aucune frappe reçue (`bytes=0 irq1=0`). Correction : le bit 4 est effacé explicitement. Leçon : une copie locale d'un registre matériel devient **périmée** dès qu'une commande modifie ce registre.
+
+### 30.3 Codes de balayage
+
+Le clavier n'envoie pas des caractères mais des **codes de position** :
+
+- un code *make* à l'appui ;
+- un code *break* au relâchement ;
+- la répétition automatique renvoie le *make*.
+
+Le jeu 2, natif des claviers AT, est traduit par le 8042 en **jeu 1** (celui du PC/XT) quand le bit 6 de la configuration est positionné. En jeu 1 :
+
+$$\text{break} = \text{make} \mathbin{|} \texttt{0x80}$$
+
+La conversion en caractère se fait **logiciellement**, selon la disposition du clavier et l'état des modificateurs. C'est pourquoi la même touche donne « q » en QWERTY et « a » en AZERTY.
+
+### 30.4 L'automate de décodage
+
+États : `extended` (préfixe `0xE0` reçu), `skip` (octets de la séquence Pause à ignorer), et les modificateurs (Shift G/D, Ctrl G/D, Alt G/D, Verr. Maj).
+
+```text
+            0xE0                     octet c
+  [normal] ──────► [étendu] ───────────────────► événement (0x100 | c&0x7F)
+     │  0xE1                                      retour à [normal]
+     └──────► [skip = 2] ── 2 octets ignorés ───► [normal]
+     │  c
+     └──────► événement (c & 0x7F), appui si c < 0x80
+```
+
+Règles notables, toutes testées :
+
+- **Verr. Maj** ne bascule qu'à l'**appui**, pas au relâchement ni à la répétition, et n'affecte que les lettres : Verr. Maj + `1` donne `1`, et Shift + Verr. Maj + `a` donne `a` ;
+- **Ctrl + lettre** produit un caractère de contrôle : Ctrl+C donne `0x03` (ETX), base du futur « interrompre la commande » ;
+- **Shift fantôme** : certains claviers entourent les touches étendues de `E0 2A … E0 AA`. Ce n'est pas un vrai Shift, et il est ignoré ;
+- **Octets de contrôle** (`0xFA` ACK, `0xFE` RESEND, `0xEE`, `0x00`/`0xFF` erreur) : ignorés. Ils ne coïncident avec aucun *break* valide du jeu 1.
+
+**[CHOIX] Séparation des responsabilités.** L'ISR ne fait que lire le port et déposer l'octet. Le décodage, qui implique un état, des tables et des branchements, s'exécute hors interruption. L'automate est une fonction **pure**, testée sur l'hôte, notamment sur les 65 536 paires d'octets possibles sous ASan/UBSan, ce qui serait impossible dans le noyau.
+
+### 30.5 Test de bout en bout
+
+`test=kbd` combiné au moniteur QEMU `sendkey` : le script injecte `shift-s a m o s spc shift-k 0 dot 5 spc shift-1 ret`. QEMU les présente comme de vraies frappes au clavier PS/2 émulé, qui les transmet au 8042, qui lève l'IRQ 1 ; l'ISR les dépose dans la file, et le décodeur les traduit. Résultat :
+
+```text
+[TEST] kbd line: 'Samos K0.5 !' (bytes=31 dropped=0 irq1=31)
+```
+
+On a exactement une IRQ par octet, et aucune perte. Les 16 frappes, Shift compris, produisent 32 octets *make/break*. Le 32ᵉ, le relâchement d'Entrée, arrive après l'affichage de la ligne.
+
+**Limite :** disposition US QWERTY uniquement. Un clavier AZERTY physique produira donc des caractères décalés. L'ajout d'une table ne change pas l'automate.
+
+---
+
+## 31. Sécurité du jalon K0.5
+
+| Aspect | K0.5 |
+|---|---|
+| **Actifs** | cohérence de l'état du noyau face à des événements asynchrones ; disponibilité (le noyau ne doit pas se figer) ; intégrité des données clavier (futures commandes) |
+| **Frontières** | périphériques → noyau : le PIT, le 8042 et le clavier produisent des événements asynchrones et des données non fiables (scancodes) |
+| **Menaces** | IRQ confondue avec une exception (vecteurs non remappés) ; EOI oublié (plus aucune IRQ) ou parasite (IRQ acquittée à tort) ; tempête d'interruptions ; lecture déchirée de compteurs partagés ; réveil perdu ; file pleine ; contrôleur absent figeant l'initialisation ; séquences de scancodes malformées corrompant l'état du décodeur ; INT logiciel vers un vecteur d'IRQ |
+| **Invariants** | vecteurs d'IRQ disjoints des exceptions ; toute ligne démasquée a un gestionnaire ; un EOI par IRQ réelle, aucun pour une IRQ parasite ; gestionnaires d'IRQ bornés, sans journal, sans attente ; un seul écrivain par variable de la file ; toute attente matérielle bornée ; le décodeur accepte n'importe quel octet dans n'importe quel état |
+| **Protections** | remappage 0x20-0x2F ; masquage par défaut ; EOI centralisé dans `irq_dispatch` ; détection des IRQ parasites (ISR) ; `irq_save/irq_restore` ; `cpu_idle` (`sti; hlt`) ; file SPSC à perte comptée ; attentes bornées du 8042 ; automate total (tout octet traité) ; portes d'IRQ DPL 0 |
+| **Tests** | 36 vérifications noyau K0.5 : masques, portes, EOI (ticks continus), étalonnage RTC, `sleep`, masquage effectif, refus de dormir avec IF = 0 ; 1 million d'opérations sur la file vs modèle, débordement inclus ; décodeur : 21 vérifications et 65 536 paires d'octets sous ASan/UBSan ; clavier de bout en bout avec de vraies frappes |
+| **Limites** | IRQ parasites : NOT TESTED ; pas de protection contre une tempête d'IRQ (aucune limitation de débit) ; ordonnancement mémoire valable seulement sur un monoprocesseur x86 ; le PIC est obsolète sur les machines modernes (APIC/IOAPIC, MSI), il faudra un pilote APIC pour le multiprocesseur et x86-64 ; scancodes non authentifiés : un clavier USB émulé en PS/2 par le firmware (SMM) n'est pas sous le contrôle du noyau |
+
+---
+
+## 32. Questions de jury et réponses (K0.5)
+
+**Q1. Pourquoi remapper le PIC ?**
+Le BIOS place les IRQ 0-7 sur les vecteurs 8-15, réservés aux exceptions en mode protégé. Sans remappage, chaque tick du timer arriverait sur le vecteur 8 et serait pris pour une double faute. On déplace les IRQ sur 0x20-0x2F.
+
+**Q2. Que se passe-t-il si on oublie l'EOI ?**
+Le bit de l'ISR du PIC reste positionné : le PIC considère l'IRQ comme toujours en service et ne délivre plus aucune IRQ de priorité égale ou inférieure. Le système ne reçoit plus le timer. L'autotest qui exige 10 ticks consécutifs le prouve : sans EOI, il n'y en aurait qu'un.
+
+**Q3. Pourquoi 11 932 et pas 11 931,82 ?**
+Le diviseur est un entier de 16 bits. L'arrondi donne une fréquence réelle de 99,998 Hz. Le calcul du temps écoulé utilise le diviseur réel, ce qui évite une dérive de 1,7 s par jour.
+
+**Q4. Comment savez-vous que votre timer bat à 100 Hz ?**
+Par mesure contre une horloge indépendante, la RTC CMOS : on compte les ticks entre deux changements de seconde. Résultat : 100.
+
+**Q5. Pourquoi masquer les interruptions pour lire un compteur ?**
+Sur 32 bits, la lecture d'un entier 64 bits prend deux instructions. Une interruption entre les deux peut produire une valeur incohérente, fausse de $2^{32}$, lors d'une retenue entre les deux moitiés.
+
+**Q6. Expliquez le problème du « réveil perdu » et sa solution.**
+Si on teste « rien à faire » avec les interruptions actives, puis qu'on exécute `hlt`, une interruption arrivée entre les deux est traitée avant `hlt` et le CPU dort alors qu'il y a du travail. On teste donc avec IF = 0, puis on exécute `sti; hlt`. Grâce à l'*interrupt shadow* de STI, l'interruption en attente est délivrée **après** l'entrée dans HLT, qu'elle réveille.
+
+**Q7. Votre file circulaire est sans verrou : pourquoi est-ce correct ?**
+Chaque variable n'a qu'un écrivain (head : l'ISR ; tail : le consommateur). La donnée est écrite avant la publication de `head`, avec une barrière de compilation, et x86 ne réordonne pas deux écritures. Sur le même cœur, cela suffit. Sur un multiprocesseur, il faudrait des atomiques avec une sémantique *release/acquire*.
+
+**Q8. Pourquoi ne pas décoder les touches dans l'ISR ?**
+L'ISR s'exécute avec les interruptions masquées : plus il est long, plus la latence de toutes les autres IRQ augmente. Le décodage implique un état et des tables. Hors interruption, il est aussi testable sur l'hôte. C'est la séparation classique en « moitié haute / moitié basse » (*top half / bottom half*) des noyaux.
+
+**Q9. Comment avez-vous testé le clavier sans clavier ?**
+Avec le moniteur QEMU (`sendkey`), qui injecte des frappes dans le contrôleur PS/2 émulé. Le chemin complet est exercé : contrôleur, IRQ 1, ISR, file, décodeur. On vérifie la ligne obtenue (`'Samos K0.5 !'`), qu'il y a une IRQ par octet et qu'aucun octet n'est perdu.
+
+**Q10. Quel bogue avez-vous rencontré avec le 8042 ?**
+La réécriture de l'octet de configuration à partir d'une copie lue avant la commande d'activation du port recoupait l'horloge du clavier. L'initialisation semblait réussie, mais aucune touche n'arrivait. Le diagnostic est venu des compteurs (`bytes=0 irq1=0`) et de la relecture de la sémantique du bit 4.
+
 ## Références
 
 1. Free Software Foundation, *Multiboot Specification*, version 0.6.96, §3.1 (en-tête), §3.2 (état machine), §3.3 (structure d'information).
@@ -1192,3 +1456,9 @@ Sinon le processeur écrit dans la GDT au premier chargement d'un segment (const
 14. D. E. Knuth, *The Art of Computer Programming*, vol. 2 (*Seminumerical Algorithms*), §4.3.1 (arithmétique multiprécision, division).
 15. Intel SDM vol. 3A : §3.4 (sélecteurs, descripteurs, §3.4.5.1 types et bit Accessed), §6.3-6.5 (sources et classes d'exceptions), §6.10-6.12 (IDT, portes, procédures de traitement), §6.13 (codes d'erreur), §6.14-6.15 (tableau 6-5 de la double faute, référence de chaque exception), chap. 7 (gestion des tâches, TSS, portes de tâche).
 16. Intel SDM vol. 2 : `LGDT/LIDT`, `LTR`, `IRET/IRETD`, `PUSHAD/POPAD`, `INT n/INT3`, `UD2`, `DIV`.
+17. Intel, *8259A Programmable Interrupt Controller*, fiche technique (ICW1-ICW4, OCW1-OCW3, mode cascade, interruptions parasites).
+18. Intel, *82C54 CHMOS Programmable Interval Timer*, fiche technique (modes 0-5, commande de verrouillage).
+19. IBM, *Personal Computer AT Technical Reference* (contrôleur clavier 8042, ports 0x60/0x64, codes de balayage).
+20. Motorola, *MC146818A Real-Time Clock*, fiche technique (registres CMOS, bit UIP).
+21. Intel SDM vol. 2 (`STI` : inhibition des interruptions pour l'instruction suivante ; `HLT` ; `RDTSC`) et vol. 3A §9.2 (ordonnancement mémoire x86).
+22. ISO/IEC 9899:2011, §6.2.5 p9 (arithmétique non signée modulo $2^N$), §7.17 (atomiques, pour l'extension multiprocesseur).

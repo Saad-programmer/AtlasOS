@@ -7,11 +7,15 @@
  *   ud      ud2                       -> #UD non géré -> panic
  *   de      div par zéro              -> #DE non géré -> panic
  *   gp      MOV DS, 0x0F00            -> #GP(0x0F00) : index 480 hors GDT
- *   np      INT 0x20                  -> #NP(0x102) : porte 32 de type valide, P = 0
+ *   np      INT 0x2E                  -> #NP(0x172) : porte 46 (IRQ 14, inutilisée)
+ *                                        de type valide, P = 0
  *   intbad  INT 0x80                  -> #GP(0x402) : entrée nulle = type invalide ;
  *                                        le type est vérifié AVANT le bit P
  *   df      #NP rendu non présent,    -> #NP pendant la livraison de #NP
  *           puis INT 0x20                => DOUBLE FAULT (porte de tâche)
+ * (En K0.4 ces tests utilisaient INT 0x20 ; depuis K0.5 ce vecteur est l'IRQ 0
+ *  du PIT : un INT 0x20 logiciel exécuterait le gestionnaire du timer et
+ *  enverrait un EOI parasite au PIC. Voir Details.md §28.6.)
  *   triple  IDT de limite 0, INT3     -> aucune porte livrable : TRIPLE FAULT
  *                                        => réinitialisation du processeur
  *                                        (prouve que le banc de test la détecte)
@@ -33,14 +37,14 @@ bool ktest_fatal_mode(const char *mode)
     } else if (strcmp(mode, "gp") == 0) {
         __asm__ __volatile__("movw $0x0F00, %%ax\n\tmovw %%ax, %%ds" : : : "eax", "memory");
     } else if (strcmp(mode, "np") == 0) {
-        __asm__ __volatile__("int $0x20");
+        __asm__ __volatile__("int $0x2e");
     } else if (strcmp(mode, "intbad") == 0) {
         __asm__ __volatile__("int $0x80");
     } else if (strcmp(mode, "df") == 0) {
         /* #NP (contributive) survenant pendant la livraison d'une #NP
          * (contributive) => #DF (SDM vol. 3A, tableau 6-5). */
         idt_set_present(EXC_NP, false);
-        __asm__ __volatile__("int $0x20");
+        __asm__ __volatile__("int $0x2e");
     } else if (strcmp(mode, "triple") == 0) {
         struct cpu_dtr empty = { 0, 0 };
         __asm__ __volatile__("lidt %0\n\tint3" : : "m"(empty) : "memory");

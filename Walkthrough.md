@@ -636,3 +636,123 @@ Premier passage : `selftest`, `exc_np`, `exc_df` et `exc_triple` en échec.
 make clean && make test    # 46 lignes [PASS], aucune [FAIL]
 qemu-system-i386 -kernel build/samos.elf -append test=df -serial stdio -display none -device isa-debug-exit,iobase=0xf4,iosize=0x04
 ```
+
+---
+
+## Jalon K0.5 — PIC, PIT, clavier PS/2 et file circulaire
+
+### A. Objectif
+
+Faire passer le noyau d'un programme séquentiel à un système **piloté par les interruptions** :
+
+- une horloge périodique ;
+- un clavier fonctionnel ;
+- une communication sûre entre gestionnaires d'interruption et code normal ;
+- une boucle d'inactivité qui dort sans perdre d'événement.
+
+### B. État de départ
+
+IDT complète (K0.4). Les vecteurs 32-47 étaient préparés mais non présents. Le PIC était dans l'état laissé par le BIOS, avec ses vecteurs en collision avec les exceptions, et IF = 0 en permanence. Le noyau s'arrêtait par HLT après le démarrage.
+
+### C. Fichiers créés et modifiés
+
+| Fichier | Changement |
+|---|---|
+| `kernel/arch/i386/include/arch/pic.h`, `pic.c` | **nouveaux** : 8259A (ICW1-4, masques, EOI, ISR/IRR) |
+| `kernel/arch/i386/include/arch/irq.h`, `irq.c` | **nouveaux** : enregistrement, répartition, IRQ parasites, EOI, compteurs |
+| `kernel/include/samos/pit.h`, `kernel/drivers/pit.c` | **nouveaux** : PIT canal 0, ticks, uptime, sleep |
+| `kernel/include/samos/ringbuf.h`, `kernel/lib/ringbuf.c` | **nouveaux** : file SPSC |
+| `kernel/include/samos/kbd_decode.h`, `kernel/drivers/kbd_decode.c` | **nouveaux** : automate scancodes jeu 1 |
+| `kernel/include/samos/keyboard.h`, `kernel/drivers/ps2kbd.c` | **nouveaux** : 8042 et clavier |
+| `kernel/arch/i386/include/arch/cpu.h` | `irq_save/irq_restore`, `cpu_idle` (`sti; hlt`), `cpu_rdtsc` |
+| `kernel/arch/i386/exceptions.c` | vecteurs 0x20-0x2F redirigés vers `irq_dispatch` |
+| `kernel/core/kmain.c` | init PIC/PIT/clavier ; boucle d'inactivité avec écho |
+| `kernel/tests/test_irq.c` | **nouveau** : suite K0.5 (36 vérifications) et mode `test=kbd` |
+| `kernel/tests/test_cpu.c`, `test_faults.c` | **régressions corrigées** (vecteur 32 devenu IRQ 0) |
+| `tests/host/test_ringbuf.c`, `test_kbd_decode.c` | **nouveaux** : tests par modèle et automate |
+| `tests/qemu/run.sh`, `cases.sh` | `run_case_keys` (frappes via moniteur QEMU), cas `keyboard_e2e` |
+| `tests/qemu/gdb_checks.sh` | motif VGA `boot complete` |
+
+### D. Séquence d'implémentation
+
+1. Primitives `cpu.h` : `irq_save/restore`, `cpu_idle`, `rdtsc`.
+2. `ringbuf.c` et `kbd_decode.c` : composants **purs**, écrits en premier pour pouvoir être testés sur l'hôte. En relisant le décodeur, j'ai trouvé et supprimé une étiquette `case` dupliquée (`0xAA + 0x50` = `0xFA`) avant la compilation.
+3. `pic.c`, puis `irq.c`, puis le raccordement dans `isr_dispatch`.
+4. `pit.c`. Une division 64 bits (`/ 1000u`) dans `pit_sleep_ms` a été remplacée par `u64_divmod_u32` avant toute compilation, car elle aurait introduit `__udivdi3`.
+5. `ps2kbd.c` (8042 complet).
+6. `kmain.c` : initialisation, puis boucle d'inactivité. La première rédaction de la boucle contenait une course (réveil perdu) ; elle a été corrigée à la relecture (Details §28.5).
+7. Tests : suite noyau, test interactif, tests hébergés, harnais `sendkey`.
+
+### E. Compilation
+
+`make`. `nm -u` reste vide, ce qui confirme que les multiplications 64 bits (`ticks * diviseur * 1000`) sont générées en ligne, sans `__muldi3`.
+
+### F. Exécution
+
+`make run`. Lignes ajoutées au démarrage :
+
+```text
+[info ] irq: 8259 PIC remapped to vectors 0x20-0x2f, all lines masked
+[info ] timer: PIT channel 0, 100 Hz (divisor 11932)
+[info ] keyboard: 8042 self-test ok, PS/2 keyboard reset ok, IRQ1 enabled
+SAMOS: boot stack high-water 792 bytes, guard intact
+SAMOS: K0.5 boot complete, interrupts enabled, keyboard echo active
+```
+
+Avec `make run-vga`, les touches tapées s'affichent.
+
+### G. Tests
+
+```bash
+make clean && make test
+```
+
+Résultat observé : **49 lignes `[PASS]`, aucune `[FAIL]`**, statut 0.
+
+| Test | Attendu | Observé |
+|---|---|---|
+| Masques PIC : IRQ0 et IRQ1 démasquées, toutes les autres masquées ; portes 0x20/0x21 présentes, 0x22 absente ; ISR vide | conforme | **PASS** |
+| PIT : diviseur 11932, compteur matériel dans [1, 11932] | conforme | **PASS** |
+| 10 ticks consécutifs (EOI correct), une IRQ comptée par tick, aucune IRQ sans gestionnaire | conforme | **PASS** |
+| Étalonnage contre la RTC CMOS | 90-110 ticks/s | **PASS** (100) |
+| `pit_sleep_ms(50)` | ≥ 50 ms et < 200 ms | **PASS** |
+| IRQ 0 masquée pendant 10 périodes : aucun tick ; démasquée : reprise | conforme | **PASS** |
+| `pit_sleep_ms` refuse de dormir avec IF = 0 | `false` | **PASS** |
+| Total des autotests noyau | statut 33 | **PASS** (163 vérifications) |
+| `ringbuf` : 1 million d'opérations comparées au modèle, débordement des compteurs | 0 divergence | **PASS** |
+| `kbd_decode` : Shift, Verr. Maj, Ctrl+C, étendues, Shift fantôme, Pause, octets de contrôle, 65 536 paires | conforme, sans erreur ASan/UBSan | **PASS** (21 vérifications) |
+| `keyboard_e2e` : frappes `sendkey` | `'Samos K0.5 !'`, `dropped=0` | **PASS** (31 octets, 31 IRQ1) |
+| Régressions K0.1-K0.4 (dont exceptions fatales, double faute, triple fault) | inchangé | **PASS** |
+| IRQ parasites 7/15 | — | **NOT TESTED** (non reproductible sous QEMU) |
+
+### H. Débogage
+
+Premier passage : `selftest`, `exc_np`, `exc_df` et `keyboard_e2e` en échec.
+
+1. **Régression K0.4 : `(t[32].type_attr & IDT_PRESENT) == 0`.** Le test K0.4 supposait le vecteur 32 inutilisé ; il est devenu l'IRQ 0 du PIT. Le test porte désormais sur le vecteur 0x2F (IRQ 15, inutilisée).
+2. **Régression K0.4 : `fatal mode 'np' returned: fault not raised`.** `INT 0x20` exécutait le gestionnaire du **timer** au lieu de provoquer #NP, avec en prime un EOI parasite envoyé au PIC. Les tests #NP et #DF utilisent désormais `INT 0x2E` (code d'erreur `0x172`, « IDT index 46 »). Ce constat est documenté comme un risque de sécurité (Details §28.6).
+3. **Clavier muet.** Le noyau affichait `kbd ready` puis `kbd timeout, partial line: ''`. Une session manuelle avec `-monitor stdio` montrait que QEMU recevait bien les `sendkey`. Le compteur ajouté au message d'expiration a confirmé qu'aucun octet n'était reçu. **Cause :** l'octet de configuration du 8042, lu après la commande `0xAD`, contenait le bit 4 (horloge du port 1 coupée), et sa réécriture finale annulait la commande d'activation `0xAE`. **Correction :** le bit 4 est effacé explicitement. **Résultat :** `'Samos K0.5 !' (bytes=31 dropped=0 irq1=31)`.
+4. **Test hébergé du décodeur non lié** (`undefined reference to samos_strcmp`). Le test utilise `strcmp`, renommé par `host_prefix.h` : `kernel/lib/string.c` a été ajouté à sa ligne de compilation.
+
+### I. Intégration
+
+- Les IRQ passent par l'infrastructure K0.4 : stubs, `isr_common`, `isr_dispatch`. Aucun nouveau code assembleur n'a été nécessaire.
+- La règle « pas de journal en IRQ » (K0.3, §18.5) est respectée par tous les gestionnaires.
+- K0.6 pourra mesurer les temps (`pit_uptime_ms`) et devra préserver le fonctionnement des IRQ lors de l'activation de la pagination : les gestionnaires, leur pile et les tampons doivent rester mappés.
+
+### J. Critères d'achèvement
+
+- [x] Les IRQ ne sont plus confondues avec les exceptions ; masquage par défaut.
+- [x] Timer périodique à la fréquence attendue, mesurée contre une source indépendante.
+- [x] EOI démontré ; masquage démontré.
+- [x] Clavier fonctionnel de bout en bout avec de vraies frappes, sans perte.
+- [x] File ISR → noyau sans verrou, vérifiée par modèle.
+- [x] Boucle d'inactivité sans réveil perdu.
+- [x] Régressions détectées et corrigées ; documentation à jour (Details §28 à 32).
+
+### K. Reproduction
+
+```bash
+make clean && make test    # 49 lignes [PASS], aucune [FAIL]
+make run-vga               # taper au clavier dans la fenêtre QEMU : écho à l'écran
+```

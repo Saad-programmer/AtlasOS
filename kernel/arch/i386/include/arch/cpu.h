@@ -101,6 +101,47 @@ CPU_READ_SEG(ss)
 static inline void cpu_cli(void) { __asm__ __volatile__("cli" ::: "memory"); }
 static inline void cpu_sti(void) { __asm__ __volatile__("sti" ::: "memory"); }
 
+/*
+ * Section critique courte vis-à-vis des interruptions (monoprocesseur) :
+ *   uint32_t f = irq_save();   ... accès partagé avec un ISR ...   irq_restore(f);
+ * irq_save mémorise EFLAGS puis masque ; irq_restore ne réactive IF que s'il
+ * était actif avant (imbrication correcte, contrairement à cli/sti nus).
+ */
+static inline uint32_t irq_save(void)
+{
+    uint32_t flags = cpu_read_eflags();
+    cpu_cli();
+    return flags;
+}
+
+static inline void irq_restore(uint32_t flags)
+{
+    if (flags & EFLAGS_IF) {
+        cpu_sti();
+    }
+}
+
+/*
+ * Attente d'interruption SANS course : à appeler avec IF = 0 après avoir
+ * vérifié qu'il n'y a rien à faire. STI ne prend effet qu'APRÈS l'instruction
+ * suivante (« interrupt shadow », SDM vol. 2, STI) : aucune interruption ne
+ * peut donc se glisser entre STI et HLT. Une interruption arrivée pendant la
+ * vérification reste en attente et réveille HLT immédiatement.
+ * Au retour, IF = 1.
+ */
+static inline void cpu_idle(void)
+{
+    __asm__ __volatile__("sti\n\thlt" ::: "memory");
+}
+
+/* Compteur d'horodatage du processeur (TSC, SDM vol. 2, RDTSC). */
+static inline uint64_t cpu_rdtsc(void)
+{
+    uint32_t lo, hi;
+    __asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((uint64_t)hi << 32) | lo;
+}
+
 /* Invalide l'entrée TLB correspondant à une adresse virtuelle (SDM vol. 2, INVLPG). */
 static inline void cpu_invlpg(const void *vaddr)
 {

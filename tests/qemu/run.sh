@@ -82,6 +82,34 @@ run_case() {
     fi
 }
 
+# run_case_keys NOM "CMDLINE" STATUT "touche1 touche2 ..." MOTIF...
+# Comme run_case, mais injecte de VRAIES frappes clavier par le moniteur QEMU
+# (commande « sendkey », qui simule le clavier PS/2 émulé) dès que le noyau
+# a écrit « [TEST] kbd ready ». Le moniteur est relié à l'entrée standard.
+run_case_keys() {
+    local name="$1" append="$2" expect="$3" keys="$4"; shift 4
+    local dlog="$OUT/$name.debugcon.log" slog="$OUT/$name.serial.log" qlog="$OUT/$name.qemu.log"
+    total=$((total + 1))
+    rm -f "$dlog" "$slog" "$qlog"
+    feeder() {
+        for _ in $(seq 1 100); do grep -q 'kbd ready' "$dlog" 2>/dev/null && break; sleep 0.1; done
+        for k in $keys; do echo "sendkey $k"; sleep 0.05; done
+        sleep "$TIMEOUT"
+    }
+    timeout "$TIMEOUT" "$QEMU" -m 128M -display none -no-reboot \
+        -kernel "$KERNEL" -append "$append" \
+        -debugcon "file:$dlog" -serial "file:$slog" -monitor stdio \
+        -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+        -d cpu_reset,guest_errors -D "$qlog" < <(feeder) >/dev/null 2>&1
+    local status=$? ok=1
+    [ "$status" -eq "$expect" ] || { echo "  statut QEMU $status, attendu $expect"; ok=0; }
+    grep -q 'Triple fault' "$qlog" 2>/dev/null && { echo "  triple fault"; ok=0; }
+    for pat in "$@"; do
+        grep -qF -- "${pat#serial:}" "$slog" 2>/dev/null || { echo "  motif absent : $pat"; ok=0; }
+    done
+    if [ "$ok" -eq 1 ]; then echo "[PASS] $name"; else echo "[FAIL] $name (journaux : $slog)"; fail=1; fi
+}
+
 # shellcheck source=tests/qemu/cases.sh
 source "$(dirname "$0")/cases.sh"
 

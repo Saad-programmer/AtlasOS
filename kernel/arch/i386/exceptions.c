@@ -11,6 +11,8 @@
 #include <arch/cpu.h>
 #include <arch/gdt.h>
 #include <arch/interrupt.h>
+#include <arch/irq.h>
+#include <arch/pic.h>
 #include <samos/log.h>
 #include <samos/panic.h>
 
@@ -113,6 +115,10 @@ static void dump_frame(const struct interrupt_frame *f)
 void isr_dispatch(struct interrupt_frame *frame)
 {
     uint32_t v = frame->vector;
+    if (v >= PIC_IRQ_BASE && v < PIC_IRQ_BASE + PIC_IRQ_COUNT) {
+        irq_dispatch(frame);           /* K0.5 : IRQ matérielles */
+        return;
+    }
     interrupt_handler_t h = (v < IDT_ENTRIES) ? g_handlers[v] : 0;
     if (h != 0) {
         h(frame);

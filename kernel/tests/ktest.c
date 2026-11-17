@@ -7,6 +7,7 @@
  *   test=panic    panique volontaire (vérifie le chemin panic, statut 37)
  *   test=ud|de|gp|np|df|triple   exceptions fatales volontaires (K0.4,
  *                 voir test_faults.c)
+ *   test=kbd      ligne tapée au clavier (frappes injectées par QEMU, K0.5)
  */
 #include <samos/bootinfo.h>
 #include <samos/ktest.h>
@@ -58,6 +59,10 @@ void ktest_run_all(void)
         if (strcmp(mode, "panic") == 0) {
             deliberate_panic();
         }
+        if (strcmp(mode, "kbd") == 0) {
+            ktest_keyboard_line();
+            qemu_exit(QEMU_EXIT_SUCCESS);   /* le verdict porte sur la ligne affichée */
+        }
         if (ktest_fatal_mode(mode)) {
             kprintf("[TEST] fatal mode '%s' returned: fault not raised\n", mode);
             qemu_exit(QEMU_EXIT_FAILURE);
@@ -70,6 +75,7 @@ void ktest_run_all(void)
     ktest_suite_layout();
     ktest_suite_console();
     ktest_suite_cpu();
+    ktest_suite_irq();
 
     kprintf("[TEST] checks=%u failures=%u\n", g_checks, g_failures);
     if (g_failures == 0) {
