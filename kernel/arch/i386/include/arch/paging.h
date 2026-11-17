@@ -57,6 +57,10 @@ int mem_probe_write(volatile void *addr, uint32_t value);
 /* Dernière faute interceptée par une sonde (adresse CR2 et code d'erreur). */
 void mem_probe_last_fault(uint32_t *cr2, uint32_t *err);
 
+/* Vrai si cette #PF provient d'une instruction de sonde (probe.asm). */
+struct interrupt_frame;
+bool paging_is_probe_fault(const struct interrupt_frame *f);
+
 /* Diagnostic textuel d'une adresse fautive (utilisé par #PF et #DF). */
 const char *paging_classify(uint32_t addr, uint32_t err);
 

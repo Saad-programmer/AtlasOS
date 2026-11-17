@@ -10,6 +10,7 @@ static irq_handler_t g_irq_handlers[PIC_IRQ_COUNT];
 static volatile uint32_t g_irq_count[PIC_IRQ_COUNT];
 static volatile uint32_t g_spurious;
 static volatile uint32_t g_unhandled;
+extern volatile uint32_t g_irq_depth;      /* exceptions.c : cpu_in_interrupt() */
 
 bool irq_register(uint8_t irq, irq_handler_t handler)
 {
@@ -62,12 +63,14 @@ void irq_dispatch(struct interrupt_frame *frame)
         return;
     }
     g_irq_count[irq]++;
+    g_irq_depth++;
     irq_handler_t h = g_irq_handlers[irq];
     if (h != 0) {
         h();
     } else {
         g_unhandled++;                 /* ne devrait pas arriver : IRQ masquée */
     }
+    g_irq_depth--;
     pic_eoi(irq);                      /* après le gestionnaire : IF = 0, pas d'imbrication */
 }
 

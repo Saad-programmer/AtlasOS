@@ -10,6 +10,7 @@
  *     cache dans un registre ni d'élimination par l'optimiseur).
  */
 #include <samos/vga.h>
+#include <arch/cpu.h>
 #include <arch/io.h>
 
 #define VGA_PHYS_ADDR   0xB8000u
@@ -101,6 +102,15 @@ void vga_set_color(enum vga_color fg, enum vga_color bg)
 
 static void putc_nocursor(char c)
 {
+    /* Défense en profondeur (K0.7) : si l'état a été laissé incohérent (par
+     * exemple une panique survenue au milieu d'une écriture), on le ramène
+     * dans les bornes AVANT tout accès au tampon. */
+    if (g_row >= VGA_ROWS) {
+        g_row = VGA_ROWS - 1;
+    }
+    if (g_col >= VGA_COLS) {
+        newline();
+    }
     switch (c) {
     case '\n':
         newline();
@@ -130,18 +140,26 @@ static void putc_nocursor(char c)
     }
 }
 
+/* L'état du curseur (g_row, g_col) est partagé entre le code normal et une
+ * éventuelle panique en contexte d'interruption : les écritures sont faites
+ * interruptions masquées (K0.7). Coût : quelques microsecondes par ligne
+ * (écritures en mémoire vidéo), sans effet mesurable sur le PIT à 100 Hz. */
 void vga_putc(char c)
 {
+    uint32_t f = irq_save();
     putc_nocursor(c);
     update_hw_cursor();
+    irq_restore(f);
 }
 
 void vga_write(const char *s, size_t n)
 {
+    uint32_t f = irq_save();
     for (size_t i = 0; i < n; i++) {
         putc_nocursor(s[i]);
     }
     update_hw_cursor();   /* une seule mise à jour du curseur : 4 E/S au lieu de 4n */
+    irq_restore(f);
 }
 
 void vga_set_pos(unsigned row, unsigned col)

@@ -79,6 +79,10 @@ static inline uint32_t interrupt_frame_esp(const struct interrupt_frame *f)
     return (uint32_t)(uintptr_t)&f->eflags + 4u;
 }
 
+/* Vrai si le CPU exécute un gestionnaire d'exception ou d'IRQ (K0.7). Les
+ * fonctions non réentrantes (allocateurs, VMM) refusent ce contexte. */
+bool cpu_in_interrupt(void);
+
 /* Rapport complet d'une exception (nom, code d'erreur décodé, registres). */
 void exception_report(const struct interrupt_frame *frame);
 

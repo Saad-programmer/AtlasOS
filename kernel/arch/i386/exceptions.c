@@ -19,6 +19,18 @@
 
 static interrupt_handler_t g_handlers[IDT_ENTRIES];
 
+/* Profondeur d'imbrication (K0.7). Monoprocesseur, IF = 0 dans tout
+ * gestionnaire (portes d'interruption) : ces compteurs ne sont modifiés que
+ * par le code d'interruption, sans concurrence. */
+static volatile uint32_t g_exc_depth;      /* exceptions en cours de traitement */
+static volatile uint32_t g_exc_vector[2];  /* vecteur extérieur / intérieur */
+volatile uint32_t g_irq_depth;             /* IRQ en cours (irq.c) */
+
+bool cpu_in_interrupt(void)
+{
+    return g_exc_depth != 0 || g_irq_depth != 0;
+}
+
 static const char *const g_exc_names[EXC_COUNT] = {
     "Divide Error (#DE)", "Debug (#DB)", "Non-Maskable Interrupt (NMI)", "Breakpoint (#BP)",
     "Overflow (#OF)", "BOUND Range Exceeded (#BR)", "Invalid Opcode (#UD)", "Device Not Available (#NM)",
@@ -120,9 +132,27 @@ void isr_dispatch(struct interrupt_frame *frame)
         irq_dispatch(frame);           /* K0.5 : IRQ matérielles */
         return;
     }
+    /*
+     * Faute IMBRIQUÉE (K0.7) : une exception survenue pendant le traitement
+     * d'une autre (gestionnaire, rapport ou journal défaillant). Sans cette
+     * garde, une faute répétée dans exception_report() ou kprintf()
+     * ré-entrerait indéfiniment jusqu'à épuiser la pile. On s'arrête dès le
+     * second niveau, avec un rapport minimal. Seule exception admise : une
+     * faute de page interceptée par une sonde (paging.c), qui retourne.
+     */
+    if (g_exc_depth >= 1 && !(v == EXC_PF && paging_is_probe_fault(frame))) {
+        g_exc_vector[1] = v;
+        kprintf("\n*** NESTED CPU exception %u (%s) at EIP %p while handling exception %u (%s)\n",
+                (unsigned)v, exception_name(v), (void *)frame->eip,
+                (unsigned)g_exc_vector[0], exception_name(g_exc_vector[0]));
+        panic("nested exception");
+    }
+    g_exc_depth++;
+    g_exc_vector[0] = v;
     interrupt_handler_t h = (v < IDT_ENTRIES) ? g_handlers[v] : 0;
     if (h != 0) {
         h(frame);
+        g_exc_depth--;
         return;
     }
     exception_report(frame);

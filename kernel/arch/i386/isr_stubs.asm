@@ -78,10 +78,23 @@ ISR_NOERR i                 ; IRQ 0..15 remappées (K0.5)
 ; -----------------------------------------------------------------------------
 isr_common:
     pushad                  ; EAX ECX EDX EBX ESP(avant pushad) EBP ESI EDI
-    push ds
-    push es
-    push fs
-    push gs
+
+    ; Segments : on N'utilise PAS « push ds ». En mode 32 bits, PUSH d'un
+    ; registre de segment peut n'écrire que les 16 bits bas de l'emplacement
+    ; de 32 bits (SDM vol. 2, PUSH : « all recent Core and Atom processors
+    ; perform a 16-bit move, leaving the upper portion of the stack location
+    ; unmodified ») : les 16 bits hauts de frame->ds contiendraient alors des
+    ; restes de la pile. On zéro-étend explicitement (EAX est déjà sauvegardé).
+    ; QEMU (TCG) zéro-étend lui-même, ce qui masquait le problème (K0.7).
+    xor eax, eax
+    mov ax, ds
+    push eax
+    mov ax, es
+    push eax
+    mov ax, fs
+    push eax
+    mov ax, gs
+    push eax
 
     ; Segments de données du noyau (indispensable dès qu'une interruption
     ; pourra survenir en ring 3 avec des segments utilisateur, K1).

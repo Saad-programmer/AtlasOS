@@ -20,6 +20,8 @@ static volatile struct {
     unsigned calls;
     uint32_t vector, err, eip, eax, frame_eflags, cs;
     uint32_t handler_eflags;
+    uint32_t ds, es, fs, gs;          /* valeurs 32 bits COMPLÈTES du cadre (K0.7) */
+    bool in_interrupt;
     uintptr_t handler_fp;
     uint8_t insn0, insn1;
 } g_obs;
@@ -40,6 +42,11 @@ static void record(struct interrupt_frame *f)
     g_obs.cs = f->cs;
     g_obs.frame_eflags = f->eflags;
     g_obs.handler_eflags = cpu_read_eflags();
+    g_obs.ds = f->ds;
+    g_obs.es = f->es;
+    g_obs.fs = f->fs;
+    g_obs.gs = f->gs;
+    g_obs.in_interrupt = cpu_in_interrupt();
     g_obs.handler_fp = (uintptr_t)__builtin_frame_address(0);
     const volatile uint8_t *ip = (const volatile uint8_t *)(uintptr_t)f->eip;
     g_obs.insn0 = ip[0];
@@ -128,6 +135,12 @@ static void test_breakpoint(void)
     KTEST_CHECK((g_obs.handler_eflags & EFLAGS_IF) == 0);/* porte d'interruption : IF = 0 */
     KTEST_CHECK((after_eflags & EFLAGS_DF) != 0);        /* IRETD a restauré DF */
     KTEST_CHECK(((g_obs.handler_fp + 8u) & 0xFu) == 0);  /* ABI : pile alignée dans le C */
+    /* K0.7 : les 32 bits des champs de segment valent exactement le sélecteur
+     * (zéro-extension explicite dans isr_common ; voir SDM vol. 2, PUSH). */
+    KTEST_CHECK(g_obs.ds == GDT_KERNEL_DATA_SEL && g_obs.es == GDT_KERNEL_DATA_SEL);
+    KTEST_CHECK(g_obs.fs == GDT_KERNEL_DATA_SEL && g_obs.gs == GDT_KERNEL_DATA_SEL);
+    KTEST_CHECK(g_obs.in_interrupt);                     /* contexte d'exception détecté */
+    KTEST_CHECK(!cpu_in_interrupt());                    /* et quitté au retour */
 }
 
 static void test_invalid_opcode(void)

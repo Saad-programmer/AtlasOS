@@ -2,6 +2,7 @@
  * SAMOS / AtlasOS — kernel/arch/i386/pic.c
  * Programmation du 8259A. Voir pic.h et Details.md §28.
  */
+#include <arch/cpu.h>
 #include <arch/io.h>
 #include <arch/pic.h>
 
@@ -45,16 +46,23 @@ void pic_init(void)
     outb(PIC2_DATA, 0xFF);
 }
 
+/* Lecture-modification-écriture de l'IMR : elle doit être atomique vis-à-vis
+ * des interruptions (K0.7). Sinon un gestionnaire qui modifierait l'IMR entre
+ * le inb et le outb verrait sa modification écrasée par une valeur périmée. */
 void pic_mask(uint8_t irq)
 {
     uint16_t port = (irq < 8) ? PIC1_DATA : PIC2_DATA;
+    uint32_t f = irq_save();
     outb(port, (uint8_t)(inb(port) | (1u << (irq & 7u))));
+    irq_restore(f);
 }
 
 void pic_unmask(uint8_t irq)
 {
     uint16_t port = (irq < 8) ? PIC1_DATA : PIC2_DATA;
+    uint32_t f = irq_save();
     outb(port, (uint8_t)(inb(port) & ~(1u << (irq & 7u))));
+    irq_restore(f);
     if (irq >= 8) {
         pic_unmask(PIC_CASCADE_IRQ);   /* l'esclave n'est entendu que via IRQ 2 */
     }

@@ -1,0 +1,12 @@
+# Preuve : défauts mémoire de K0.6 (commit 697dc01), reproduits le 2026-11-17
+# Méthode : worktree isolé, fichier de test temporaire kernel/tests/evidence.c (non commité),
+# qemu-system-i386 -m 128M -kernel build/samos.elf -append test=evidence
+# Statut QEMU : 33
+[EVID] E1 vmm_map(0x0) = 0
+[EVID] E1 read NULL after map: probe=0 (0 = NULL deref no longer faults)
+[EVID] E2 vmm_map(guard) = 0
+[EVID] E3 vmm_map(0xD0000000 -> .text, W) = 0
+[EVID] E3 write via alias = 0, kmain first word 53e58955 -> cccccccc
+[EVID] E4 pmm_free_frame(live page table 00137000) = 0 (0 = accepted)
+[EVID] E5 pmm_free_frame(still mapped) = 0
+[EVID] E5 realloc returned 0015a000 (same frame=1) while 0xD0001000 still maps it

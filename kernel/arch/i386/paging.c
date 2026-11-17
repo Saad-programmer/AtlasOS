@@ -144,12 +144,17 @@ const char *paging_classify(uint32_t addr, uint32_t err)
     return protection ? "protection violation" : "access to an unmapped page";
 }
 
+bool paging_is_probe_fault(const struct interrupt_frame *f)
+{
+    return f->eip == (uint32_t)(uintptr_t)mem_probe_read_insn ||
+           f->eip == (uint32_t)(uintptr_t)mem_probe_write_insn;
+}
+
 static void page_fault_handler(struct interrupt_frame *f)
 {
     uint32_t cr2 = cpu_read_cr2();
     /* Faute attendue dans une sonde : correction et reprise (probe.asm). */
-    if (f->eip == (uint32_t)(uintptr_t)mem_probe_read_insn ||
-        f->eip == (uint32_t)(uintptr_t)mem_probe_write_insn) {
+    if (paging_is_probe_fault(f)) {
         g_probe_cr2 = cr2;
         g_probe_err = f->err_code;
         f->eip = (uint32_t)(uintptr_t)mem_probe_fixup;

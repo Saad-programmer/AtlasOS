@@ -25,6 +25,9 @@
  *            garde : #PF, dont la livraison exige d'empiler sur cette même
  *            page => 2e #PF => #DF, attrapée par la porte de tâche sur sa pile
  *            dédiée (K0.4). Démonstration de bout en bout K0.2 + K0.4 + K0.6.
+ * K0.7 :
+ *   nested   un gestionnaire de #BP exécute ud2 => #UD PENDANT le traitement
+ *            de #BP : la garde d'imbrication doit arrêter proprement le noyau
  *   triple  IDT de limite 0, INT3     -> aucune porte livrable : TRIPLE FAULT
  *                                        => réinitialisation du processeur
  *                                        (prouve que le banc de test la détecte)
@@ -56,6 +59,12 @@ static __attribute__((noinline)) uint32_t recurse_forever(uint32_t depth)
     return r + buf[0];
 }
 
+static void faulting_bp_handler(struct interrupt_frame *f)
+{
+    (void)f;
+    __asm__ __volatile__("ud2");
+}
+
 bool ktest_fatal_mode(const char *mode)
 {
     kprintf("[TEST] fatal mode '%s'\n", mode);
@@ -85,6 +94,9 @@ bool ktest_fatal_mode(const char *mode)
         (void)*(volatile uint32_t *)(uintptr_t)0xE0000000u;
     } else if (strcmp(mode, "stack") == 0) {
         (void)recurse_forever(0);
+    } else if (strcmp(mode, "nested") == 0) {
+        (void)interrupt_register(EXC_BP, faulting_bp_handler);
+        __asm__ __volatile__("int3");
     } else if (strcmp(mode, "triple") == 0) {
         struct cpu_dtr empty = { 0, 0 };
         __asm__ __volatile__("lidt %0\n\tint3" : : "m"(empty) : "memory");

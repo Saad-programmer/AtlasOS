@@ -907,7 +907,7 @@ Phase autorisée par le développeur après la revue de K0. Elle ne comporte **a
 
 ### K0.7.0 — Nouvel audit et preuves des défauts mémoire
 
-Le noyau a été relu en entier, sans s'appuyer sur la revue K0. Les défauts de l'API mémoire ont d'abord été **reproduits sur le code d'origine** (commit `697dc01`), dans un *worktree* Git isolé, à l'aide d'un fichier de test temporaire non commité. Ce fichier est conservé sous `docs/review/evidence/k06-evidence.c.txt`, et le journal sous `docs/review/evidence/k06-memory-defects.log` :
+Le noyau a été relu en entier, sans s'appuyer sur la revue K0. Les défauts de l'API mémoire ont d'abord été **reproduits sur le code d'origine** (commit `697dc01`), dans un *worktree* Git isolé, à l'aide d'un fichier de test temporaire non commité. Ce fichier est conservé sous `docs/review/evidence/k06-evidence.c.txt`, et le journal sous `docs/review/evidence/k06-memory-defects.txt` :
 
 ```text
 [EVID] E1 vmm_map(0x0) = 0
@@ -951,3 +951,20 @@ Ces résultats contredisent la revue K0, qui classait ces risques MEDIUM (« san
 | H8 image inconnue | `statut QEMU 1, attendu 124` |
 
 **Résultat :** `make test` donne 24 cas QEMU sur 24, les vérifications GDB, les tests hébergés et les tests d'outils au vert. Statut 0.
+
+### K0.7.2 — Chemin d'interruption : segments, fautes imbriquées, concurrence
+
+| Fichier | Changement | Pourquoi |
+|---|---|---|
+| `isr_stubs.asm` | segments zéro-étendus (`xor eax,eax ; mov ax,ds ; push eax`) au lieu de `push ds` | SDM vol. 2 (PUSH) : sur les processeurs récents, `push` d'un segment n'écrit que 16 bits, et les 16 bits hauts du cadre gardent des restes de la pile. QEMU zéro-étend, ce qui masquait le problème. **Défaut supposé d'après la spécification, non reproductible sous QEMU.** |
+| `exceptions.c` | garde d'imbrication : une exception pendant une exception (hors sonde) produit un rapport `NESTED` puis une panique | sinon une faute répétée dans `exception_report`/`kprintf` ré-entrerait jusqu'à épuiser la pile |
+| `exceptions.c`, `irq.c`, `interrupt.h` | `cpu_in_interrupt()` : profondeur d'exception et d'IRQ | permettre aux fonctions non réentrantes de refuser le contexte d'interruption |
+| `pic.c` | `pic_mask/unmask` sous `irq_save` | lecture-modification-écriture de l'IMR non atomique |
+| `vga.c` | écritures sous `irq_save` ; état ramené dans les bornes avant tout accès | une panique en IRQ au milieu d'une écriture pouvait laisser `g_col == 80` et écrire hors de l'écran (sur la ligne 25 inexistante) |
+
+Tests ajoutés :
+
+- dans le gestionnaire `int3` : les 32 bits de `ds/es/fs/gs` valent exactement `0x10` ; `cpu_in_interrupt()` est vrai dans le gestionnaire et faux après ;
+- démarrage `test=nested` : `NESTED CPU exception 6 (Invalid Opcode (#UD)) ... while handling exception 3 (Breakpoint (#BP))`, puis panique, sans panique récursive.
+
+Résultat : `make test` réussi, avec 25 cas QEMU sur 25.
