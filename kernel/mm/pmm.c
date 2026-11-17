@@ -91,6 +91,31 @@ samos_err_t pmm_free_frame(uint32_t phys)
     return pmm_core_free(&g_pmm, phys >> PAGE_SHIFT);
 }
 
+/* K0.7-M2.4b — Références pour le VMM, par adresse physique alignée.
+ * Pas encore appelées par vmm_map()/vmm_unmap() (M2.4c). */
+samos_err_t pmm_ref(uint32_t phys)
+{
+    if ((phys & (PAGE_SIZE - 1u)) != 0) {
+        g_pmm.ref_errors++;
+        return SAMOS_EINVAL;
+    }
+    return pmm_core_ref(&g_pmm, phys >> PAGE_SHIFT);
+}
+
+samos_err_t pmm_unref(uint32_t phys)
+{
+    if ((phys & (PAGE_SIZE - 1u)) != 0) {
+        g_pmm.ref_errors++;
+        return SAMOS_EINVAL;
+    }
+    return pmm_core_unref(&g_pmm, phys >> PAGE_SHIFT);
+}
+
+uint32_t pmm_refs(uint32_t phys)
+{
+    return pmm_core_refs(&g_pmm, phys >> PAGE_SHIFT);
+}
+
 const struct pmm *pmm_state(void)
 {
     return &g_pmm;

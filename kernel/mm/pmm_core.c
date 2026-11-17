@@ -133,6 +133,7 @@ samos_err_t pmm_core_init(struct pmm *p, frame_desc_t *meta, uint32_t meta_entri
     p->invalid_frees = 0;
     p->invalid_transitions = 0;
     p->ref_errors = 0;
+    p->busy_frees = 0;
     /* Écriture directe (sans set_type) : état initial, free_count = 0. */
     for (uint32_t f = 0; f < nframes; f++) {
         meta[f] = frame_desc_make(FRAME_RESERVED, 0);   /* rien n'est disponible par défaut */
@@ -190,9 +191,8 @@ uint32_t pmm_core_check(const struct pmm *p)
         if (!frame_desc_valid(d)) {
             anomalies++;                     /* F1, F2 */
         }
-        if (frame_desc_refs(d) != 0) {
-            anomalies++;                     /* M2.2 : aucune référence n'est encore comptée */
-        }
+        /* K0.7-M2.4b : des références non nulles sont légitimes sur un cadre
+         * ALLOCATED ; sur tout autre type, frame_desc_valid() (F2) les rejette. */
         if (frame_desc_type(d) == FRAME_FREE) {
             free_seen++;
         }
@@ -253,6 +253,10 @@ samos_err_t pmm_core_free(struct pmm *p, uint32_t frame)
     if (t != FRAME_ALLOCATED) {
         p->invalid_frees++;
         return SAMOS_EINVAL;
+    }
+    if (frame_desc_refs(p->meta[frame]) != 0) {
+        p->busy_frees++;                     /* K0.7-M2.4b : encore référencé */
+        return SAMOS_EBUSY;
     }
     set_type(p, frame, FRAME_FREE);
     return SAMOS_OK;

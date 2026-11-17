@@ -1083,3 +1083,15 @@ Premier sous-jalon de M2.4 (correction de E5), limité au cœur pur. `paging.c` 
 - **Contre-épreuves** (copie isolée) : chacune des trois gardes supprimées est détectée par l'assertion attendue (débordement ligne 41, sous-dépassement ligne 34, type ligne 50). Sans la garde de type, ASan signale aussi une écriture hors de la table.
 - **Limite connue :** `pmm_core_check()` compte encore toute référence non nulle comme une anomalie (règle de M2.2). C'est exact tant qu'aucun code noyau ne prend de référence ; la règle devra être ramenée à F2 lors de l'intégration (M2.4b).
 - Validation : `make clean && make test` donne 100 `[PASS]`, 0 `[FAIL]`, 26 cas QEMU sur 26 ; compilation parallèle propre réussie.
+
+### K0.7-M2.4b — Références intégrées au PMM noyau
+
+- `pmm_core_check()` : la règle provisoire de M2.2 est remplacée par F2 (déjà appliqué par `frame_desc_valid()`).
+- `pmm_core_free()` : `SAMOS_EBUSY` si des références existent (compteur `busy_frees`), décidé avant toute écriture.
+- `pmm.c`, `pmm.h` : `pmm_ref`, `pmm_unref`, `pmm_refs`, avec refus des adresses non alignées.
+- Tests :
+  - `tests/host/test_pmm_busy.c` (19 vérifications) : libération à 0, 1 et 2 références ; descripteur, `free_count` et compteurs inchangés lors d'un refus ; libération après retrait de toutes les références ; `pmm_core_check` accepte des références valides et rejette des références sur `PAGETABLE` ou `FREE` ; E4 toujours refusé ;
+  - `test_kernel_refs` (noyau) : mêmes propriétés via l'interface physique ; refus des cadres non alignés, du noyau, du répertoire de pages et des cadres libres.
+- **Contre-épreuve** (copie isolée, garde `refs > 0` supprimée) : test hébergé à 8 échecs (premier : `pmm_core_free(&p, b) == SAMOS_EBUSY`) ; noyau au statut 35 avec 4 échecs ciblés (premier : `pmm_free_frame(f) == SAMOS_EBUSY`) ; aucun triple fault.
+- Validation : `make clean && make test` donne 101 `[PASS]`, 0 `[FAIL]`, 26 cas QEMU sur 26 ; compilation parallèle propre réussie.
+- **E5 n'est pas corrigé** : le VMM ne prend pas encore de références (M2.4c).

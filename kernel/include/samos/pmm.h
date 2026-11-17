@@ -57,6 +57,7 @@ struct pmm {
     uint32_t invalid_frees;        /* libération d'un cadre non alloué par le PMM */
     uint32_t invalid_transitions;  /* réservation refusée sur un cadre déjà distribué */
     uint32_t ref_errors;           /* K0.7-M2.4a : opérations de référence refusées */
+    uint32_t busy_frees;           /* K0.7-M2.4b : libération refusée, références actives */
 };
 
 /* Initialise : tout RESERVED, puis FREE pour les cadres entièrement contenus
@@ -102,6 +103,10 @@ uint32_t pmm_alloc_frame(void);
  * Jamais libérable par pmm_free_frame(). Retourne 0 si épuisé. */
 uint32_t pmm_alloc_pagetable(void);
 samos_err_t pmm_free_frame(uint32_t phys);
+/* K0.7-M2.4b : références de projections dynamiques (cadres ALLOCATED). */
+samos_err_t pmm_ref(uint32_t phys);
+samos_err_t pmm_unref(uint32_t phys);
+uint32_t pmm_refs(uint32_t phys);
 const struct pmm *pmm_state(void);
 void pmm_print(void);
 

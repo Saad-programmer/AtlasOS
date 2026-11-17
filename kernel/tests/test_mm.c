@@ -285,6 +285,25 @@ static void test_pagetable_frames(void)
     KTEST_CHECK(pmm_core_check(p) == 0);
 }
 
+/* K0.7-M2.4b — Interfaces de références du PMM noyau (pas encore utilisées
+ * par le VMM : E5 n'est PAS corrigé à ce stade). */
+static void test_kernel_refs(void)
+{
+    const struct pmm *p = pmm_state();
+    uint32_t f = pmm_alloc_frame();
+    KTEST_CHECK(f != 0 && pmm_refs(f) == 0);
+    KTEST_CHECK(pmm_ref(f) == SAMOS_OK && pmm_refs(f) == 1);
+    uint32_t fc = p->free_count;
+    KTEST_CHECK(pmm_free_frame(f) == SAMOS_EBUSY);
+    KTEST_CHECK(pmm_core_type(p, f >> PAGE_SHIFT) == FRAME_ALLOCATED && pmm_refs(f) == 1);
+    KTEST_CHECK(p->free_count == fc && pmm_core_check(p) == 0);
+    KTEST_CHECK(pmm_unref(f) == SAMOS_OK && pmm_free_frame(f) == SAMOS_OK);
+    KTEST_CHECK(pmm_ref(f + 4) == SAMOS_EINVAL);                         /* non aligné */
+    KTEST_CHECK(pmm_ref((uint32_t)(uintptr_t)&kmain & PTE_FRAME) == SAMOS_EPERM);
+    KTEST_CHECK(pmm_ref(paging_directory()) == SAMOS_EPERM);             /* E4 : table */
+    KTEST_CHECK(pmm_ref(f) == SAMOS_EPERM);                              /* cadre libre */
+}
+
 void ktest_suite_mm(void)
 {
     ktest_suite("K0.6 mm");
@@ -296,4 +315,5 @@ void ktest_suite_mm(void)
     test_forbidden_mappings();
     test_frame_types();
     test_pagetable_frames();
+    test_kernel_refs();
 }
