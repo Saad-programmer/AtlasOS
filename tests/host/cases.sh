@@ -6,3 +6,4 @@ build_and_run test_ringbuf kernel/lib/ringbuf.c
 build_and_run test_kbd_decode kernel/drivers/kbd_decode.c kernel/lib/string.c
 build_and_run test_memmap kernel/mm/memmap.c kernel/lib/string.c
 build_and_run test_pmm kernel/mm/pmm_core.c kernel/mm/memmap.c kernel/lib/string.c
+build_and_run test_frame

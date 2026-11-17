@@ -990,3 +990,27 @@ Résultat : `make test` réussi, avec 25 cas QEMU sur 25.
 - Régression complète depuis `make clean` : 97 `[PASS]`, 0 `[FAIL]`, 25 cas QEMU sur 25. Compilation parallèle propre réussie.
 
 **Limite assumée à ce stade.** M1 ferme E1 et E2. E3 (alias inscriptible), E4 (table de pages libérable) et E5 (cadre projeté libérable) restent ouverts jusqu'aux sous-jalons M2 à M5.
+
+### K0.7-M2.1 — Conception du suivi des cadres physiques
+
+**Règle de travail :** une seule modification architecturale cohérente par session.
+
+**Fichiers.**
+
+| Fichier | Rôle |
+|---|---|
+| `docs/design/K0.7-M2-frame-tracking.md` | conception : type, propriété et références distingués ; transitions ; invariants F1-F3 (descripteur) et G1-G5 (globaux) ; traitement de la projection en identité ; dépendance avec le VMM ; étude du `stash` ; plan M2.2-M5 |
+| `kernel/include/samos/frame.h` | descripteur de 16 bits (3 bits de type, bit 3 réservé, 12 bits de références), types, propriétaire déduit du type, `frame_desc_valid()`. **Définitions seules**, incluses par aucun fichier du noyau à ce stade |
+| `tests/host/test_frame.c`, `tests/host/cases.sh` | aller-retour de l'encodage, invariants F1-F3, propriété ; contrôle **exhaustif** des 65 536 valeurs (exactement 5 + 4095 descripteurs valides) |
+
+**Décision sur la projection en identité.** Elle n'est **pas** comptée dans les références. La compter donnerait à chaque cadre au moins une référence permanente et rendrait toute libération impossible. La limite qui en découle (l'identité reste un alias inscriptible des cadres alloués et des tables de pages) est documentée ; son traitement est reporté à M3, avec justification à fournir.
+
+**Dépendance identifiée.** `paging.c` alloue ses tables par `pmm_alloc_frame()` : le PMM ne peut pas les reconnaître sans une modification du VMM, prévue en M3. `paging.c` n'est pas modifié en M2.1.
+
+**Vérification.**
+
+- `frame.h` compile avec les options réelles des deux images. Un premier essai, qui compilait l'en-tête comme fichier principal, signalait des fonctions `static inline` inutilisées : c'est un artefact de cette méthode, l'avertissement ne s'applique pas à un en-tête inclus. L'essai a été refait par inclusion.
+- **Absence de changement de comportement prouvée :** les octets chargés (`objcopy -O binary`) et les ELF sans débogage sont **identiques** avant (`072fe23`) et après, pour les deux images.
+- Régression depuis `make clean` : 98 `[PASS]`, 0 `[FAIL]`, 25 cas QEMU sur 25. Compilation parallèle propre réussie.
+
+**Constat annexe (non corrigé ici).** Les ELF complets diffèrent entre deux répertoires de compilation : NASM écrit le répertoire absolu (`DW_AT_comp_dir`) dans ses informations DWARF, et `-ffile-prefix-map` ne s'applique qu'à Clang. Ce défaut de reproductibilité sera traité dans un sous-jalon dédié.
