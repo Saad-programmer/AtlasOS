@@ -50,13 +50,52 @@ Hardware specifications, processor manuals, boot protocols, and documented binar
 
 The project does not require independently manufacturing processors or developing a compiler before writing the kernel.
 
-### Mandatory rule
+### Implementation authorization (updated 2026-11-17)
 
-**Never generate or modify project source code unless the developer explicitly requests that implementation or modification.**
+The developer has **explicitly authorized Claude to implement the complete phase K0 — Kernel Reconstruction and Foundations**, from K0.1 (boot) up to and including K0.6 (memory management).
 
-The developer will guide the project file by file and subsystem by subsystem.
+Within K0, Claude is authorized to:
 
-Your default responsibility when receiving new code is to:
+- Design and write kernel source files (C and NASM only for K0).
+- Modify and correct existing files.
+- Refactor components when technically justified (and explain why).
+- Create tests and verification tools.
+- Build and run AtlasOS under QEMU, and install the required development tools in the development environment.
+- Fix the defects that are detected.
+- Maintain the documentation (`README.md`, `Walkthrough.md`, `Details.md`).
+- Commit and push verified changes (see Section 7).
+
+Each K0 milestone must be validated (build, tests, documentation) before the next one starts.
+
+**This authorization stops at the end of K0.6.** After K0.6, Claude must stop functional development, deliver a complete kernel review (architecture audit and x86-64 migration readiness), and wait for a new explicit authorization. K1, processes, scheduling, system calls, filesystems, AI and speech remain unauthorized.
+
+Outside the scope of an explicit authorization, the previous rule still applies: **never generate or modify project source code unless the developer explicitly requests it.**
+
+The developer keeps final authority over major architectural decisions. Any change to the approved architecture (boot protocol, toolchain, memory layout, kernel model, target architecture) requires the developer's approval.
+
+### Permanent rule: every code change must be explained
+
+**Every code modification must be accompanied by a technical explanation sufficient to understand how it works**: what it does, why it is designed that way, which hardware/specification rules it relies on, and its limitations. This explanation lives in code comments (local reasoning), in `Details.md` (theory), and in `Walkthrough.md` (what was done and how it was verified). Code without an explanation is not considered complete.
+
+### Approved K0 architectural decisions
+
+| Topic | Decision |
+|---|---|
+| Implementation | Claude writes the complete K0 code: rigorous, modular, commented |
+| Toolchain | Clang, freestanding i686 target (`--target=i686-unknown-none-elf`), NASM, GNU ld |
+| Boot protocol | Multiboot 1 |
+| libgcc | Prefer independent implementations when relevant; do not write unneeded routines |
+| C headers | `stdint.h`, `stddef.h`, `stdbool.h`, `stdarg.h` allowed (compiler-provided freestanding headers) |
+| Memory layout | Kernel loaded at a low physical address (1 MiB, identity) for K0; higher-half studied later |
+| Build system | GNU Make |
+| Old kernel | Not imported: AtlasOS is a new independent code base |
+| Documentation language | Mainly French, English technical terms kept where more precise |
+| License | None chosen — requires the developer's decision |
+| Git | Target branch `main`; if the environment imposes a `claude/...` branch, push there and prepare a pull request to `main` |
+
+### Review duties
+
+When the developer submits code, Claude's responsibility is to:
 
 1. Inspect it.
 2. Understand its intended behavior.
@@ -68,7 +107,7 @@ Your default responsibility when receiving new code is to:
 8. Document verified progress.
 9. Commit and push only changes authorized under this directive.
 
-Never replace the developer's educational work with an automatically generated implementation merely to accelerate development.
+Never replace or overwrite the developer's own work with an automatically generated implementation merely to accelerate development. Code written by Claude under authorization must remain explainable by the developer: favor clarity over cleverness.
 
 ---
 
@@ -575,7 +614,9 @@ The repository's primary branch is:
 
 **main**
 
-The developer wants verified and approved progress pushed directly to `main`.
+The developer wants verified and approved progress to reach `main`.
+
+If the execution environment permits a direct push to `main` within the repository rules, push there. If the environment imposes a working branch (for example `claude/...`), push to that branch and prepare a pull request towards `main`. Never bypass such restrictions.
 
 You may execute Git operations through the connected GitHub integration or an authorized local Git environment.
 
@@ -611,7 +652,7 @@ Before every push:
 8. Update documentation.
 9. Stage only relevant files.
 10. Commit with a descriptive message.
-11. Push to `origin/main`.
+11. Push to `origin/main`, or to the imposed working branch (see above).
 12. Verify that the remote branch contains the intended commit.
 
 Never force-push.
@@ -1024,6 +1065,10 @@ Every accepted change should leave the project:
 The desired workflow is:
 
 **Developer writes → Claude reviews → Defects are identified → Developer approves corrections → Changes are verified → Documentation is synchronized → Changes are committed → Changes are pushed to GitHub main → Next milestone is proposed.**
+
+For phases the developer has explicitly delegated (currently K0, up to K0.6 inclusive), the workflow becomes:
+
+**Claude implements and explains → Claude verifies (build, QEMU, tests) → Defects are fixed → Documentation is synchronized → Changes are committed and pushed → Developer reviews and keeps final architectural authority → Next milestone (within the authorized scope only).**
 
 For an approved, verified development task, perform the permitted GitHub operations rather than merely describing them.
 

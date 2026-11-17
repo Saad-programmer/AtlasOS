@@ -1,0 +1,15 @@
+# Artefacts de compilation (jamais commités)
+/build/
+*.o
+*.d
+*.elf
+*.bin
+*.iso
+*.map
+# Journaux de tests et de QEMU
+*.log
+# Fichiers temporaires d'éditeurs
+*~
+*.swp
+.vscode/
+.idea/
