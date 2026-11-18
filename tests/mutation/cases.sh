@@ -1,0 +1,40 @@
+# =============================================================================
+# SAMOS / AtlasOS — tests/mutation/cases.sh        (lu par tests/mutation/run.sh)
+# -----------------------------------------------------------------------------
+# Chaque mutation réintroduit un défaut corrigé et nomme les assertions qui
+# DOIVENT le signaler. Le texte original doit apparaître exactement une fois.
+#
+#   mutant NOM FICHIER 'TEXTE ORIGINAL' 'TEXTE MUTÉ' STATUT 'ASSERTION'...
+#
+# STATUT 35 : les autotests se terminent et signalent des échecs.
+# =============================================================================
+
+# M1 — E5 : la libération d'un cadre encore référencé n'est plus refusée
+# (pmm_core_free ne vérifie plus refs != 0). Défaut d'origine : un cadre libéré
+# restait projeté et pouvait être redistribué (k06-memory-defects.txt, E5).
+mutant e5_free_referenced kernel/mm/pmm_core.c \
+    'if (frame_desc_refs(p->meta[frame]) != 0) {' \
+    'if (0) {' \
+    35 \
+    'pmm_free_frame(f) == SAMOS_EBUSY' \
+    'pmm_free_frame(A) == SAMOS_EBUSY'
+
+# M2 — E3 : vmm_map accepte de nouveau tout cadre non libre (code, constantes,
+# tables de pages, structures du noyau), comme avant M2.5b.
+mutant e3_type_check kernel/arch/i386/paging.c \
+    'if (counted && t != FRAME_ALLOCATED) {' \
+    'if (counted && t == FRAME_FREE) {' \
+    35 \
+    'e3_target_refused(kpage, "kmain")' \
+    'e3_target_refused(paging_directory(), "CR3")' \
+    'e3_target_refused(pt_kmain, "table active")'
+
+# M3 — M2.5c : vmm_map ne filtre plus les droits (PTE_USER, PTE_PRESENT,
+# bits de cache...). Détecté par des tentatives sur un cadre ALLOCATED : les
+# cibles critiques, refusées par leur type, ne suffiraient pas.
+mutant flags_filter kernel/arch/i386/paging.c \
+    'if (counted && (flags & ~PTE_WRITE) != 0) {' \
+    'if (0) {' \
+    35 \
+    'e3_attempt(0xD0060000u, f, PTE_USER, SAMOS_EINVAL, "alloue")' \
+    'e3_attempt(0xD0060000u, f, PTE_USER | PTE_WRITE, SAMOS_EINVAL, "alloue")'

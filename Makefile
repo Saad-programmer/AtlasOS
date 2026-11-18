@@ -188,13 +188,18 @@ test-qemu: $(KERNEL) $(TEST_KERNEL)
 test-gdb: $(KERNEL)
 	tests/qemu/gdb_checks.sh $(KERNEL)
 
-# Vérification du banc de tests lui-même (K0.7) : défauts injectés dans une
-# copie isolée des sources ; chaque défaut doit être DÉTECTÉ. Plusieurs minutes.
+# Vérification du banc de tests lui-même (K0.7-R0) : défauts connus (E3, E5,
+# M2.5c) injectés dans une copie isolée des sources (tests/mutation/cases.sh) ;
+# chaque défaut doit être DÉTECTÉ par des assertions nommées. Environ 20 s.
+# Auto-test du mécanisme : tests/mutation/selftest.sh.
 test-mutation:
 	tests/mutation/run.sh
 
-# Reproductibilité : deux compilations dans deux répertoires différents
-# doivent produire des images identiques octet pour octet.
+# Reproductibilité (K0.7-R0) : deux compilations propres dans deux répertoires
+# différents ; les images sans débogage doivent être identiques octet pour
+# octet, et seules les sections .debug_* peuvent différer (chemin absolu écrit
+# par NASM). REPRO_STRICT=1 exige des ELF complets identiques.
+# Auto-test : tests/tools/repro_selftest.sh.
 test-repro:
 	tests/tools/repro_check.sh
 

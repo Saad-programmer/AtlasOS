@@ -1193,3 +1193,74 @@ Premier sous-jalon de M2.4 (correction de E5), limité au cœur pur. `paging.c` 
   - N2 : `test_memmap` suppose plus de 100 MiB, d'où un échec unique des autotests à 16 MiB ;
   - N3 : la table des limites K0.6 de `Details.md` n'a pas encore de pendant K0.7.
 - **Validation :** `make clean && make test` donne 101 `[PASS]`, 0 `[FAIL]`, 26 cas QEMU sur 26 ; `make -j8` depuis zéro produit des binaires identiques bit à bit à la compilation séquentielle ; autotests à 128 et 512 MiB : 453 vérifications, 0 échec ; à 16 MiB : 1 échec préexistant (N2).
+
+### K0.7-R0 — Réparation de l'infrastructure de tests (N1)
+
+**Objectif.** Rendre fonctionnelles les cibles `make test-mutation` et `make test-repro`, annoncées dans l'entrée « images séparées » ci-dessus mais jamais livrées. **Correction de l'historique :** dans ce document, ces deux cibles sont présentées comme disponibles depuis `9b13325`. C'est inexact : elles échouaient jusqu'à ce jalon (`No such file or directory`).
+
+**Cause.** `9b13325` a ajouté les cibles au Makefile, mais pas les scripts (aucune écriture de ces fichiers dans le journal de la session). Le même commit a **tronqué `README.md` à 0 octet** (N4, découvert en R0) : vraisemblablement une session interrompue pendant l'écriture des fichiers.
+
+**Fichiers.**
+
+| Fichier | Rôle |
+|---|---|
+| `tests/mutation/run.sh` (nouveau) | moteur de mutation |
+| `tests/mutation/cases.sh` (nouveau) | 3 mutations : E5, E3, droits PTE |
+| `tests/mutation/selftest.sh` (nouveau) | 11 situations où le moteur doit échouer, plus une contre-épreuve |
+| `tests/tools/repro_check.sh` (nouveau) | vérification de reproductibilité |
+| `tests/tools/repro_selftest.sh` (nouveau) | 4 situations d'échec, plus une contre-épreuve |
+| `Makefile` | commentaires des deux cibles uniquement |
+| `README.md` | restauré depuis `main` ; section 13 complétée |
+
+**Moteur de mutation.**
+- Il copie les fichiers suivis par Git (contenu de l'arbre de travail) dans un répertoire temporaire, sans `build/` : aucun ancien binaire n'est possible.
+- Il compile et exécute d'abord la version **saine**, qui doit donner le statut 33 et 0 échec.
+- Pour chaque mutation : le texte original doit apparaître **exactement une fois** ; le fichier et le binaire doivent différer de la version saine ; compilation, autotests sous QEMU, puis verdict.
+- **DÉTECTÉE** exige : le statut attendu (35), un bilan `failures=N` avec N > 0, chaque assertion nommée présente en `[FAIL]`, et aucun triple fault ni reset.
+- Un échec de compilation, un délai (124), une panique (37) ou un arrêt du CPU donne **INVALIDE**, jamais « détectée ».
+- À la fin, le script vérifie que HEAD, la branche et `git status` du dépôt sont inchangés. Le nettoyage est assuré par `trap`, interruption comprise.
+- Les motifs sont passés à `awk` par `ENVIRON`. Un premier essai avec `awk -v` a échoué : `-v` interprète les séquences d'échappement, et un `\n` du source devenait un saut de ligne (défaut révélé par l'auto-test).
+
+**Reproductibilité.**
+- Deux copies, dans des répertoires de longueurs différentes, et deux compilations propres dont le code de sortie est vérifié.
+- Trois verdicts par image :
+  - IDENTIQUE : SHA-256 égal ;
+  - DÉBOGAGE SEULEMENT : ELF sans débogage (`objcopy --strip-debug`) identique, et toutes les sections différentes sont des `.debug_*` ;
+  - DIFFÉRENT : échec.
+- Le script nomme les sections différentes, compte les chemins de compilation retrouvés dans l'image et donne le premier octet différent.
+- **Limite :** NASM 2.16 écrit le répertoire absolu dans `DW_AT_comp_dir` et n'a pas d'équivalent de `-ffile-prefix-map`. Les ELF complets diffèrent donc entre répertoires (`.debug_info`, `.debug_aranges`), et `REPRO_STRICT=1` échoue pour cette raison.
+- Les fichiers `.map`, qui contiennent des chemins, ne sont pas comparés.
+
+**Débogage.**
+- L'auto-test d'interruption utilisait d'abord SIGINT. Un shell non interactif lance ses commandes en arrière-plan avec SIGINT ignoré, et un signal ignoré à l'entrée ne peut pas être intercepté. Il utilise donc SIGTERM, traité comme INT et HUP.
+- `mawk` (l'`awk` installé) n'a pas `strtonum` : la conversion hexadécimale se fait en bash.
+- `KEEP=1` était forcé lorsque la version saine échouait, ce qui laissait un répertoire dans `/tmp`. Il est retiré : les journaux utiles sont affichés à la place.
+
+**Validation.**
+
+| Commande | Résultat |
+|---|---|
+| `make clean && make test` | code 0, 101 `[PASS]`, 0 `[FAIL]`, 26 cas QEMU sur 26 |
+| `make test-mutation` | code 0 : version saine 453 vérifications et 0 échec ; `e5_free_referenced`, `e3_type_check` et `flags_filter` DÉTECTÉES (35, 21 et 12 échecs) ; environ 18 s |
+| `make test-repro` | code 0 : les deux images DÉBOGAGE SEULEMENT |
+| `REPRO_STRICT=1` | code 1 (attendu) |
+| `tests/mutation/selftest.sh` | 11 situations conformes |
+| `tests/tools/repro_selftest.sh` | 5 situations conformes |
+| `make -j8` depuis zéro | réussi |
+
+Aucun répertoire temporaire ne subsiste après les exécutions.
+
+**Limites.**
+- Les mutations portent sur l'image de test et les autotests du noyau ; les tests hôtes ne sont pas encore mutés.
+- Seuls les fichiers **suivis** sont copiés : un nouveau fichier source non ajouté à Git fait échouer la version saine (code 2).
+- Mutations candidates pour la suite : E1/E2 (`va_must_stay_unmapped`), E4 (libération de `PAGETABLE`), `pmm_ref` omis dans `map_page`, `pmm_unref` omis dans `vmm_unmap`, `INVLPG` omis.
+- Ni l'une ni l'autre cible n'est incluse dans `make test`.
+
+**Reproduction.**
+
+```bash
+make test-mutation
+make test-repro
+tests/mutation/selftest.sh
+tests/tools/repro_selftest.sh
+```
