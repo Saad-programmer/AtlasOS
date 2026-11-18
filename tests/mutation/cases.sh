@@ -92,3 +92,13 @@ mutant_tool stack_layout_intruder kernel/arch/i386/linker.ld \
     '__stack_top_guard_start = .; layout_intruder = . + 16;' \
     'tools/check_elf.sh build/samos.elf --production' \
     'piles: objets dans une page de garde ou reservee : layout_intruder'
+
+# M10 — K0.7-R1f-2 : la garde haute de S1 est de nouveau projetée (la règle
+# est retirée de va_must_stay_unmapped, donc de paging_init ET de vmm_map).
+mutant top_guard_mapped kernel/arch/i386/paging.c \
+    'return in_page_range(page, __stack_top_guard_start, __stack_top_guard_end);' \
+    'return false;' \
+    35 \
+    'raw_pte(tg) == 0' \
+    'cr2 == tg && err == 2u' \
+    'vmm_map(tg, f, PTE_WRITE) == SAMOS_EPERM'

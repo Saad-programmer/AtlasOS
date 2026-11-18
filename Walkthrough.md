@@ -1439,3 +1439,28 @@ tests/tools/repro_selftest.sh
 | `make -j8` depuis zéro | réussi |
 
 - **Risque résiduel :** les pages réservées ne protègent encore rien ; un débordement de S2 atteindrait la fin de `.bss` (table du PMM) sans faute, jusqu'à R1f-3.
+
+### K0.7-R1f-2 — Activation de la garde haute de S1
+
+- **Changement :**
+  - `paging.c` : `va_must_stay_unmapped()` couvre `[__stack_top_guard_start, __stack_top_guard_end)` (symboles du linker, aucune adresse en dur) ; la boucle d'identité utilise la même règle ;
+  - `vmm_map` refuse cette page (`EPERM`) avant toute recherche de table ;
+  - nouveau diagnostic « access above the boot stack top (S1 top guard page) » ;
+  - la région `top-guard` devient `---G`.
+  - La garde de S2 reste réservée et projetée (R1f-3).
+- **Garde :** `0x192000` en production, `0x19f000` en test. Moniteur QEMU : trous à `0x18d000` et `0x192000` (production), à `0x19a000` et `0x19f000` (test) ; CR3 (`0x193000`, `0x1a0000`) et la garde S2 restent `rw`.
+- **Tests :**
+  - suite « K0.7 S1 top guard » (24 vérifications : PTE nulle, traduction absente, sondes du premier et du dernier mot avec CR2 et code d'erreur exacts, `vmm_map` refusé sans effet de bord, voisins intacts, `vmm_unmap` refusé, garde basse absente, garde S2 présente) ;
+  - cas QEMU `topguard` et `topguard_end` (écriture directe, #PF code 0x2, panique identifiable, statut 37, ni double faute ni triple fault ni panique récursive) ;
+  - `cr2_matches` compare CR2 à l'adresse lue par `nm` (contre-épreuve : un décalage faux est signalé).
+- **Mutation :** `top_guard_mapped` (règle retirée) détectée : 13 échecs, 3 assertions nommées.
+- **Validation :**
+
+| Commande | Résultat |
+|---|---|
+| `make clean && make test` | code 0, 126 `[PASS]`, 0 `[FAIL]`, 32 cas QEMU sur 32 |
+| autotests | 532 vérifications |
+| `make test-mutation` | 10 mutations sur 10 détectées |
+| `make test-repro` | 2 images reproductibles |
+| `make -j8` depuis zéro | réussi |
+| cas couverts | canaris, sentinelles, double faute, débordement, exceptions imbriquées, RAM de 16 MiB à 4 GiB |

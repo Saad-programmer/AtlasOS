@@ -155,6 +155,44 @@ run_case stack_overflow "test=stack" 37 \
     "serial:kernel stack overflow (guard page below the boot stack)" \
     "serial:KERNEL PANIC: double fault"
 
+# K0.7-R1f-2 — Garde haute de S1 : écriture DIRECTE (non une sonde) sur le
+# premier puis le dernier mot de [__stack_top_guard_start, +4 KiB), depuis un
+# cadre sur S1 valide. Attendu : #PF code 0x2 (non présente, écriture), panic
+# identifiable, statut 37, ni triple fault ni panique récursive. L'adresse
+# n'est pas codée en dur : cr2_matches compare le CR2 affiché à l'adresse
+# calculée depuis la table des symboles de l'image (nm).
+cr2_matches() {   # cr2_matches CAS DÉCALAGE
+    local slog="$OUT/$1.serial.log" base want got
+    total=$((total + 1))
+    base=$(nm "$TEST_KERNEL" | awk '$3 == "__stack_top_guard_start" { print $1 }')
+    want=$(printf '0x%08x' $(( 0x${base:-0} + $2 )))
+    got=$(tr -d '\r' < "$slog" 2>/dev/null | sed -n 's/.*page fault: .*address CR2=\(0x[0-9a-f]*\).*/\1/p' | head -1)
+    if [ -n "$base" ] && [ "$got" = "$want" ]; then
+        echo "[PASS] $1_cr2 (CR2=$got = __stack_top_guard_start + $2)"
+        passed=$((passed + 1))
+    else
+        echo "[FAIL] $1_cr2 (CR2=${got:-absent}, attendu $want)"
+        fail=1
+    fi
+}
+run_case topguard "test=topguard" 37 \
+    "serial:[TEST] writing to the S1 top guard at 0x" \
+    "serial:*** CPU exception 14: Page Fault (#PF), error code 0x00000002" \
+    "serial:page not present, write access, supervisor mode" \
+    "serial:KERNEL PANIC: page fault at 0x" \
+    "serial:access above the boot stack top (S1 top guard page)" \
+    "!top guard write NOT trapped" \
+    "!RECURSIVE PANIC" \
+    "!DOUBLE FAULT"
+cr2_matches topguard 0
+run_case topguard_end "test=topguard_end" 37 \
+    "serial:*** CPU exception 14: Page Fault (#PF), error code 0x00000002" \
+    "serial:access above the boot stack top (S1 top guard page)" \
+    "!top guard write NOT trapped" \
+    "!RECURSIVE PANIC" \
+    "!DOUBLE FAULT"
+cr2_matches topguard_end 4092
+
 # K0.7-R1d — Sentinelles de S2 : un mot sentinelle (le mot 2) est altéré, puis
 # une vraie #DF est provoquée. La tâche #DF doit le signaler (masque 0x4) et
 # paniquer avec un message identifiable ; aucune panique récursive.

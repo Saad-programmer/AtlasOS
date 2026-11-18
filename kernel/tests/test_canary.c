@@ -196,10 +196,11 @@ void ktest_suite_stack_layout(void)
     KTEST_CHECK(esp > (uint32_t)s1 && esp < (uint32_t)tg);         /* on s'exécute sur S1 */
     KTEST_CHECK(df_stack_sentinel_damage() == 0);
 
-    /* Droits effectifs (R1f-1) : réservées encore projetées, garde S1 absente. */
+    /* Droits effectifs : garde S2 réservée, encore projetée (R1f-3) ; gardes
+     * basse et haute (R1f-2) de S1 non présentes. */
     uint32_t pa = 0, fl = 0;
     KTEST_CHECK(vmm_translate(dg, &pa, &fl) && pa == dg && (fl & PTE_WRITE));
-    KTEST_CHECK(vmm_translate(tg, &pa, &fl) && pa == tg && (fl & PTE_WRITE));
+    KTEST_CHECK(!vmm_translate(tg, 0, 0));
     KTEST_CHECK(!vmm_translate(g1, 0, 0));
     KTEST_CHECK(vmm_translate(s2, 0, 0) && vmm_translate(s1, 0, 0));
 
@@ -227,4 +228,84 @@ void ktest_suite_stack_layout(void)
     }
     KTEST_CHECK(clear);
     KTEST_CHECK(paging_directory() == (uint32_t)(uintptr_t)__kernel_end);
+}
+
+/*
+ * K0.7-R1f-2 — Garde haute de S1 : [__stack_top_guard_start, +4 KiB).
+ * Preuves sans destruction : PTE nulle (lue dans la table), traduction
+ * absente, sondes en faute sur le premier et le dernier mot (CR2 exact, code
+ * d'erreur « non présente, écriture »), refus de vmm_map sans effet de bord,
+ * voisins intacts. Le scénario destructif est test=topguard / topguard_end.
+ */
+static uint32_t raw_pte(uint32_t va)
+{
+    const volatile uint32_t *pd = (const volatile uint32_t *)(uintptr_t)paging_directory();
+    uint32_t pde = pd[va >> 22];
+    if (!(pde & PTE_PRESENT)) {
+        return 0;
+    }
+    return ((const volatile uint32_t *)(uintptr_t)(pde & PTE_FRAME))[(va >> 12) & 0x3FFu];
+}
+
+void ktest_suite_top_guard(void)
+{
+    ktest_suite("K0.7 S1 top guard");
+    uint32_t tg = (uint32_t)(uintptr_t)__stack_top_guard_start;
+    uint32_t below = tg - 4096u, above = tg + 4096u;       /* dernière page de S1, CR3 */
+    const struct pmm *p = pmm_state();
+
+    /* 1-3. Non présente : PTE nulle, aucune traduction. */
+    KTEST_CHECK(tg == (uint32_t)(uintptr_t)boot_stack_top && (tg & 0xFFFu) == 0);
+    KTEST_CHECK(raw_pte(tg) == 0);
+    KTEST_CHECK(!vmm_translate(tg, 0, 0) && !vmm_translate(tg + 4092u, 0, 0));
+    /* 4. CR3 juste au-dessus, toujours projeté et inscriptible ; dernière page
+     * de S1 projetée en écriture. */
+    uint32_t pa = 0, fl = 0;
+    KTEST_CHECK(paging_directory() == above);
+    KTEST_CHECK(vmm_translate(above, &pa, &fl) && pa == above && (fl & PTE_WRITE));
+    KTEST_CHECK(vmm_translate(below, &pa, &fl) && pa == below && (fl & PTE_WRITE));
+    uint32_t pte_below = raw_pte(below), pte_above = raw_pte(above);
+
+    /* Sondes : premier et dernier mot. Code d'erreur 2 = P=0, W=1, U=0. */
+    uint32_t cr2 = 0, err = 0, v = 0;
+    KTEST_CHECK(mem_probe_write((void *)(uintptr_t)tg, 0xA5A5A5A5u) == -1);
+    mem_probe_last_fault(&cr2, &err);
+    KTEST_CHECK(cr2 == tg && err == 2u);
+    KTEST_CHECK(mem_probe_write((void *)(uintptr_t)(tg + 4092u), 0xA5A5A5A5u) == -1);
+    mem_probe_last_fault(&cr2, &err);
+    KTEST_CHECK(cr2 == tg + 4092u && err == 2u);
+    KTEST_CHECK(mem_probe_read((const void *)(uintptr_t)tg, &v) == -1);
+    mem_probe_last_fault(&cr2, &err);
+    KTEST_CHECK(cr2 == tg && err == 0u);
+
+    /* 5-6. vmm_map refusé (EPERM) avec un cadre ALLOCATED valide, en écriture
+     * et en lecture seule : ni projection, ni référence, ni table, ni cadre
+     * consommé ; voisins inchangés. La règle précède la recherche de table. */
+    uint32_t f = pmm_alloc_frame();
+    uint32_t tables0 = paging_table_count(), free0 = p->free_count;
+    KTEST_CHECK(f != 0);
+    KTEST_CHECK(vmm_map(tg, f, PTE_WRITE) == SAMOS_EPERM);
+    KTEST_CHECK(vmm_map(tg, f, 0) == SAMOS_EPERM);
+    KTEST_CHECK(vmm_map((tg + 4092u) & ~0xFFFu, f, 0) == SAMOS_EPERM);
+    KTEST_CHECK(pmm_refs(f) == 0 && !vmm_translate(tg, 0, 0) && raw_pte(tg) == 0);
+    KTEST_CHECK(paging_table_count() == tables0 && p->free_count == free0);
+    KTEST_CHECK(raw_pte(below) == pte_below && raw_pte(above) == pte_above);
+    KTEST_CHECK(vmm_unmap(tg, 0) == SAMOS_EPERM);                   /* identité : jamais retirée */
+    KTEST_CHECK(pmm_free_frame(f) == SAMOS_OK);
+
+    /* 7-8. Garde basse de S1 toujours absente ; garde S2 encore présente. */
+    KTEST_CHECK(raw_pte((uint32_t)(uintptr_t)__stack_guard_start) == 0);
+    KTEST_CHECK(raw_pte((uint32_t)(uintptr_t)__df_guard_start) != 0);
+    KTEST_CHECK(pmm_core_check(p) == 0);
+}
+
+/* Mode destructif test=topguard (premier mot) / topguard_end (dernier mot) :
+ * écriture DIRECTE (pas une sonde), depuis ce cadre sur S1 valide. Le
+ * gestionnaire de #PF s'exécute sur S1 et appelle panic. */
+void ktest_top_guard_write(bool last_word)
+{
+    uint32_t target = (uint32_t)(uintptr_t)__stack_top_guard_start + (last_word ? 4092u : 0u);
+    kprintf("[TEST] writing to the S1 top guard at %p\n", (void *)(uintptr_t)target);
+    *(volatile uint32_t *)(uintptr_t)target = 0x70F6A7D0u;
+    kprintf("[TEST] top guard write NOT trapped\n");
 }

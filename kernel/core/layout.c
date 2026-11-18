@@ -24,7 +24,8 @@ static size_t layout_fill(void)
     g_regions[4] = (struct kernel_region){ "df-stack", (uintptr_t)__df_stack_start, (uintptr_t)__df_stack_end,   LAYOUT_R | LAYOUT_W };
     g_regions[5] = (struct kernel_region){ "stack-guard", (uintptr_t)__stack_guard_start, (uintptr_t)__stack_guard_end, LAYOUT_GUARD };
     g_regions[6] = (struct kernel_region){ "boot-stack", (uintptr_t)boot_stack_bottom, (uintptr_t)boot_stack_top, LAYOUT_R | LAYOUT_W };
-    g_regions[7] = (struct kernel_region){ "top-guard", (uintptr_t)__stack_top_guard_start, (uintptr_t)__stack_top_guard_end, LAYOUT_R | LAYOUT_W | LAYOUT_RESERVED };
+    /* K0.7-R1f-2 : garde haute de S1, non présente (paging_init). */
+    g_regions[7] = (struct kernel_region){ "top-guard", (uintptr_t)__stack_top_guard_start, (uintptr_t)__stack_top_guard_end, LAYOUT_GUARD };
     return sizeof(g_regions) / sizeof(g_regions[0]);
 }
 

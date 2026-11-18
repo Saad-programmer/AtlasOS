@@ -95,6 +95,10 @@ bool ktest_fatal_mode(const char *mode)
         (void)*(volatile uint32_t *)(uintptr_t)0xE0000000u;
     } else if (strcmp(mode, "stack") == 0) {
         (void)recurse_forever(0);
+    } else if (strcmp(mode, "topguard") == 0) {
+        ktest_top_guard_write(false);          /* K0.7-R1f-2 : doit finir en panic */
+    } else if (strcmp(mode, "topguard_end") == 0) {
+        ktest_top_guard_write(true);
     } else if (strcmp(mode, "dfsentinel") == 0) {
         /* K0.7-R1d : altère UN mot sentinelle de S2 (le mot 2, bas de pile,
          * jamais utilisé : 848 octets au plus sont consommés par la tâche #DF,
