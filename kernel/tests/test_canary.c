@@ -396,3 +396,56 @@ void ktest_df_guard_write(bool last_word)
     *(volatile uint32_t *)(uintptr_t)target = 0xDF6A7D00u;
     kprintf("[TEST] S2 guard write NOT trapped\n");
 }
+
+/*
+ * K0.7-R1h (F1) — Preuve de la remise à zéro de S2 par gdt_init.
+ * Avant : S2 est NOBITS, déjà remplie de zéros par le chargeur ; le test
+ * « reste de S2 à zéro » passait aussi sans remise à zéro (mutation non
+ * détectée, audit R1g). Maintenant : kmain (image de test) appelle
+ * ktest_s2_prefill() juste avant gdt_init ; elle écrit un motif non nul dans
+ * les 1024 mots de S2 et relit. La suite ci-dessous vérifie ensuite que le
+ * motif était bien présent, puis que gdt_init a remis à zéro les 1020 mots
+ * hors sentinelles et posé les 4 sentinelles.
+ * Aucune écriture dans S2 après gdt_init : la suite ne fait que lire.
+ */
+static uint32_t g_s2_prefill_seen;           /* mots relus égaux au motif */
+
+void ktest_s2_prefill(void)
+{
+    volatile uint32_t *w = (volatile uint32_t *)(uintptr_t)df_stack_area;
+    for (uint32_t i = 0; i < 1024u; i++) {
+        w[i] = KTEST_S2_PREFILL;
+    }
+    uint32_t seen = 0;
+    for (uint32_t i = 0; i < 1024u; i++) {
+        seen += (w[i] == KTEST_S2_PREFILL) ? 1u : 0u;
+    }
+    g_s2_prefill_seen = seen;
+}
+
+void ktest_suite_s2_init(void)
+{
+    ktest_suite("K0.7 S2 initialisation proof");
+    const volatile uint32_t *w = (const volatile uint32_t *)(uintptr_t)df_stack_area;
+
+    /* 1-2. Le motif a bien rempli les 1024 mots AVANT gdt_init. */
+    KTEST_CHECK(g_s2_prefill_seen == 1024u);
+    /* 4. Sentinelles posées par gdt_init (et non le motif). */
+    bool sentinels_set = true;
+    for (uint32_t i = 0; i < DF_SENTINEL_WORDS; i++) {
+        sentinels_set = sentinels_set && w[i] == DF_SENTINEL_VALUE(i);
+    }
+    KTEST_CHECK(sentinels_set);
+    /* 5. Les 1020 autres mots remis à zéro : aucun ne garde le motif. */
+    uint32_t s2_rest_nonzero = 0, s2_rest_pattern = 0;
+    for (uint32_t i = DF_SENTINEL_WORDS; i < 1024u; i++) {
+        s2_rest_nonzero += (w[i] != 0) ? 1u : 0u;
+        s2_rest_pattern += (w[i] == KTEST_S2_PREFILL) ? 1u : 0u;
+    }
+    KTEST_CHECK(s2_rest_nonzero == 0);
+    KTEST_CHECK(s2_rest_pattern == 0);
+    /* 6. Alignement et sommet. */
+    KTEST_CHECK(((uintptr_t)df_stack_area & 0xFFFu) == 0);
+    KTEST_CHECK(tss_double_fault()->esp == (uint32_t)(uintptr_t)df_stack_area + 4096u);
+    KTEST_CHECK(df_stack_sentinel_damage() == 0);
+}

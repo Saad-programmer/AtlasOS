@@ -112,3 +112,23 @@ mutant df_guard_mapped kernel/arch/i386/paging.c \
     'raw_pte(dg) == 0' \
     'cr2 == dg && err == 2u' \
     'vmm_map(dg, f, PTE_WRITE) == SAMOS_EPERM && vmm_map(dg, f, 0) == SAMOS_EPERM'
+
+# M12 — K0.7-R1h (F1) : gdt_init ne remet plus S2 à zéro (la boucle de remise
+# à zéro ne s'exécute plus ; les sentinelles restent posées). Détecté parce
+# que S2 a été préremplie d'un motif non nul avant gdt_init (image de test).
+# Avant R1h, cette mutation n'était PAS détectée (audit R1g, F1).
+mutant s2_zeroing_removed kernel/arch/i386/gdt.c \
+    'for (uint32_t i = 0; i < DF_STACK_SIZE / 4u; i++) {' \
+    'for (uint32_t i = 0; i < 0u; i++) {' \
+    35 \
+    's2_rest_nonzero == 0' \
+    's2_rest_pattern == 0'
+
+# M13 — K0.7-R1h (F6) : intrus dans la garde haute portant un préfixe
+# autrefois exclu (boot_stack_). Avant R1h, check_elf.sh l'acceptait
+# (démontré) ; il doit maintenant le nommer.
+mutant_tool stack_layout_prefixed_intruder kernel/arch/i386/linker.ld \
+    '__stack_top_guard_start = .;' \
+    '__stack_top_guard_start = .; boot_stack_intruder = . + 16;' \
+    'tools/check_elf.sh build/samos.elf --production' \
+    'piles: objets dans une page de garde ou reservee : boot_stack_intruder'

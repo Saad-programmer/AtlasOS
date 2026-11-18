@@ -213,6 +213,35 @@ run_case dfguard_end "test=dfguard_end" 37 \
     "!DOUBLE FAULT"
 cr2_matches dfguard_end __df_guard_start 4092
 
+# K0.7-R1h (F4) — Panique récursive : la première panique formate une chaîne
+# située à une adresse non projetée ; la #PF appelle panic depuis son
+# gestionnaire. panic_at doit s'arrêter après UN message « RECURSIVE PANIC »
+# (sortie minimale, debugcon et série), statut 37 : ni boucle (délai), ni
+# débordement de S1 (double faute), ni triple fault.
+count_is() {   # count_is CAS TEXTE NOMBRE (dans la sortie série)
+    local slog="$OUT/$1.serial.log" n
+    total=$((total + 1))
+    n=$(tr -d '\r' < "$slog" 2>/dev/null | grep -cF -- "$2")
+    if [ "$n" -eq "$3" ]; then
+        echo "[PASS] $1_count (« $2 » : $n)"
+        passed=$((passed + 1))
+    else
+        echo "[FAIL] $1_count (« $2 » : $n, attendu $3)"
+        fail=1
+    fi
+}
+run_case recursive_panic "test=recursive_panic" 37 \
+    "serial:[TEST] fatal mode 'recursive_panic'" \
+    "serial:*** KERNEL PANIC: " \
+    "serial:*** CPU exception 14: Page Fault (#PF), error code 0x00000000" \
+    "serial:address CR2=0xe0000000" \
+    "serial:SAMOS: RECURSIVE PANIC" \
+    "RECURSIVE PANIC" \
+    "!DOUBLE FAULT" \
+    "!NESTED CPU exception"
+count_is recursive_panic "RECURSIVE PANIC" 1
+count_is recursive_panic "KERNEL PANIC" 1
+
 # K0.7-R1d — Sentinelles de S2 : un mot sentinelle (le mot 2) est altéré, puis
 # une vraie #DF est provoquée. La tâche #DF doit le signaler (masque 0x4) et
 # paniquer avec un message identifiable ; aucune panique récursive.

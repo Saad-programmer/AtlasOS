@@ -77,6 +77,14 @@ void kmain(uint32_t magic, uint32_t mbi_phys)
 
     /* K0.4 : GDT propre au noyau puis IDT. Avant ce point, toute exception
      * provoquait un triple fault ; après, elle produit un rapport et panic(). */
+#if CONFIG_KTEST
+    /* K0.7-R1h (F1) — Image de TEST uniquement : remplit S2 d'un motif non nul
+     * AVANT son initialisation légitime, pour que les autotests puissent
+     * prouver que gdt_init la remet à zéro (le chargeur la remplit déjà de
+     * zéros : sans ce motif, la preuve était vide, audit R1g). S2 ne peut pas
+     * encore servir : ni TSS #DF, ni descripteur, ni porte de tâche. */
+    ktest_s2_prefill();
+#endif
     gdt_init();
     idt_init();
     klog(LOG_INFO, "cpu: GDT loaded (flat 4 GiB, TSS main + double-fault task)\n");

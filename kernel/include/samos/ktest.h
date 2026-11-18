@@ -36,6 +36,11 @@ void ktest_suite_top_guard(void);   /* K0.7-R1f-2 */
 void ktest_top_guard_write(bool last_word); /* K0.7-R1f-2, test=topguard[_end] */
 void ktest_suite_df_guard(void);    /* K0.7-R1f-3 */
 void ktest_df_guard_write(bool last_word);  /* K0.7-R1f-3, test=dfguard[_end] */
+/* K0.7-R1h (F1) : motif dans S2 avant gdt_init (appelée par kmain, image de
+ * test seulement) ; mémorise le nombre de mots relus égaux au motif. */
+void ktest_s2_prefill(void);
+void ktest_suite_s2_init(void);     /* K0.7-R1h (F1) */
+#define KTEST_S2_PREFILL 0x5F2A11EDu
 
 /* Déclenche volontairement une faute fatale (modes test=ud, de, gp, np,
  * intbad, df, triple ; K0.6 : null, wtext, wrodata, unmapped, stack). Retourne false si le mode est inconnu. */

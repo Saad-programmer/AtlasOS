@@ -37,6 +37,7 @@
 #include <arch/interrupt.h>
 #include <samos/ktest.h>
 #include <samos/log.h>
+#include <samos/panic.h>
 #include <samos/kernel.h>
 #include <samos/string.h>
 
@@ -95,6 +96,13 @@ bool ktest_fatal_mode(const char *mode)
         (void)*(volatile uint32_t *)(uintptr_t)0xE0000000u;
     } else if (strcmp(mode, "stack") == 0) {
         (void)recurse_forever(0);
+    } else if (strcmp(mode, "recursive_panic") == 0) {
+        /* K0.7-R1h (F4) — Panique PENDANT une panique : le formatage du
+         * message de la première lit une chaîne à une adresse non projetée
+         * (0xE0000000, comme test=unmapped) ; la #PF qui en résulte appelle
+         * panic depuis son gestionnaire. panic_at doit le reconnaître
+         * (g_in_panic), émettre « RECURSIVE PANIC » et s'arrêter. */
+        panic("[TEST] first panic, formatting %s", (const char *)(uintptr_t)0xE0000000u);
     } else if (strcmp(mode, "topguard") == 0) {
         ktest_top_guard_write(false);          /* K0.7-R1f-2 : doit finir en panic */
     } else if (strcmp(mode, "topguard_end") == 0) {

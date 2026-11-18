@@ -124,16 +124,29 @@ for spec in "__df_guard_start __df_guard_end 4096" "__df_stack_start __df_stack_
     [ $(( $(symv "$1") % 4096 )) -eq 0 ] || { lay_ok=0; bad "piles: $1 non aligne sur 4 KiB"; }
 done
 [ "$lay_ok" -eq 1 ] && pass "piles: .stacks = garde S2 | S2 4 KiB | garde S1 | S1 16 KiB | garde haute, alignees 4 KiB, contigues"
+# K0.7-R1h (F6) — Liste EXACTE des symboles autorisés dans une page de garde,
+# chacun uniquement à l'adresse de DÉBUT de cette garde (ce sont des bornes de
+# la disposition, égales au début de la page). Auparavant, des PRÉFIXES
+# (boot_stack_, __stack_guard_...) étaient exclus : un symbole intrus nommé
+# boot_stack_intruder dans la garde haute passait inaperçu (audit R1g, F6 ;
+# démontré en R1h). Les bornes de FIN (__df_guard_end, __stack_guard_end,
+# __stack_top_guard_end...) valent la fin exclue et ne sont pas dans la plage.
+#   garde S2       : __stacks_start, __df_guard_start
+#   garde basse S1 : __df_stack_end, __stack_guard_start
+#   garde haute S1 : boot_stack_top, __stack_top_guard_start
 intruders=""
-for rng in "__df_guard_start __df_guard_end" "__stack_guard_start __stack_guard_end" "__stack_top_guard_start __stack_top_guard_end"; do
-    set -- $rng; lo=$(( $(symv "$1") )); hi=$(( $(symv "$2") ))
-    # Symboles dont l'adresse tombe dans [lo, hi), hors bornes de la disposition.
-    intruders="$intruders$(nm "$ELF" | awk -v lo="$lo" -v hi="$hi" '
-        $3 !~ /^(__df_guard_|__df_stack_|__stack_guard_|__stack_top_guard_|__stacks_|df_stack_area|boot_stack_|__kernel_end)/ {
-            a = 0; h = tolower($1); for (i = 1; i <= length(h); i++) a = a * 16 + index("0123456789abcdef", substr(h, i, 1)) - 1
-            if (a >= lo && a < hi) printf " %s", $3 }')"
+for spec in "__df_guard_start __df_guard_end __stacks_start,__df_guard_start" \
+            "__stack_guard_start __stack_guard_end __df_stack_end,__stack_guard_start" \
+            "__stack_top_guard_start __stack_top_guard_end boot_stack_top,__stack_top_guard_start"; do
+    set -- $spec; lo=$(( $(symv "$1") )); hi=$(( $(symv "$2") )); allow=",$3,"
+    intruders="$intruders$(nm "$ELF" | awk -v lo="$lo" -v hi="$hi" -v allow="$allow" '
+        {
+            a = 0; h = tolower($1)
+            for (i = 1; i <= length(h); i++) a = a * 16 + index("0123456789abcdef", substr(h, i, 1)) - 1
+            if (a >= lo && a < hi && !(a == lo && index(allow, "," $3 ",") > 0)) printf " %s", $3
+        }')"
 done
-[ -z "$intruders" ] && pass "piles: aucun objet dans les pages de garde ou reservees" \
+[ -z "$intruders" ] && pass "piles: aucun objet dans les pages de garde (liste exacte de bornes autorisees)" \
                     || bad "piles: objets dans une page de garde ou reservee :$intruders"
 
 # --- 6. Récursion involontaire de memset/memcpy ---------------------------------
@@ -153,7 +166,7 @@ done
 # Symboles qui ne doivent exister QUE dans l'image de test : autotests, modes de
 # faute volontaire, sortie QEMU. Leur présence dans l'image de production
 # signifierait qu'un mode destructif y est accessible.
-TEST_ONLY_SYMS="ktest_run_all ktest_fatal_mode qemu_exit ktest_check"
+TEST_ONLY_SYMS="ktest_run_all ktest_fatal_mode qemu_exit ktest_check ktest_s2_prefill"
 syms=$(nm "$ELF" | awk '{print $3}')
 case "$MODE" in
     --production)

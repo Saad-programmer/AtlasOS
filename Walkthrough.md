@@ -1517,3 +1517,34 @@ tests/tools/repro_selftest.sh
 | options de compilation | 61 unités C, toutes avec `-fstack-protector-strong` et `-Wframe-larger-than=3072` |
 
 - **Décision :** protections conformes ; clôture formelle de R1 recommandée **après** un court R1h (F1, puis éventuellement F4 et F6). P4 reste ouvert.
+
+### K0.7-R1h — Correction des lacunes de preuve F1, F4 et F6
+
+- **F1 (remise à zéro de S2) :**
+  - la preuve de R1f-3 était **invalide** : le chargeur remplit déjà S2 de zéros ;
+  - **nouvelle preuve :** `ktest_s2_prefill()`, appelée par `kmain` sous `#if CONFIG_KTEST` juste avant `gdt_init`, écrit `0x5F2A11ED` dans les 1024 mots de S2 ;
+  - suite « K0.7 S2 initialisation proof » (7 vérifications : motif présent avant, sentinelles posées, 1020 mots nuls et sans motif, alignement, TSS au sommet) ;
+  - mutation `s2_zeroing_removed` **détectée** (3 échecs nommés), alors qu'elle ne l'était pas en R1g ;
+  - production : `ktest_s2_prefill` absent ; code identique à `f5a4446`, à 4 opérandes `__LINE__` près.
+- **F4 (panique récursive) :**
+  - mode `recursive_panic` (`%s` vers une adresse non projetée pendant la première panique) ;
+  - cas QEMU : statut 37 en 0,19 s, « RECURSIVE PANIC » exactement une fois, aucune double faute ni triple fault, environ 712 octets de S1 utilisés ;
+  - observation : le texte de la première panique est perdu (formatage en tampon).
+- **F6 (filtre d'intrus) :**
+  - défaut démontré : `boot_stack_intruder`, dans la garde haute, était accepté ;
+  - liste exacte de bornes autorisées, uniquement à l'adresse de début de chaque garde ;
+  - contre-épreuves : images normales sans fausse alerte, intrus et alias non listés rejetés ;
+  - mutation `stack_layout_prefixed_intruder` détectée.
+- **Validation :**
+
+| Commande | Résultat |
+|---|---|
+| `make clean && make test` | 133 `[PASS]`, 0 `[FAIL]`, 39 cas QEMU sur 39 |
+| autotests | 571 vérifications |
+| `make test-mutation` | 13 mutations sur 13 |
+| auto-test du moteur | 12 situations conformes |
+| `make test-repro` | réussi |
+| `make -j8` depuis zéro | réussi |
+| gardes | absentes dans les deux images (`info mem`) |
+
+- **Recommandation :** R1 peut être clôturé ; clôture en attente de l'autorisation du développeur. P4 reste ouvert.
