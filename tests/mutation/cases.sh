@@ -64,3 +64,22 @@ mutant canary_not_seeded kernel/arch/i386/boot/entry.asm \
     'nop' \
     35 \
     'g_guard_ref != STACK_GUARD_DEFAULT'
+
+# M7 — K0.7-R1d : la vérification des sentinelles de S2 ne signale plus rien
+# (df_stack_sentinel_damage renvoie toujours 0). Détecté par le test de
+# détection non destructif (mot 1 altéré puis restauré).
+mutant df_sentinel_check_removed kernel/arch/i386/gdt.c \
+    'mask |= 1u << i;' \
+    'mask |= 0u;' \
+    35 \
+    'mask == (1u << 1)'
+
+# M8 — K0.7-R1d : les sentinelles de S2 ne sont plus posées (la boucle
+# d'initialisation n'écrit plus rien ; supprimer l'appel rendrait la fonction
+# inutilisée, refusée par -Werror : mutation INVALIDE, constaté).
+mutant df_sentinel_not_initialized kernel/arch/i386/gdt.c \
+    'w[i] = DF_SENTINEL_VALUE(i);' \
+    '(void)w;' \
+    35 \
+    'values_ok' \
+    'df_stack_sentinel_damage() == 0'

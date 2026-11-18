@@ -33,6 +33,7 @@
  *                                        (prouve que le banc de test la détecte)
  */
 #include <arch/cpu.h>
+#include <arch/gdt.h>
 #include <arch/interrupt.h>
 #include <samos/ktest.h>
 #include <samos/log.h>
@@ -94,6 +95,17 @@ bool ktest_fatal_mode(const char *mode)
         (void)*(volatile uint32_t *)(uintptr_t)0xE0000000u;
     } else if (strcmp(mode, "stack") == 0) {
         (void)recurse_forever(0);
+    } else if (strcmp(mode, "dfsentinel") == 0) {
+        /* K0.7-R1d : altère UN mot sentinelle de S2 (le mot 2, bas de pile,
+         * jamais utilisé : 848 octets au plus sont consommés par la tâche #DF,
+         * mesuré), puis déclenche une vraie #DF par le même moyen que « df ».
+         * Le TSS et la GDT ne sont pas touchés. Attendu : sentinelles
+         * signalées CORRUPTED (mask 0x4) par la tâche #DF, puis panic. */
+        volatile uint32_t *w = df_stack_sentinels();
+        kprintf("[TEST] corrupting double-fault stack sentinel word 2 at %p\n", (void *)(df_stack_bottom() + 8u));
+        w[2] ^= 0xFFFFFFFFu;
+        idt_set_present(EXC_NP, false);
+        __asm__ __volatile__("int $0x2e");
     } else if (strcmp(mode, "canary") == 0) {
         ktest_canary_smash();                  /* K0.7-R1b : doit finir en panic */
     } else if (strcmp(mode, "nested") == 0) {

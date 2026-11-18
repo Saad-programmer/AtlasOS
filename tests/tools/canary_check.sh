@@ -29,7 +29,7 @@ set -u
 PROD="${1:?usage: canary_check.sh PROD_ELF TEST_ELF}"
 TEST="${2:?usage: canary_check.sh PROD_ELF TEST_ELF}"
 REQUIRED="${CANARY_REQUIRED:-kvprintf kvsnprintf out_number memmap_parse}"
-EXCLUDED="__stack_chk_fail panic_at stack_collect emergency_puts"
+EXCLUDED="__stack_chk_fail panic_at stack_collect emergency_puts df_stack_sentinel_damage"
 fail=0
 pass() { echo "[PASS] canary: $*"; }
 bad()  { echo "[FAIL] canary: $*"; fail=1; }
@@ -117,6 +117,11 @@ for img in "$PROD" "$TEST"; do
     edges "$img" > "$T/$name.edges"
     secours="$(closure "$T/$name.edges" emergency_puts)"
     leaked=""
+    for fn in $EXCLUDED; do
+        # Une fonction exclue absente rendrait la vérification vide de sens.
+        awk -v f="$fn" '$1 == f { found = 1 } END { exit !found }' "$T/$name.tab" \
+            || bad "$name : fonction exclue absente de l'image : $fn"
+    done
     for fn in $EXCLUDED $secours; do
         r=$(awk -v f="$fn" '$1 == f { print $2 }' "$T/$name.tab")
         [ "${r:-0}" -eq 0 ] || leaked="$leaked $fn"

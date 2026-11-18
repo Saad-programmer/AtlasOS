@@ -105,6 +105,8 @@ run_case exc_df "test=df" 37 \
     "serial:*** DOUBLE FAULT (#DF) caught by task gate, running on dedicated stack" \
     "serial:interrupted task: EIP=0x001" \
     "serial:KERNEL PANIC: double fault" \
+    "serial:double-fault stack sentinels: intact" \
+    "!sentinels CORRUPTED" \
     "!CPU exception 11"
 
 # Triple fault volontaire : le banc de test DOIT le détecter (« Triple fault »
@@ -148,8 +150,20 @@ run_case pf_unmapped "test=unmapped" 37 \
 # livrable => #DF attrapée par la porte de tâche (K0.4), SANS triple fault.
 run_case stack_overflow "test=stack" 37 \
     "serial:*** DOUBLE FAULT (#DF) caught by task gate, running on dedicated stack" \
+    "serial:double-fault stack sentinels: intact" \
+    "!sentinels CORRUPTED" \
     "serial:kernel stack overflow (guard page below the boot stack)" \
     "serial:KERNEL PANIC: double fault"
+
+# K0.7-R1d — Sentinelles de S2 : un mot sentinelle (le mot 2) est altéré, puis
+# une vraie #DF est provoquée. La tâche #DF doit le signaler (masque 0x4) et
+# paniquer avec un message identifiable ; aucune panique récursive.
+run_case dfsentinel "test=dfsentinel" 37 \
+    "serial:[TEST] corrupting double-fault stack sentinel word 2" \
+    "serial:*** DOUBLE FAULT (#DF) caught by task gate, running on dedicated stack" \
+    "serial:double-fault stack sentinels: CORRUPTED (mask 0x4)" \
+    "serial:KERNEL PANIC: double fault; double-fault stack sentinels corrupted (mask 0x4)" \
+    "!RECURSIVE PANIC"
 
 # K0.7-R1b — Canari de pile : la copie locale du canari (et elle seule) est
 # modifiée dans une fonction instrumentée ; son épilogue doit appeler

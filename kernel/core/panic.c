@@ -11,6 +11,7 @@
 #include <samos/serial.h>
 #include <samos/vga.h>
 #include <arch/cpu.h>
+#include <arch/gdt.h>
 
 #define PANIC_MAX_FRAMES 16
 
@@ -100,6 +101,15 @@ void panic_at(const char *file, int line, const char *fmt, ...)
     (void)kvprintf(fmt, ap);
     va_end(ap);
     kprintf("\n*** at %s:%d\n", file, line);
+
+    /* K0.7-R1d — État des sentinelles de S2, signalé seulement s'il est
+     * anormal (aucune nouvelle panique : pas de récursion). La vérification
+     * n'appelle rien et n'est pas instrumentée. */
+    uint32_t df_damage = df_stack_sentinel_damage();
+    if (df_damage != 0) {
+        kprintf("*** double-fault stack sentinels CORRUPTED (mask 0x%x, words at %p)\n",
+                df_damage, (void *)df_stack_bottom());
+    }
 
     uintptr_t frames[PANIC_MAX_FRAMES];
     size_t n = stack_collect((uintptr_t)__builtin_frame_address(0), frames, PANIC_MAX_FRAMES);

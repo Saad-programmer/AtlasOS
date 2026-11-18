@@ -30,6 +30,7 @@ void ktest_suite_mm(void);         /* K0.6 */
 void ktest_keyboard_line(void);    /* K0.5, mode test=kbd */
 void ktest_suite_canary(void);     /* K0.7-R1b */
 void ktest_canary_smash(void);     /* K0.7-R1b, mode test=canary */
+void ktest_suite_df_sentinel(void); /* K0.7-R1d */
 
 /* Déclenche volontairement une faute fatale (modes test=ud, de, gp, np,
  * intbad, df, triple ; K0.6 : null, wtext, wrodata, unmapped, stack). Retourne false si le mode est inconnu. */

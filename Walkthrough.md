@@ -1350,3 +1350,31 @@ tests/tools/repro_selftest.sh
 | `make test-repro` | 2 images reproductibles (débogage seulement) |
 | `make -j8` depuis zéro | réussi |
 | `-Wframe-larger-than=3072` et `-fstack-protector-strong` | présents sur les 61 lignes de compilation C (les deux images) |
+
+### K0.7-R1d — Sentinelles de la pile de double faute (S2)
+
+- **S2 :** `g_df_stack[4096]` (`.bss`, alignée sur 16), qui croît vers le bas depuis `g_tss_df.esp` (le sommet). Usage réel du chemin #DF complet, mesuré : 848 octets.
+- **Sentinelles :** 4 mots au bas de S2, en production à `0x109110`-`0x10911f`, juste au-dessus de `g_tss_df` (`0x1090a0`-`0x109107`). Valeurs `0xDF5E11A5`, `0xDF5E22A5`, `0xDF5E33A5` et `0xDF5E44A5`, relues par le moniteur QEMU. Posées dans `gdt_init` avant la création de la tâche #DF.
+- **Vérification :** `df_stack_sentinel_damage()`, non instrumentée, sans appel ni écriture, ne lit rien d'autre que les 4 mots. Points :
+  - entrée de `double_fault_task` (signalement, puis panique dédiée si altérées) ;
+  - `panic_at` (ligne de diagnostic seulement, aucune nouvelle panique) ;
+  - fin du démarrage dans `kmain` ;
+  - autotests.
+- **Défaut rencontré et corrigé :** une première version, dont les fonctions étaient définies avant `gdt_init`, déplaçait `g_df_stack` en tête de `.bss`, sous la GDT et les TSS : la disposition changeait sans intention. L'autotest de non-recouvrement l'a révélé. Les fonctions ont été déplacées, et la disposition est identique à R1a. L'ordre de `.bss` n'est pas garanti.
+- **Tests :**
+  - suite « K0.7 double-fault stack sentinels » (12 vérifications, dont une détection non destructive avec restauration) ;
+  - cas QEMU `dfsentinel` (mot 2 altéré, vraie #DF, masque 0x4, statut 37, ni triple fault ni panique récursive) ;
+  - `exc_df` et `stack_overflow` exigent maintenant « intact ».
+- **Mutations :** `df_sentinel_check_removed` et `df_sentinel_not_initialized` détectées. Une première forme de la seconde (appel supprimé) était refusée par `-Werror` : classée INVALIDE par le moteur, puis reformulée.
+- **`canary_check.sh` :** `df_stack_sentinel_damage` ajoutée aux exclusions, et une fonction exclue absente de l'image est désormais un échec (sinon, la vérification serait vide de sens).
+- **Validation :**
+
+| Commande | Résultat |
+|---|---|
+| `make clean && make test` | code 0, 118 `[PASS]`, 0 `[FAIL]`, 28 cas QEMU sur 28 |
+| autotests | 478 vérifications, 0 échec |
+| `make test-mutation` | 8 mutations sur 8 détectées |
+| `make test-repro` | 2 images reproductibles |
+| `make -j8` depuis zéro | réussi |
+
+- **Limites :** détection au moment des vérifications seulement ; ni empêchement, ni remplacement d'une page de garde ; un vrai débordement de S2 écraserait les TSS avant d'être constaté.

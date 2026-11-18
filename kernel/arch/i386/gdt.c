@@ -31,6 +31,9 @@ static struct gdt_entry g_gdt[GDT_ENTRIES] SAMOS_ALIGNED(8);
 static struct tss g_tss_main SAMOS_ALIGNED(16);
 static struct tss g_tss_df SAMOS_ALIGNED(16);
 static uint8_t g_df_stack[DF_STACK_SIZE] SAMOS_ALIGNED(16);
+SAMOS_STATIC_ASSERT(DF_SENTINEL_WORDS * 4u <= 64u, "zone sentinelle petite devant S2");
+
+static void df_stack_sentinels_init(void);   /* K0.7-R1d, défini après gdt_init */
 
 
 static void gdt_set(unsigned i, uint32_t base, uint32_t limit, uint8_t access, uint8_t flags)
@@ -48,6 +51,7 @@ void gdt_init(void)
     memset(g_gdt, 0, sizeof(g_gdt));
     memset(&g_tss_main, 0, sizeof(g_tss_main));
     memset(&g_tss_df, 0, sizeof(g_tss_df));
+    df_stack_sentinels_init();              /* K0.7-R1d : avant la création de la tâche #DF */
 
     /* 0 : nul. 1-2 : segments plats. Limite 0xFFFFF en unités de 4 KiB
      * (G = 1) = 0xFFFFF * 4096 + 4095 = 0xFFFFFFFF : tout l'espace 4 GiB. */
@@ -85,6 +89,43 @@ void gdt_init(void)
     gdt_load(&gdtr);
     tss_load(GDT_TSS_MAIN_SEL);
 }
+
+/* Placées APRÈS gdt_init : définies avant, elles faisaient passer g_df_stack
+ * en tête de .bss, sous la GDT et les TSS (constaté en R1d). L'ordre des
+ * objets statiques n'est garanti ni par le C ni par l'éditeur de liens :
+ * seule une section dédiée le fixerait (sous-jalon des pages de garde). */
+/* K0.7-R1d — Pose des sentinelles au bas de S2 (voir gdt.h). Appelée par
+ * gdt_init AVANT que la tâche #DF existe (son TSS et son descripteur sont
+ * créés juste après, la porte de tâche de l'IDT encore plus tard) : S2 ne
+ * peut pas encore servir. Écritures limitées à g_df_stack[0..15]. */
+static void df_stack_sentinels_init(void)
+{
+    volatile uint32_t *w = (volatile uint32_t *)(uintptr_t)g_df_stack;
+    for (uint32_t i = 0; i < DF_SENTINEL_WORDS; i++) {
+        w[i] = DF_SENTINEL_VALUE(i);
+    }
+}
+
+/* Lecture seule, sans appel ni sortie formatée, non instrumentée : appelée
+ * depuis panic_at et depuis la tâche #DF, y compris quand S2 est suspecte.
+ * Seules les adresses (fixées à l'édition de liens) et les valeurs attendues
+ * (constantes du code) sont utilisées ; rien n'est déduit du contenu de S2. */
+SAMOS_NO_STACK_PROTECTOR
+uint32_t df_stack_sentinel_damage(void)
+{
+    const volatile uint32_t *w = (const volatile uint32_t *)(uintptr_t)g_df_stack;
+    uint32_t mask = 0;
+    for (uint32_t i = 0; i < DF_SENTINEL_WORDS; i++) {
+        if (w[i] != DF_SENTINEL_VALUE(i)) {
+            mask |= 1u << i;
+        }
+    }
+    return mask;
+}
+
+volatile uint32_t *df_stack_sentinels(void) { return (volatile uint32_t *)(uintptr_t)g_df_stack; }
+uintptr_t df_stack_bottom(void) { return (uintptr_t)g_df_stack; }
+uintptr_t df_stack_top(void) { return (uintptr_t)(g_df_stack + DF_STACK_SIZE); }
 
 const struct gdt_entry *gdt_table(void) { return g_gdt; }
 struct tss *tss_main(void) { return &g_tss_main; }

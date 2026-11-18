@@ -18,8 +18,10 @@
  * (dans ce cas, on ne corrompt rien).
  */
 #include <arch/cpu.h>
+#include <arch/gdt.h>
 #include <arch/paging.h>
 #include <samos/kernel.h>
+#include <samos/layout.h>
 #include <samos/ktest.h>
 #include <samos/log.h>
 #include <samos/stack_protector.h>
@@ -101,4 +103,55 @@ void ktest_suite_canary(void)
     mem_probe_last_fault(&cr2, &err);
     KTEST_CHECK(cr2 == ga && (err & 3u) == 3u);               /* P = 1, W = 1 */
     KTEST_CHECK(__stack_chk_guard == g_guard_ref);
+}
+
+/*
+ * K0.7-R1d — Sentinelles de la pile de double faute (S2). Tests NON
+ * destructifs : S2 n'est utilisée que par la tâche #DF, absente ici ; la
+ * seule écriture (test de détection) porte sur un mot sentinelle et est
+ * annulée immédiatement. Le scénario destructif est le mode test=dfsentinel.
+ */
+void ktest_suite_df_sentinel(void)
+{
+    ktest_suite("K0.7 double-fault stack sentinels");
+    volatile uint32_t *w = df_stack_sentinels();
+    uintptr_t lo = df_stack_bottom(), hi = df_stack_top();
+    const struct tss *df = tss_double_fault();
+
+    /* Disposition : 4 mots au bas exact de S2, S2 alignée et de 4 KiB, ESP
+     * initial de la tâche #DF au sommet, TSS #DF entièrement sous la zone. */
+    KTEST_CHECK((uintptr_t)w == lo && (lo & 15u) == 0 && hi - lo == 4096u);
+    KTEST_CHECK(df->esp == (uint32_t)hi);
+    /* La zone sentinelle ne recouvre ni les TSS ni la GDT, où qu'ils soient
+     * placés (l'ordre des objets de .bss n'est pas garanti). */
+    uintptr_t zlo = lo, zhi = lo + DF_SENTINEL_WORDS * 4u;
+    uintptr_t tm = (uintptr_t)tss_main(), gd = (uintptr_t)gdt_table();
+    KTEST_CHECK((uintptr_t)df + sizeof(struct tss) <= zlo || (uintptr_t)df >= zhi);
+    KTEST_CHECK(tm + sizeof(struct tss) <= zlo || tm >= zhi);
+    KTEST_CHECK(gd + GDT_ENTRIES * sizeof(struct gdt_entry) <= zlo || gd >= zhi);
+    KTEST_CHECK(lo + DF_SENTINEL_WORDS * 4u < hi);
+
+    /* Initialisation : chaque mot a sa valeur, et elles sont distinctes. */
+    bool values_ok = true;
+    for (uint32_t i = 0; i < DF_SENTINEL_WORDS; i++) {
+        values_ok = values_ok && w[i] == DF_SENTINEL_VALUE(i);
+    }
+    KTEST_CHECK(values_ok);
+    KTEST_CHECK(DF_SENTINEL_VALUE(0) != DF_SENTINEL_VALUE(1) &&
+                DF_SENTINEL_VALUE(2) != DF_SENTINEL_VALUE(3));
+
+    /* Intactes après toutes les suites précédentes (exceptions, fautes de
+     * page attendues, IRQ, PMM/VMM : tout cela s'exécute sur S1). */
+    KTEST_CHECK(df_stack_sentinel_damage() == 0);
+
+    /* Détection : un mot altéré est signalé par son bit, puis restauré. */
+    uint32_t saved = w[1];
+    w[1] = saved ^ 0x00010000u;
+    uint32_t mask = df_stack_sentinel_damage();
+    w[1] = saved;
+    KTEST_CHECK(mask == (1u << 1));
+    KTEST_CHECK(df_stack_sentinel_damage() == 0);
+
+    /* S1 inchangée : page de garde toujours non projetée. */
+    KTEST_CHECK(boot_stack_guard_intact());
 }

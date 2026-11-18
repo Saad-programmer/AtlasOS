@@ -135,6 +135,13 @@ void kmain(uint32_t magic, uint32_t mbi_phys)
 
     kprintf("SAMOS: boot stack high-water %zu bytes, guard page %s\n",
             boot_stack_high_water(), boot_stack_guard_intact() ? "unmapped (MMU-enforced)" : "MAPPED (unsafe)");
+    /* K0.7-R1d — Point de vérification de fonctionnement normal. */
+    uint32_t df_damage = df_stack_sentinel_damage();
+    if (df_damage != 0) {
+        panic("double-fault stack sentinels corrupted (mask 0x%x)", df_damage);
+    }
+    kprintf("SAMOS: double-fault stack sentinels intact (%u words at %p)\n",
+            DF_SENTINEL_WORDS, (void *)df_stack_bottom());
     kprintf("SAMOS: K0.6 boot complete, paging on, interrupts enabled, keyboard echo active\n");
     idle_loop();
 }

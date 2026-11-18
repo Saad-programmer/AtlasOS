@@ -70,6 +70,29 @@ struct tss *tss_double_fault(void);
  * l'activation de la pagination, pour que la tâche voie les mêmes mappings). */
 void gdt_set_double_fault_cr3(uint32_t cr3);
 
+/*
+ * K0.7-R1d — Sentinelles de la pile de double faute (S2).
+ * S2 = g_df_stack[4096] (.bss, alignée sur 16), utilisée UNIQUEMENT par la
+ * tâche matérielle #DF ; elle croît vers le bas depuis g_df_stack + 4096. Les
+ * DF_SENTINEL_WORDS premiers mots (les 16 octets les plus bas, juste
+ * au-dessus de g_tss_df) contiennent des valeurs connues : si l'un d'eux
+ * change, S2 a débordé (ou une écriture parasite l'a atteinte).
+ * Détection seulement, au moment de la vérification : pas d'empêchement,
+ * pas de remplacement d'une page de garde.
+ */
+#define DF_SENTINEL_WORDS 4u
+/* Valeur attendue du mot i : constante du code, jamais relue dans S2. */
+#define DF_SENTINEL_VALUE(i) (0xDF5E0000u | (0x1100u * ((i) + 1u)) | 0x00A5u)
+
+/* Masque des mots altérés (bit i = mot i), 0 si intactes. Aucune écriture,
+ * aucun appel, aucun pointeur lu dans S2 : sûre même si S2 est corrompue. */
+uint32_t df_stack_sentinel_damage(void);
+/* Adresse du premier mot sentinelle (= bas de S2), pour diagnostic et tests. */
+volatile uint32_t *df_stack_sentinels(void);
+/* Bornes de S2 [bas, sommet). */
+uintptr_t df_stack_bottom(void);
+uintptr_t df_stack_top(void);
+
 /* Fonctions assembleur (gdt_flush.asm). */
 void gdt_load(const void *gdtr);   /* LGDT + rechargement de CS..SS */
 void tss_load(uint16_t selector);  /* LTR */

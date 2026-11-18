@@ -168,8 +168,19 @@ void isr_dispatch(struct interrupt_frame *frame)
  */
 void double_fault_task(void)
 {
+    /* K0.7-R1d — Vérification des sentinelles de S2 AVANT tout appel : la
+     * tâche démarre au sommet de S2 (ESP rechargé depuis g_tss_df), et seuls
+     * quelques octets sont utilisés à ce point. Une sentinelle altérée
+     * signale une corruption ANTÉRIEURE à cette #DF (écriture parasite, ou
+     * débordement de S2). */
+    uint32_t sentinel_damage = df_stack_sentinel_damage();
     const struct tss *t = tss_main();
     kprintf("\n*** DOUBLE FAULT (#DF) caught by task gate, running on dedicated stack\n");
+    if (sentinel_damage == 0) {
+        kprintf("    double-fault stack sentinels: intact\n");
+    } else {
+        kprintf("    double-fault stack sentinels: CORRUPTED (mask 0x%x)\n", sentinel_damage);
+    }
     kprintf("    interrupted task: EIP=%p ESP=%p EBP=%p EFLAGS=%p\n",
             (void *)(uintptr_t)t->eip, (void *)(uintptr_t)t->esp,
             (void *)(uintptr_t)t->ebp, (void *)(uintptr_t)t->eflags);
@@ -183,5 +194,8 @@ void double_fault_task(void)
     uint32_t cr2 = cpu_read_cr2();
     kprintf("    last page-fault address CR2=%p: %s\n", (void *)(uintptr_t)cr2,
             paging_classify(cr2, 0));
+    if (sentinel_damage != 0) {
+        panic("double fault; double-fault stack sentinels corrupted (mask 0x%x)", sentinel_damage);
+    }
     panic("double fault");
 }
