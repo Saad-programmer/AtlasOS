@@ -257,11 +257,12 @@ void ktest_suite_top_guard(void)
     KTEST_CHECK(tg == (uint32_t)(uintptr_t)boot_stack_top && (tg & 0xFFFu) == 0);
     KTEST_CHECK(raw_pte(tg) == 0);
     KTEST_CHECK(!vmm_translate(tg, 0, 0) && !vmm_translate(tg + 4092u, 0, 0));
-    /* 4. CR3 juste au-dessus, toujours projeté et inscriptible ; dernière page
-     * de S1 projetée en écriture. */
+    /* 4. CR3 juste au-dessus, toujours projeté en identité ; depuis K0.7-P4e-2
+     * le répertoire est SCELLÉ (sans W). Dernière page de S1 projetée en
+     * écriture. */
     uint32_t pa = 0, fl = 0;
     KTEST_CHECK(paging_directory() == above);
-    KTEST_CHECK(vmm_translate(above, &pa, &fl) && pa == above && (fl & PTE_WRITE));
+    KTEST_CHECK(vmm_translate(above, &pa, &fl) && pa == above && !(fl & PTE_WRITE));
     KTEST_CHECK(vmm_translate(below, &pa, &fl) && pa == below && (fl & PTE_WRITE));
     uint32_t pte_below = raw_pte(below), pte_above = raw_pte(above);
 

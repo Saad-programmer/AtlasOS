@@ -40,31 +40,59 @@ static bool paging_enabled(void)
 /* K0.7-P4e-1 — Passage d'écriture des PDE/PTE (défini plus bas). */
 enum pt_kind { PT_KIND_PDE, PT_KIND_PTE };
 static samos_err_t pt_gate_write(enum pt_kind kind, uint32_t va, uint32_t value);
+static SAMOS_NOINLINE samos_err_t seal_table_frame(uint32_t table);
 
-static uint32_t *get_table(uint32_t va, bool create)
+/* Table de pages couvrant va, ou 0 si le PDE est absent. Lecture seule : les
+ * tables publiées sont en lecture seule dans l'identité depuis K0.7-P4e-2. */
+static uint32_t *get_table(uint32_t va)
 {
     uint32_t pde = g_pd[PD_INDEX(va)];
     if (pde & PTE_PRESENT) {
         return (uint32_t *)(uintptr_t)(pde & PTE_FRAME);
     }
-    if (!create) {
-        return 0;
-    }
-    /* K0.7-M2.3 : cadre typé FRAME_PAGETABLE (non libérable par pmm_free_frame),
-     * remis à zéro par le PMM : 1024 PTE non présentes. */
+    return 0;
+}
+
+/*
+ * Création et PUBLICATION d'une table pour la région de 4 MiB de va.
+ * Cycle de vie (K0.7-P4e-2, docs/design/K0.7-P4e2-page-table-sealing.md §5) :
+ *   1. allocation typée FRAME_PAGETABLE (pmm_alloc_pagetable : type fixé
+ *      avant que le cadre ne quitte le PMM ; jamais libérable) ;
+ *   2. remise à zéro par le PMM, à travers l'identité ENCORE inscriptible
+ *      du cadre (cadre libre jusque-là : aucune traduction n'en dépend) ;
+ *   3. sous pagination : SCELLEMENT de l'alias d'identité (W retiré par le
+ *      passage, puis INVLPG : la remise à zéro a pu laisser une traduction
+ *      inscriptible dans le TLB) ;
+ *   4. seulement ensuite, publication du PDE par le passage.
+ * Une table publiée n'est donc jamais inscriptible. Avant l'activation de
+ * la pagination (paging_init), l'étape 3 est faite en bloc par
+ * seal_paging_structures, juste après PG | WP.
+ * Refus du passage (incohérence interne : le cadre vient d'être validé) :
+ * l'erreur est renvoyée ; le cadre reste PAGETABLE, non publié (fuite d'un
+ * cadre, jamais réutilisé) : refus fermé, plutôt qu'un cadre de table rendu
+ * au PMM avec un alias dans un état incertain.
+ */
+static samos_err_t table_create(uint32_t va, uint32_t **out)
+{
     uint32_t pt = pmm_alloc_pagetable();
     if (pt == 0) {
-        return 0;
+        return SAMOS_ENOMEM;
+    }
+    if (paging_enabled()) {
+        samos_err_t se = seal_table_frame(pt);
+        if (se != SAMOS_OK) {
+            return se;
+        }
     }
     /* PDE permissive (P | W) : les droits effectifs sont l'INTERSECTION des
      * droits du PDE et du PTE (SDM vol. 3A §4.6) ; c'est le PTE qui décide. */
-    /* K0.7-P4e-1 : écriture par le passage contrôlé. Un refus ici signifie
-     * une incohérence interne (le cadre vient d'être alloué PAGETABLE) :
-     * arrêt explicite plutôt qu'une table allouée mais non reliée. */
     samos_err_t e = pt_gate_write(PT_KIND_PDE, va, pt | PTE_PRESENT | PTE_WRITE);
-    KASSERT(e == SAMOS_OK);
+    if (e != SAMOS_OK) {
+        return e;
+    }
     g_tables++;
-    return (uint32_t *)(uintptr_t)pt;
+    *out = (uint32_t *)(uintptr_t)pt;
+    return SAMOS_OK;
 }
 
 /*
@@ -153,6 +181,16 @@ static bool va_read_only_identity(uint32_t page)
            in_page_range(page, __kro_vmm_start, __kro_vmm_end);
 }
 
+/* K0.7-P4e-2 — Cadre de pagination (répertoire ou table) : critère par TYPE
+ * PMM, non par plage (les tables sont allouées dynamiquement). Un cadre
+ * PAGETABLE ne change jamais de type (ni libération, ni réservation : M2.3). */
+static bool frame_is_pagetable(uint32_t frame)
+{
+    const struct pmm *p = pmm_state();
+    return (frame >> PAGE_SHIFT) < p->nframes &&
+           pmm_core_type(p, frame >> PAGE_SHIFT) == FRAME_PAGETABLE;
+}
+
 static samos_err_t pt_gate_check(enum pt_kind kind, uint32_t va, uint32_t value,
                                  volatile uint32_t **entry)
 {
@@ -201,6 +239,9 @@ static samos_err_t pt_gate_check(enum pt_kind kind, uint32_t va, uint32_t value,
             if (frame != va || (paging_enabled() && (value & PTE_WRITE) && va_read_only_identity(va))) {
                 return SAMOS_EPERM;             /* identité exacte ; jamais W sur une page RO */
             }
+            if (paging_enabled() && (value & PTE_WRITE) && frame_is_pagetable(frame)) {
+                return SAMOS_EPERM;             /* P4e-2 : jamais W sur un cadre de pagination */
+            }
         } else if ((frame >> PAGE_SHIFT) >= p->nframes ||
                    pmm_core_type(p, frame >> PAGE_SHIFT) != FRAME_ALLOCATED) {
             return SAMOS_EPERM;                 /* M2.5b : seul ALLOCATED est projetable */
@@ -244,6 +285,142 @@ void paging_gate_stats(uint32_t *windows, uint32_t *refusals)
 {
     *windows = g_pt_gate_windows;
     *refusals = g_pt_gate_refusals;
+}
+
+/*
+ * K0.7-P4e-2 — Scellement de l'alias d'identité d'un cadre de pagination :
+ * W retiré de la PTE d'identité du cadre (seul alias : vmm_map et le passage
+ * refusent toute autre projection d'un cadre PAGETABLE), puis INVLPG.
+ * L'INVLPG est INDISPENSABLE : la remise à zéro d'une table neuve, ou une
+ * lecture de la table par le passage, a pu charger dans le TLB une
+ * traduction inscriptible de cette page ; sans invalidation, une écriture
+ * directe réussirait encore (SDM vol. 3A §4.10.4.1 : modifier une PTE
+ * n'invalide pas le TLB).
+ * Les accès du MMU aux structures de pagination (parcours, bits A/D) se
+ * font par adresse PHYSIQUE et ne sont pas soumis aux droits de cet alias
+ * (SDM vol. 3A §4.8) : sceller l'alias ne gêne pas la traduction.
+ * Les écritures logicielles ultérieures des entrées passent par la fenêtre
+ * du passage (WP = 0), qui reste possible sur une page sans W.
+ * Idempotente (une table déjà scellée est réécrite sans W : sans effet).
+ * SAMOS_NOINLINE : la présence de l'INVLPG après l'écriture est vérifiée sur
+ * le code machine (check_elf.sh) ; sous QEMU, le vidage du TLB à chaque
+ * changement de CR0.WP masquerait son absence à l'exécution.
+ */
+static SAMOS_NOINLINE samos_err_t seal_table_frame(uint32_t table)
+{
+    if (!paging_enabled() || (table & 0xFFFu) != 0 || table >= g_idmap_top ||
+        !frame_is_pagetable(table)) {
+        return SAMOS_EINVAL;
+    }
+    uint32_t *alias = get_table(table);
+    if (alias == 0) {
+        return SAMOS_EPERM;                     /* l'identité est complète : incohérence */
+    }
+    uint32_t pte = alias[PT_INDEX(table)];
+    if (!(pte & PTE_PRESENT) || (pte & PTE_FRAME) != table) {
+        return SAMOS_EPERM;                     /* alias d'identité absent ou inexact */
+    }
+    samos_err_t e = pt_gate_write(PT_KIND_PTE, table, pte & ~PTE_WRITE);
+    if (e != SAMOS_OK) {
+        return e;
+    }
+    cpu_invlpg((const void *)(uintptr_t)table);
+    return SAMOS_OK;
+}
+
+/*
+ * K0.7-P4e-2 — Scellement en bloc des structures de pagination existantes,
+ * appelé par paging_init juste après PG | WP (avant : WP sans effet, et le
+ * passage écrit directement). Ordre (justification : design §3) :
+ *   1. toutes les tables publiées, SAUF T0 = la table qui contient les PTE
+ *      d'identité des cadres de pagination modifiés ici (celle du
+ *      répertoire), par index de PDE croissant ;
+ *   2. T0 elle-même : chaque étape précédente a écrit dans T0 ; la sceller
+ *      après eux laisse le moins d'écritures possible sur une T0 déjà RO
+ *      (elles restent possibles par la fenêtre, mais l'ordre réduit les
+ *      dépendances à observer en cas d'échec) ;
+ *   3. le répertoire, en dernier : aucun PDE n'est écrit pendant ce
+ *      scellement ; tant qu'il reste RW, une erreur des étapes 1-2 laisse
+ *      la racine de la traduction dans l'état connu de paging_init.
+ * Toute erreur est renvoyée : paging_init échoue, kmain panique (refus
+ * fermé). Une table n'est jamais exposée : les tables publiées étaient
+ * inscriptibles AVANT ce point, comme toute la RAM (aucun code non fiable
+ * ne s'exécute avant), et ne le sont plus APRÈS.
+ */
+static samos_err_t seal_paging_structures(void)
+{
+    uint32_t pd = (uint32_t)(uintptr_t)g_pd;
+    uint32_t t0 = g_pd[PD_INDEX(pd)] & PTE_FRAME;
+    for (uint32_t i = 0; i < 1024u; i++) {
+        uint32_t pde = g_pd[i];
+        if (!(pde & PTE_PRESENT) || (pde & PTE_FRAME) == t0) {
+            continue;
+        }
+        samos_err_t e = seal_table_frame(pde & PTE_FRAME);   /* 1. tables */
+        if (e != SAMOS_OK) {
+            return e;
+        }
+    }
+    samos_err_t e = seal_table_frame(t0);                     /* 2. T0 */
+    if (e != SAMOS_OK) {
+        return e;
+    }
+    e = seal_table_frame(pd);                                 /* 3. répertoire */
+    return e;
+}
+
+/*
+ * K0.7-P4e-2 — Audit structurel des structures de pagination (production et
+ * test). Parcourt le répertoire, chaque table publiée et le PMM :
+ *   writable   : cadres de pagination dont l'alias d'identité porte W ;
+ *   aliases    : PTE présentes désignant un cadre de pagination ailleurs que
+ *                dans son identité exacte (alias supplémentaire) ;
+ *   bad_pdes   : PDE présents dont les drapeaux ne sont pas P | W (+ A), ou
+ *                qui désignent un cadre non PAGETABLE ou le répertoire ;
+ *   unpublished: cadres PAGETABLE ni répertoire ni table publiée.
+ * Coût : 1024 PDE + 1024 PTE par table + un parcours du PMM (O(nframes)).
+ */
+bool paging_audit(struct paging_audit *a)
+{
+    const struct pmm *p = pmm_state();
+    uint32_t pd = (uint32_t)(uintptr_t)g_pd;
+    *a = (struct paging_audit){ 0 };
+    for (uint32_t i = 0; i < 1024u; i++) {
+        uint32_t pde = g_pd[i];
+        if (!(pde & PTE_PRESENT)) {
+            continue;
+        }
+        uint32_t t = pde & PTE_FRAME;
+        a->tables++;
+        if ((pde & 0xFFFu & ~(uint32_t)PTE_ACCESSED) != (PTE_PRESENT | PTE_WRITE) || t == pd ||
+            !frame_is_pagetable(t)) {
+            a->bad_pdes++;
+            continue;                           /* ne pas parcourir une « table » douteuse */
+        }
+        const volatile uint32_t *pt = (const volatile uint32_t *)(uintptr_t)t;
+        for (uint32_t j = 0; j < 1024u; j++) {
+            uint32_t pte = pt[j];
+            uint32_t va = (i << 22) | (j << 12);
+            if (!(pte & PTE_PRESENT) || !frame_is_pagetable(pte & PTE_FRAME)) {
+                continue;
+            }
+            if ((pte & PTE_FRAME) != va) {
+                a->aliases++;
+            } else if (pte & PTE_WRITE) {
+                a->writable++;
+            }
+        }
+    }
+    uint32_t published = a->tables + 1u;        /* + le répertoire */
+    uint32_t typed = 0;
+    for (uint32_t f = 0; f < p->nframes; f++) {
+        if (pmm_core_type(p, f) == FRAME_PAGETABLE) {
+            typed++;
+        }
+    }
+    a->unpublished = typed > published ? typed - published : 0;
+    return a->writable == 0 && a->aliases == 0 && a->bad_pdes == 0 && a->unpublished == 0 &&
+           typed == published;
 }
 
 #if CONFIG_KTEST
@@ -302,13 +479,16 @@ static samos_err_t map_page(uint32_t va, uint32_t pa, uint32_t flags, bool count
      * KERNEL (code, constantes, GDT, IDT, TSS, table du PMM : E3),
      * PAGETABLE (structures de pagination : E3), RESERVED et hors mémoire
      * gérée (pmm_core_type renvoie FRAME_RESERVED au-delà de nframes).
-     * Vérifié AVANT get_table() : un refus ne crée aucune table. */
+     * Vérifié AVANT get_table()/table_create() : un refus ne crée aucune table. */
     if (counted && t != FRAME_ALLOCATED) {
         return SAMOS_EPERM;
     }
-    uint32_t *pt = get_table(va, true);
+    uint32_t *pt = get_table(va);
     if (pt == 0) {
-        return SAMOS_ENOMEM;
+        samos_err_t ce = table_create(va, &pt);
+        if (ce != SAMOS_OK) {
+            return ce;
+        }
     }
     if (pt[PT_INDEX(va)] & PTE_PRESENT) {
         return SAMOS_EEXIST;                   /* jamais d'écrasement silencieux */
@@ -367,7 +547,7 @@ samos_err_t vmm_unmap(uint32_t va, uint32_t *pa)
     if (va < g_idmap_top) {
         return SAMOS_EPERM;                    /* identité permanente */
     }
-    uint32_t *pt = get_table(va, false);
+    uint32_t *pt = get_table(va);
     if (pt == 0 || !(pt[PT_INDEX(va)] & PTE_PRESENT)) {
         return SAMOS_ENOENT;
     }
@@ -397,7 +577,7 @@ samos_err_t vmm_unmap(uint32_t va, uint32_t *pa)
 
 bool vmm_translate(uint32_t va, uint32_t *pa, uint32_t *flags)
 {
-    uint32_t *pt = get_table(va, false);
+    uint32_t *pt = get_table(va);
     if (pt == 0) {
         return false;
     }
@@ -448,6 +628,9 @@ const char *paging_classify(uint32_t addr, uint32_t err)
                                 in_range(addr, __kro_handlers_start, __kro_handlers_end) ||
                                 in_range(addr, __kro_vmm_start, __kro_vmm_end))) {
         return "write to a sealed kernel structure (IDT, handler tables or VMM roots)";
+    }
+    if (protection && write && addr < g_idmap_top && frame_is_pagetable(addr & PTE_FRAME)) {
+        return "write to a sealed page table or page directory";
     }
     if (protection && write && in_range(addr, __text_start, __rodata_start)) {
         return "write to read-only kernel code (.text)";
@@ -525,7 +708,9 @@ samos_err_t paging_init(uint32_t idmap_top)
     /* PG : active la traduction. WP : les pages en lecture seule le sont aussi
      * pour le ring 0 (sinon le noyau pourrait écrire dans .text sans faute). */
     cpu_write_cr0(cpu_read_cr0() | CR0_PG | CR0_WP);
-    return SAMOS_OK;
+    /* K0.7-P4e-2 : répertoire et tables en lecture seule dans l'identité,
+     * avant tout autre code (IRQ encore masquées, aucun pilote). */
+    return seal_paging_structures();
 }
 
 /*
@@ -548,7 +733,7 @@ samos_err_t paging_seal_identity(uint32_t start, uint32_t end)
         return SAMOS_EINVAL;
     }
     for (uint32_t va = start; va < end; va += PAGE_SIZE) {
-        uint32_t *pt = get_table(va, false);
+        uint32_t *pt = get_table(va);
         if (pt == 0) {
             return SAMOS_EPERM;
         }
@@ -559,7 +744,7 @@ samos_err_t paging_seal_identity(uint32_t start, uint32_t end)
         }
     }
     for (uint32_t va = start; va < end; va += PAGE_SIZE) {
-        uint32_t *pt = get_table(va, false);
+        uint32_t *pt = get_table(va);
         /* K0.7-P4e-1 : par le passage contrôlé. Préconditions déjà vérifiées
          * pour toute la plage : un refus est une incohérence interne (par
          * exemple CR0.WP trouvé à 0). Il est RENVOYÉ, non transformé en

@@ -151,6 +151,17 @@ void kmain(uint32_t magic, uint32_t mbi_phys)
         panic("critical structure sealing failed (%d)", seal_err);
     }
     kprintf("SAMOS: critical structures sealed read-only (IDT, handler tables, VMM roots)\n");
+    /* K0.7-P4e-2 — Les structures de pagination sont scellées par
+     * paging_init (juste après PG | WP). Audit structurel indépendant : tout
+     * écart (table inscriptible, alias, PDE non conforme, table non publiée)
+     * est fatal. */
+    struct paging_audit pa;
+    if (!paging_audit(&pa)) {
+        panic("page-table audit failed: %u writable, %u aliases, %u bad PDEs, %u unpublished",
+              pa.writable, pa.aliases, pa.bad_pdes, pa.unpublished);
+    }
+    kprintf("SAMOS: page directory and %u page tables sealed read-only (0 writable, 0 aliases)\n",
+            pa.tables);
     kprintf("SAMOS: boot stack high-water %zu bytes, guard page %s\n",
             boot_stack_high_water(), boot_stack_guard_intact() ? "unmapped (MMU-enforced)" : "MAPPED (unsafe)");
     /* K0.7-R1d — Point de vérification de fonctionnement normal. */

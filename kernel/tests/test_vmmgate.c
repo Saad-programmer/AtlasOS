@@ -83,14 +83,15 @@ void ktest_suite_vmm_gate(void)
     paging_gate_stats(&w1, &r1);
     KTEST_CHECK(w1 == w0 + 2u && entry_of(K_PTE, va_old) == 0);
 
-    /* Nouvelle table : PDE + PTE par le passage, table PAGETABLE, remise à
-     * zéro, PDE exactement P | W, compteur de tables +1. */
+    /* Nouvelle table : scellement de son alias, PDE et PTE par le passage,
+     * table PAGETABLE, remise à zéro, PDE exactement P | W, tables +1. */
     const uint32_t va_new = 0xC8000000u;                   /* région sans table */
     KTEST_CHECK(!(entry_of(K_PDE, va_new) & PTE_PRESENT));
     uint32_t tables0 = paging_table_count();
     KTEST_CHECK(vmm_map(va_new, f, 0) == SAMOS_OK);
     paging_gate_stats(&w1, &r1);
-    KTEST_CHECK(w1 == w0 + 4u && paging_table_count() == tables0 + 1u);
+    /* Fenêtres : scellement de l'alias de la table (P4e-2), PDE, PTE. */
+    KTEST_CHECK(w1 == w0 + 5u && paging_table_count() == tables0 + 1u);
     uint32_t pde = entry_of(K_PDE, va_new), nt = pde & PTE_FRAME;
     KTEST_CHECK((pde & 0xFFFu & ~(uint32_t)PTE_ACCESSED) == (PTE_PRESENT | PTE_WRITE));
     KTEST_CHECK(pmm_core_type(p, nt >> 12) == FRAME_PAGETABLE && pmm_free_frame(nt) == SAMOS_EINVAL);

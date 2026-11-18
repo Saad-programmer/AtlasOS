@@ -132,11 +132,12 @@ void ktest_suite_sealed(void)
     KTEST_CHECK(paging_seal_critical() == SAMOS_OK && page_sealed(__kro_idt_start));
     KTEST_CHECK(pmm_free_frame(f) == SAMOS_OK);
 
-    /* 6. Ce qui reste RW en P4d : GDT/TSS, compteurs/PMM, répertoire et tables. */
+    /* 6. Ce qui reste RW après P4d : GDT/TSS, compteurs/PMM. Le répertoire et
+     * les tables, RW en P4d, sont scellés depuis K0.7-P4e-2. */
     KTEST_CHECK(page_writable((uint32_t)(uintptr_t)__kcpu_start));
     KTEST_CHECK(page_writable((uint32_t)(uintptr_t)p->meta) && page_writable((uint32_t)(uintptr_t)p));
-    KTEST_CHECK(page_writable(paging_directory()));
-    KTEST_CHECK(page_writable(paging_directory() + 4096u));     /* première table */
+    KTEST_CHECK(!page_writable(paging_directory()));
+    KTEST_CHECK(!page_writable(paging_directory() + 4096u));    /* première table */
     /* Gardes toujours absentes. */
     KTEST_CHECK(!vmm_translate((uint32_t)(uintptr_t)__df_guard_start, 0, 0) &&
                 !vmm_translate((uint32_t)(uintptr_t)__stack_guard_start, 0, 0) &&

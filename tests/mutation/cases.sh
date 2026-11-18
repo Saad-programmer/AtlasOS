@@ -224,11 +224,18 @@ mutant gate_nesting_allowed kernel/arch/i386/paging.c \
     '    if (0) {' \
     35 \
     'en == SAMOS_EBUSY && entry_of(K_PTE, kpage) == kpte'
-mutant gate_wp_not_restored kernel/arch/i386/paging.c \
+# M25 — Depuis K0.7-P4e-2, la PREMIÈRE fenêtre s'ouvre dans paging_init
+# (scellement des tables) : WP non rétabli fait refuser l'écriture suivante,
+# paging_init échoue et le noyau s'arrête AVANT tout autotest (refus fermé,
+# comportement de production voulu). Une détection à l'exécution ne peut donc
+# plus être une assertion nommée : elle est faite sur le code machine de
+# production (check_elf.sh : une seule écriture de CR0 dans pt_gate_write).
+# L'invariant global de ktest reste prouvé par M17 (prototype P4c).
+mutant_tool gate_wp_not_restored kernel/arch/i386/paging.c \
     'cpu_write_cr0(cr0);                         /* WP rétabli AVANT IF */' \
     '(void)cr0;' \
-    35 \
-    'CR0.WP actif hors fenetre (invariant global)'
+    'tools/check_elf.sh build/samos.elf --production' \
+    'pt_gate_write:1'
 
 # M26 — K0.7-P4e-1 : deux écritures dans la fenêtre WP au lieu d'une. Détecté
 # par la forme du code machine (check_elf.sh --production).
@@ -237,3 +244,52 @@ mutant_tool gate_window_not_unitary kernel/arch/i386/paging.c \
     '*entry = value; *entry = value;' \
     'tools/check_elf.sh build/samos.elf --production' \
     'pt_gate_write:fenetre-non-unitaire'
+
+# M27-M33 — K0.7-P4e-2 : scellement des structures de pagination. Les
+# écritures directes de test réécrivent la valeur actuelle : une table restée
+# inscriptible produit une assertion, jamais une destruction.
+mutant seal_pd_removed kernel/arch/i386/paging.c \
+    'e = seal_table_frame(pd);                                 /* 3. répertoire */' \
+    'e = SAMOS_OK;' \
+    35 \
+    'pd_ro' \
+    'pd_write_faults'
+mutant seal_tables_removed kernel/arch/i386/paging.c \
+    'samos_err_t e = seal_table_frame(pde & PTE_FRAME);   /* 1. tables */' \
+    'samos_err_t e = SAMOS_OK;' \
+    35 \
+    'tables_rw == 0'
+mutant seal_t0_removed kernel/arch/i386/paging.c \
+    'samos_err_t e = seal_table_frame(t0);                     /* 2. T0 */' \
+    'samos_err_t e = SAMOS_OK;' \
+    35 \
+    't0_ro' \
+    'pt0_write_faults'
+mutant seal_new_table_removed kernel/arch/i386/paging.c \
+    'samos_err_t se = seal_table_frame(pt);' \
+    'samos_err_t se = SAMOS_OK;' \
+    35 \
+    'new_table_ro' \
+    'new_table_write_faults'
+# INVLPG oublié après le scellement : la PTE est correcte (sans W), mais un
+# processeur réel garderait la traduction inscriptible chargée dans le TLB
+# par la remise à zéro. Sous QEMU, la fenêtre du passage (changement de
+# CR0.WP) vide tout le TLB : le défaut est invisible aux autotests (constaté :
+# mutation NON DÉTECTÉE à l'exécution). Détection sur le code machine.
+mutant_tool seal_invlpg_removed kernel/arch/i386/paging.c \
+    'cpu_invlpg((const void *)(uintptr_t)table);' \
+    '(void)0;' \
+    'tools/check_elf.sh build/samos.elf --production' \
+    'seal_table_frame:sans-invlpg'
+mutant gate_pagetable_w_allowed kernel/arch/i386/paging.c \
+    'if (paging_enabled() && (value & PTE_WRITE) && frame_is_pagetable(frame)) {' \
+    'if (false && frame_is_pagetable(frame)) {' \
+    35 \
+    'gate_keeps_pd_ro'
+# Écriture directe d'une PTE réintroduite (sans passer par pt_gate_write) :
+# signalée statiquement par pt_write_lint.sh.
+mutant_tool pt_direct_write kernel/arch/i386/paging.c \
+    'samos_err_t ge = pt_gate_write(PT_KIND_PTE, va, 0);' \
+    'pt[PT_INDEX(va)] = 0; samos_err_t ge = SAMOS_OK;' \
+    'tests/tools/pt_write_lint.sh' \
+    'pt_write_lint: ecriture directe d'"'"'entree'

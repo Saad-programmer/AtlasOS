@@ -208,13 +208,11 @@ void ktest_suite_ptgate(void)
          * est signalé par l'assertion ci-dessus. */
         return;
     }
-    /* Scellement de X (identité R/O). Sa PTE est dans la table 0, encore RW :
-     * écriture directe + INVLPG, propre à ce test. */
-    volatile uint32_t *xpte = (volatile uint32_t *)(uintptr_t)pt0 + ((X >> 12) & 0x3FFu);
-    uint32_t xpte0 = *xpte;
-    KTEST_CHECK(xpte0 & PTE_WRITE);
-    *xpte = xpte0 & ~PTE_WRITE;
-    cpu_invlpg((const void *)(uintptr_t)X);
+    /* X est une table SCELLÉE : depuis K0.7-P4e-2, le VMM retire W de son
+     * alias d'identité avant de la publier (en P4c, ce test la scellait
+     * lui-même par une écriture directe dans la table 0, désormais RO). */
+    uint32_t xpte0 = raw_entry(pt0, (X >> 12) & 0x3FFu);
+    KTEST_CHECK((xpte0 & PTE_PRESENT) && !(xpte0 & PTE_WRITE));
     uint32_t cr2 = 0, err = 0, v = 0;
     KTEST_CHECK(mem_probe_write((void *)(uintptr_t)(X + 4u), 0) == -1);   /* X est R/O */
     mem_probe_last_fault(&cr2, &err);
@@ -256,9 +254,8 @@ void ktest_suite_ptgate(void)
     KTEST_CHECK(!vmm_translate(va, 0, 0));
     KTEST_CHECK(mem_probe_read((const void *)(uintptr_t)va, &v) == -1);    /* INVLPG effectif */
 
-    /* Nettoyage : X redevient inscriptible, état PMM/VMM cohérent. */
-    *xpte = xpte0;
-    cpu_invlpg((const void *)(uintptr_t)X);
+    /* Nettoyage : X reste scellée (une table n'est jamais libérée), état
+     * PMM/VMM cohérent. */
     KTEST_CHECK(vmm_unmap(base, 0) == SAMOS_OK && pmm_refs(f) == 0);
     KTEST_CHECK(pmm_refs(g) == 0);        /* le passage ne prend pas de référence (limite) */
     KTEST_CHECK(pmm_free_frame(f) == SAMOS_OK && pmm_free_frame(g) == SAMOS_OK &&

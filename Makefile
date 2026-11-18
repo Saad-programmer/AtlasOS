@@ -132,7 +132,8 @@ TEST_SRCS := kernel/tests/ktest.c \
              kernel/tests/test_canary.c \
              kernel/tests/test_ptgate.c \
              kernel/tests/test_sealed.c \
-             kernel/tests/test_vmmgate.c
+             kernel/tests/test_vmmgate.c \
+             kernel/tests/test_ptseal.c
 
 objs = $(patsubst %.asm,$(BUILD)/$(1)/%.o,$(ASM_SRCS)) $(patsubst %.c,$(BUILD)/$(1)/%.o,$(2))
 PROD_OBJS := $(call objs,prod,$(C_SRCS))
@@ -199,6 +200,7 @@ test-tools: $(KERNEL) $(TEST_KERNEL)
 	tests/tools/harness_selftest.sh $(KERNEL) $(TEST_KERNEL)
 	tests/tools/canary_check.sh $(KERNEL) $(TEST_KERNEL)
 	tests/tools/frame_limit_check.sh $(CC) $(CFLAGS) $(PROD_DEFS)
+	tests/tools/pt_write_lint.sh
 
 test-host:
 	tests/host/run.sh

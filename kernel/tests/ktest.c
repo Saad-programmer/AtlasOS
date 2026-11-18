@@ -179,6 +179,7 @@ void ktest_run_all(void)
     }
     ktest_suite_sealed();
     ktest_suite_vmm_gate();
+    ktest_suite_pt_seal();
 
     suite_close();
     kprintf("[TEST] suites=%u checks=%u failures=%u\n", g_suites, g_checks, g_failures);

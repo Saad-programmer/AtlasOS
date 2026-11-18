@@ -1707,3 +1707,55 @@ tests/tools/repro_selftest.sh
   - validation dépendante de l'intégrité du PMM ;
   - tables de pages encore inscriptibles (P4e-2) ;
   - code ring 0 arbitraire (P5).
+
+### K0.7-P4e-2 — Scellement du répertoire de pages et des tables actives
+
+- **Document :** `docs/design/K0.7-P4e2-page-table-sealing.md`. Il contient l'audit, l'ordre de scellement, les cycles de vie, les preuves, les mutations, la carte avant et après, les limites et les préconditions de P4f.
+- **Audit :**
+  - un seul alias par cadre de pagination (l'identité) ;
+  - aucune table non publiée ;
+  - A/D écrits par le MMU par adresse physique (non soumis aux droits de l'alias) ;
+  - **un cadre `PAGETABLE` n'est jamais libéré ni réutilisé** (`pmm_core_free` et `pmm_core_reserve_as` le refusent).
+- **Mécanisme** (`paging.c`) :
+  - `seal_table_frame(t)` (`SAMOS_NOINLINE`) : validation, W retiré de l'alias d'identité par `pt_gate_write`, puis `INVLPG`.
+  - `seal_paging_structures` est appelé par `paging_init` juste après PG | WP. Ordre : tables, puis T0 (la table de l'alias du répertoire), puis le répertoire. Toute erreur fait échouer `paging_init`, et `kmain` panique.
+  - `get_table` devient une lecture seule ; la création passe par `table_create` : allocation `PAGETABLE`, remise à zéro, **scellement avant publication**, PDE par le passage.
+  - Le passage refuse W sur l'identité d'un cadre `PAGETABLE` : scellement à sens unique.
+  - `paging_audit` (production et test) : `kmain` panique sur toute table inscriptible, tout alias, tout PDE non conforme, toute table non publiée, puis affiche `page directory and N page tables sealed read-only (0 writable, 0 aliases)`.
+  - `paging_classify` : nouveau diagnostic « write to a sealed page table or page directory ».
+- **Outils :**
+  - `tests/tools/pt_write_lint.sh` (nouveau, dans `make test-tools`) : aucune écriture directe de PDE/PTE dans les sources hors du passage ;
+  - `check_elf.sh` : règle CR0 étendue à l'image de test (prototype P4c, invariant WP de `ktest`) ; `seal_table_frame` doit contenir un `invlpg` après l'appel du passage (deux images).
+- **Tests :**
+  - nouvelle suite « K0.7 P4e-2 page-table sealing » (`kernel/tests/test_ptseal.c`, 35 vérifications) : état scellé, écritures directes en faute, sens unique, cycle de vie complet d'une table créée après le scellement, A/D matériels, audit ;
+  - modes QEMU `test=sealpd`, `test=sealpt`, `test=sealnewpt` (#PF code 3, CR2 égal à l'adresse affichée) ;
+  - nouveaux cas de RAM : 1 728 KiB, 1 792 KiB, 2 MiB et 1 GiB.
+- **Tests existants adaptés :**
+  - `test_canary` et `test_sealed` : le répertoire et la première table sont désormais RO ;
+  - `test_vmmgate` : une table neuve coûte 5 fenêtres ;
+  - `test_ptgate` : X est déjà scellée par le VMM.
+- **Constats et corrections pendant le jalon :**
+  - **INVLPG :** QEMU vide tout le TLB à chaque changement de CR0.WP. La mutation « INVLPG oublié » n'était donc pas détectée à l'exécution ; elle est désormais vérifiée sur le code machine.
+  - **M25 (WP non rétabli) :** le noyau s'arrête maintenant dans `paging_init`, avant les autotests (refus fermé). La détection passe par `check_elf.sh` (`pt_gate_write:1`).
+  - **M1 :** lecture d'un cadre nul dans la nouvelle suite ; l'accès est désormais conditionné.
+- **Mutations :** 33 sur 33. Nouvelles : `seal_pd_removed`, `seal_tables_removed`, `seal_t0_removed`, `seal_new_table_removed`, `seal_invlpg_removed`, `gate_pagetable_w_allowed`, `pt_direct_write`.
+- **Validation :**
+
+| Commande | Résultat |
+|---|---|
+| `make clean && make test` | 156 `[PASS]`, 0 `[FAIL]`, 55 cas QEMU sur 55 |
+| autotests | 17 suites, 727 vérifications, 0 échec |
+| `make test-mutation` | 33 mutations sur 33 |
+| `tests/mutation/selftest.sh` | 12 situations conformes |
+| `make test-repro` | réussi |
+| `make -j8` depuis zéro | réussi |
+| RAM | 1 728 KiB `ENOMEM` ; 1 792 KiB, 2 MiB, 16 MiB, 128 MiB, 512 MiB et 1 GiB scellés, « 0 writable, 0 aliases » |
+| `info mem` (production, 128 MiB) | répertoire et 32 tables `0x197000-0x1b8000 r-` (en P4e-1 : `rw`) ; pages P4d `r-` ; gardes absentes ; CR0 = `0x80010011` |
+
+- **Risques restants :**
+  - NMI et #MC dans la fenêtre WP ;
+  - table du PMM et GDT/TSS inscriptibles ;
+  - INVLPG non observable sous QEMU (matériel réel : **NOT TESTED**) ;
+  - analyse statique heuristique ;
+  - monoprocesseur ;
+  - P5.

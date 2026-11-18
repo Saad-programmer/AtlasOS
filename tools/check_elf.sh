@@ -196,23 +196,21 @@ done
 # faute volontaire, sortie QEMU. Leur présence dans l'image de production
 # signifierait qu'un mode destructif y est accessible.
 TEST_ONLY_SYMS="ktest_run_all ktest_fatal_mode qemu_exit ktest_check ktest_s2_prefill ptgate_write_entry ptgate_set_pte paging_gate_test_write paging_gate_test_set_active"
-syms=$(nm "$ELF" | awk '{print $3}')
-case "$MODE" in
-    --production)
-        for s in $TEST_ONLY_SYMS; do
-            if grep -qx "$s" <<<"$syms"; then bad "production: symbole de test present ($s)"; fi
-        done
-        # K0.7-P4c, P4e-1 : écritures de CR0 autorisées en production, par
-        # LOCALISATION et par FONCTION (pas seulement par nombre) :
-        #   paging_init   : 1 écriture, précédée de « or $0x80010000 » (PG|WP) ;
-        #   pt_gate_write : 2 écritures (fenêtre du passage des PDE/PTE) :
-        #     - la 1re suit immédiatement « and $0xfffeffff,%R » sur le même
-        #       registre (retrait de WP seul) ;
-        #     - entre les deux : EXACTEMENT une instruction, un stockage
-        #       « mov %r,(%r) » (l'unique écriture de la fenêtre) ;
-        #     - un « cli » précède la 1re ; aucun « sti » entre les deux.
-        # Toute autre écriture de CR0 est un échec.
-        cr0rep=$(objdump -d --no-show-raw-insn "$ELF" | awk '
+# K0.7-P4c, P4e-1, P4e-2 : écritures de CR0 autorisées, par LOCALISATION et
+# par FONCTION (pas seulement par nombre). Argument : prod | test.
+#   paging_init   : 1 écriture, précédée de « or $0x80010000 » (PG|WP) ;
+#   pt_gate_write : 2 écritures (fenêtre du passage des PDE/PTE) :
+#     - la 1re suit immédiatement « and $0xfffeffff,%R » sur le même
+#       registre (retrait de WP seul) ;
+#     - entre les deux : EXACTEMENT une instruction, un stockage
+#       « mov %r,(%r) » (l'unique écriture de la fenêtre) ;
+#     - un « cli » précède la 1re ; aucun « sti » entre les deux.
+#   image de TEST seulement : ptgate_write_entry (prototype P4c, 2 écritures,
+#   WP seul retiré) ; ktest_check / ktest_run_all (rétablissement de WP par
+#   l'invariant global, « or $0x10000 » sur le même registre).
+# Toute autre écriture de CR0 est un échec.
+cr0_report() {
+    objdump -d --no-show-raw-insn "$ELF" | awk -v mode="$1" '
             /^[0-9a-f]+ <[^>]+>:$/ { fn = $2; gsub(/[<>:]/, "", fn); n = 0; next }
             { sub(/^ *[0-9a-f]+:\t/, ""); ins[fn, ++n] = $0; cnt[fn] = n }
             /mov +%e[a-z]+,%cr0/ { w[fn] = w[fn] " " n; total++ }
@@ -232,11 +230,45 @@ case "$MODE" in
                         cli = 0; for (x = 1; x < a; x++) if (ins[f, x] ~ /^cli/) cli = 1
                         if (!cli) print "pt_gate_write:sans-cli"
                         for (x = a; x <= b; x++) if (ins[f, x] ~ /^sti/) print "pt_gate_write:sti-dans-fenetre"
+                    } else if (mode == "test" && f == "ptgate_write_entry") {
+                        # Prototype P4c (image de test) : 2 écritures, WP seul retiré.
+                        if (k != 2) { print f ":" k; continue }
+                        split(ins[f, at[1]], wa, ","); reg = wa[1]; sub(/^mov +/, "", reg)
+                        if (ins[f, at[1] - 1] !~ ("and +\\$0xfffeffff," reg "$")) print f ":sans-and-WP"
+                    } else if (mode == "test" && (f == "ktest_check" || f == "ktest_run_all")) {
+                        # Invariant global de ktest (P4e-1) : rétablit WP seulement.
+                        if (k != 1) { print f ":" k; continue }
+                        split(ins[f, at[1]], wa, ","); reg = wa[1]; sub(/^mov +/, "", reg)
+                        ok = 0; for (d = 1; d <= 3; d++) if (ins[f, at[1] - d] ~ ("or +\\$0x10000," reg "$")) ok = 1
+                        if (!ok) print f ":sans-or-WP"
                     } else {
                         print f ":" k
                     }
                 }
-            }')
+            }'
+}
+# K0.7-P4e-2 — seal_table_frame (deux images) : l'écriture par le passage est
+# SUIVIE d'un INVLPG. Sous QEMU, tout changement de CR0.WP vide le TLB : un
+# INVLPG oublié resterait invisible aux autotests, mais pas sur un processeur
+# réel (MOV vers CR0 n'invalide le TLB que si PG passe de 1 à 0, SDM vol. 3A
+# §4.10.4.1). Le contrôle porte donc sur le code machine.
+sealrep=$(objdump -d --no-show-raw-insn "$ELF" | awk '
+    /^[0-9a-f]+ <[^>]+>:$/ { infn = ($2 == "<seal_table_frame>:"); if (infn) seen = 1; next }
+    infn && /call +[0-9a-f]+ <pt_gate_write>/ { gate = 1 }
+    infn && gate && /invlpg/ { inv = 1 }
+    END { if (!seen) print "absente"; else if (!gate) print "sans-appel-pt_gate_write"; else if (!inv) print "sans-invlpg" }')
+if [ -z "$sealrep" ]; then
+    pass "seal_table_frame : INVLPG apres l'ecriture par pt_gate_write"
+else
+    bad "seal_table_frame:$sealrep"
+fi
+syms=$(nm "$ELF" | awk '{print $3}')
+case "$MODE" in
+    --production)
+        for s in $TEST_ONLY_SYMS; do
+            if grep -qx "$s" <<<"$syms"; then bad "production: symbole de test present ($s)"; fi
+        done
+        cr0rep=$(cr0_report prod)
         if [ -z "$cr0rep" ]; then
             pass "production: CR0 ecrit seulement par paging_init (PG|WP) et la fenetre unitaire de pt_gate_write"
         else
@@ -254,6 +286,12 @@ case "$MODE" in
             grep -qx "$s" <<<"$syms" || bad "test: symbole attendu absent ($s)"
         done
         pass "test: autotests et modes de faute presents"
+        cr0rep=$(cr0_report test)
+        if [ -z "$cr0rep" ]; then
+            pass "test: CR0 ecrit seulement par paging_init, pt_gate_write, le prototype P4c et l'invariant WP de ktest"
+        else
+            bad "test: ecritures de CR0 non conformes : $(echo $cr0rep)"
+        fi
         ;;
     "") ;;
     *) bad "mode inconnu: $MODE" ;;

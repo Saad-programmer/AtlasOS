@@ -63,6 +63,18 @@ samos_err_t paging_seal_critical(void);
 /* K0.7-P4e-1 — Compteurs du passage d'écriture des PDE/PTE (fenêtres WP
  * ouvertes sous pagination ; refus). */
 void paging_gate_stats(uint32_t *windows, uint32_t *refusals);
+
+/* K0.7-P4e-2 — Audit des structures de pagination (voir paging.c). Vrai si
+ * aucune anomalie : répertoire et tables sans W dans l'identité, aucun autre
+ * alias, PDE conformes, tout cadre PAGETABLE publié. */
+struct paging_audit {
+    uint32_t tables;        /* PDE présents */
+    uint32_t writable;      /* cadres de pagination dont l'identité porte W */
+    uint32_t aliases;       /* projections d'un cadre de pagination hors identité */
+    uint32_t bad_pdes;      /* PDE non conformes */
+    uint32_t unpublished;   /* cadres PAGETABLE non publiés */
+};
+bool paging_audit(struct paging_audit *a);
 #if CONFIG_KTEST
 /* Image de test : kind 0 = PDE, 1 = PTE. */
 samos_err_t paging_gate_test_write(int kind, uint32_t va, uint32_t value);

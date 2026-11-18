@@ -22,6 +22,7 @@ IMG=prod TIMEOUT=3 run_case boot_halt "" 124 \
     "keyboard: 8042 self-test ok, PS/2 keyboard reset ok, IRQ1 enabled" \
     "cpu: GDT loaded" \
     "cpu: IDT loaded (32 exception gates, #DF task gate)" \
+    "SAMOS: page directory and 32 page tables sealed read-only (0 writable, 0 aliases)" \
     "!KERNEL PANIC"
 
 # K0.3 — Le pilote série transmet réellement : motifs lus dans le seul journal COM1.
@@ -263,6 +264,38 @@ for sp in "sealidt __kro_idt_start" "sealhandlers __kro_handlers_start" "sealvmm
     cr2_matches "$1" "$2" 0
 done
 
+# K0.7-P4e-2 — Écriture DIRECTE dans le répertoire scellé, dans une table
+# scellée au démarrage, et dans une table créée APRÈS le scellement. La valeur
+# écrite est la valeur actuelle de l'entrée (rien n'est détruit avant la
+# faute). Attendu : #PF code 0x3, diagnostic dédié, statut 37 ; CR2 égal à
+# l'adresse affichée par le mode (dynamique : allouée par le PMM).
+cr2_printed() {   # cr2_printed CAS
+    local slog="$OUT/$1.serial.log" want got
+    total=$((total + 1))
+    want=$(tr -d '\r' < "$slog" 2>/dev/null | sed -n 's/.*writing to sealed page table ([a-z]*) at \(0x[0-9a-f]*\).*/\1/p' | head -1)
+    got=$(tr -d '\r' < "$slog" 2>/dev/null | sed -n 's/.*page fault: .*address CR2=\(0x[0-9a-f]*\).*/\1/p' | head -1)
+    if [ -n "$want" ] && [ "$got" = "$want" ]; then
+        echo "[PASS] $1_cr2 (CR2=$got = adresse visée)"
+        passed=$((passed + 1))
+    else
+        echo "[FAIL] $1_cr2 (CR2=${got:-absent}, attendu ${want:-absent})"
+        fail=1
+    fi
+}
+for m in sealpd sealpt sealnewpt; do
+    run_case "$m" "test=$m" 37 \
+        "serial:[TEST] critical structures sealed" \
+        "serial:[TEST] writing to sealed page table ($m) at 0x" \
+        "serial:*** CPU exception 14: Page Fault (#PF), error code 0x00000003" \
+        "serial:protection violation, write access, supervisor mode" \
+        "serial:write to a sealed page table or page directory" \
+        "!sealed page-table write NOT trapped" \
+        "!cannot create a page table" \
+        "!RECURSIVE PANIC" \
+        "!DOUBLE FAULT"
+    cr2_printed "$m"
+done
+
 # K0.7-R1d — Sentinelles de S2 : un mot sentinelle (le mot 2) est altéré, puis
 # une vraie #DF est provoquée. La tâche #DF doit le signaler (masque 0x4) et
 # paniquer avec un message identifiable ; aucune panique récursive.
@@ -289,10 +322,29 @@ run_case canary_smash "test=canary" 37 \
 # et 4 GiB (région au-dessus de 4 GiB dans la carte, ignorée).
 QEMU_MEM=16M TIMEOUT=4 run_case mem_16M "" 124 \
     "pmm: descriptor table consistent" "!inconsistent" \
-    "paging: enabled" "SAMOS: K0.6 boot complete" "!KERNEL PANIC" "!mm: RAM above"
+    "paging: enabled" "SAMOS: K0.6 boot complete" "!KERNEL PANIC" "!mm: RAM above" \
+    "SAMOS: page directory and 4 page tables sealed read-only (0 writable, 0 aliases)"
 QEMU_MEM=512M TIMEOUT=4 run_case mem_512M "" 124 \
     "pmm: descriptor table consistent" "!inconsistent" \
-    "128 page tables" "SAMOS: K0.6 boot complete" "!KERNEL PANIC"
+    "128 page tables" "SAMOS: K0.6 boot complete" "!KERNEL PANIC" \
+    "SAMOS: page directory and 128 page tables sealed read-only (0 writable, 0 aliases)"
+
+# K0.7-P4e-2 — Scellement des structures de pagination aux tailles de RAM
+# extrêmes, image de PRODUCTION : 1 792 KiB (minimum démarrable, une table),
+# 2 MiB, 1 GiB (256 tables, limite de l'identité). 1 728 KiB : refus ENOMEM
+# inchangé (le scellement ne consomme aucun cadre).
+IMG=prod QEMU_MEM=1792K TIMEOUT=4 run_case mem_1792K "" 124 \
+    "serial:SAMOS: page directory and 1 page tables sealed read-only (0 writable, 0 aliases)" \
+    "serial:SAMOS: K0.6 boot complete" "!KERNEL PANIC"
+IMG=prod QEMU_MEM=2M TIMEOUT=4 run_case mem_2M "" 124 \
+    "serial:SAMOS: page directory and 1 page tables sealed read-only (0 writable, 0 aliases)" \
+    "serial:SAMOS: K0.6 boot complete" "!KERNEL PANIC"
+IMG=prod QEMU_MEM=1G TIMEOUT=6 run_case mem_1G "" 124 \
+    "serial:SAMOS: page directory and 256 page tables sealed read-only (0 writable, 0 aliases)" \
+    "serial:SAMOS: K0.6 boot complete" "!KERNEL PANIC"
+IMG=prod QEMU_MEM=1728K TIMEOUT=4 run_case mem_1728K "" 124 \
+    "serial:KERNEL PANIC: memory management initialisation failed (-2)" \
+    "!page tables sealed"
 QEMU_MEM=1500M TIMEOUT=6 run_case mem_1500M "" 124 \
     "pmm: descriptor table consistent" "!inconsistent" \
     "pmm: 262144 frames managed" "mm: RAM above 1024 MiB is not managed in K0" \
