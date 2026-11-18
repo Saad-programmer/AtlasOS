@@ -37,6 +37,10 @@ static bool paging_enabled(void)
     return (cpu_read_cr0() & CR0_PG) != 0;
 }
 
+/* K0.7-P4e-1 — Passage d'écriture des PDE/PTE (défini plus bas). */
+enum pt_kind { PT_KIND_PDE, PT_KIND_PTE };
+static samos_err_t pt_gate_write(enum pt_kind kind, uint32_t va, uint32_t value);
+
 static uint32_t *get_table(uint32_t va, bool create)
 {
     uint32_t pde = g_pd[PD_INDEX(va)];
@@ -54,7 +58,11 @@ static uint32_t *get_table(uint32_t va, bool create)
     }
     /* PDE permissive (P | W) : les droits effectifs sont l'INTERSECTION des
      * droits du PDE et du PTE (SDM vol. 3A §4.6) ; c'est le PTE qui décide. */
-    g_pd[PD_INDEX(va)] = pt | PTE_PRESENT | PTE_WRITE;
+    /* K0.7-P4e-1 : écriture par le passage contrôlé. Un refus ici signifie
+     * une incohérence interne (le cadre vient d'être alloué PAGETABLE) :
+     * arrêt explicite plutôt qu'une table allouée mais non reliée. */
+    samos_err_t e = pt_gate_write(PT_KIND_PDE, va, pt | PTE_PRESENT | PTE_WRITE);
+    KASSERT(e == SAMOS_OK);
     g_tables++;
     return (uint32_t *)(uintptr_t)pt;
 }
@@ -99,6 +107,158 @@ static bool va_must_stay_unmapped(uint32_t va)
     }
     return in_page_range(page, __stack_top_guard_start, __stack_top_guard_end);
 }
+
+/*
+ * K0.7-P4e-1 — PASSAGE D'ÉCRITURE DES PDE/PTE (seule désactivation de CR0.WP
+ * autorisée en production ; aucune API générale). Conception :
+ * docs/design/K0.7-P4e1-vmm-write-gate.md (P4c pour l'analyse de WP).
+ *
+ * La CIBLE n'est jamais un pointeur fourni par l'appelant : elle est
+ * calculée depuis (kind, va) — PDE : g_pd[va >> 22] ; PTE : entrée va de la
+ * table désignée par cette PDE. Validation COMPLÈTE avant toute écriture :
+ *   - pas de fenêtre en cours (EBUSY), va alignée (EINVAL) ;
+ *   - PDE : répertoire actif (g_pd = CR3 sous pagination), type PAGETABLE ;
+ *     valeur = table PAGETABLE distincte du répertoire, drapeaux EXACTEMENT
+ *     P | W (EPERM) ;
+ *   - PTE : table présente (ENOENT), de type PAGETABLE et distincte du
+ *     répertoire (EPERM) ; drapeaux parmi P, W, A, D seulement (EINVAL :
+ *     jamais U, PWT, PCD, PAT, G, bits logiciels) ; si présente : page non
+ *     interdite (nulle, gardes) ; en identité (va < g_idmap_top) : cadre = va,
+ *     et sous pagination jamais effacée, et jamais W sur .text/.rodata ni
+ *     sur une page scellée (P4d) ; hors identité : cadre ALLOCATED (M2.5b).
+ * Écriture :
+ *   - pagination inactive (paging_init) : écriture directe, CR0 non touché
+ *     (WP n'a d'effet qu'avec PG = 1) ;
+ *   - pagination active : CR0.WP doit être actif (EPERM sinon) ; IRQ
+ *     masquées (irq_save) ; WP = 0 ; UN stockage de 32 bits ; WP rétabli
+ *     AVANT la restauration exacte de IF. Aucun appel dans la fenêtre.
+ * Hypothèses et limites (P4c §1) : cli ne bloque ni NMI, ni #MC, ni les
+ * exceptions synchrones ; une NMI/#MC dans la fenêtre s'exécuterait avec
+ * WP = 0, puis panic. Monoprocesseur. Le passage ne gère PAS les références
+ * PMM (map_page / vmm_unmap les gèrent) ni l'INVLPG (fait par l'appelant).
+ * SAMOS_NOINLINE : les écritures de CR0 restent dans CETTE fonction
+ * (vérifié par check_elf.sh --production).
+ */
+static volatile uint32_t g_pt_gate_active;
+static uint32_t g_pt_gate_windows;        /* fenêtres WP ouvertes (pagination active) */
+static uint32_t g_pt_gate_refusals;
+
+#define PT_GATE_PTE_FLAGS (PTE_PRESENT | PTE_WRITE | PTE_ACCESSED | PTE_DIRTY)
+
+static bool va_read_only_identity(uint32_t page)
+{
+    return in_page_range(page, __text_start, __data_start) ||
+           in_page_range(page, __kro_idt_start, __kro_idt_end) ||
+           in_page_range(page, __kro_handlers_start, __kro_handlers_end) ||
+           in_page_range(page, __kro_vmm_start, __kro_vmm_end);
+}
+
+static samos_err_t pt_gate_check(enum pt_kind kind, uint32_t va, uint32_t value,
+                                 volatile uint32_t **entry)
+{
+    const struct pmm *p = pmm_state();
+    uint32_t pd = (uint32_t)(uintptr_t)g_pd;
+    if (g_pt_gate_active) {
+        return SAMOS_EBUSY;
+    }
+    if ((va & 0xFFFu) != 0 || pd == 0) {
+        return SAMOS_EINVAL;
+    }
+    if (pmm_core_type(p, pd >> PAGE_SHIFT) != FRAME_PAGETABLE ||
+        (paging_enabled() && (cpu_read_cr3() & PTE_FRAME) != pd)) {
+        return SAMOS_EPERM;                     /* répertoire inattendu */
+    }
+    if (value & PTE_USER) {
+        return SAMOS_EPERM;                     /* jamais de page utilisateur */
+    }
+    if (kind == PT_KIND_PDE) {
+        uint32_t t = value & PTE_FRAME;
+        if ((value & 0xFFFu) != (PTE_PRESENT | PTE_WRITE) || t == pd ||
+            (t >> PAGE_SHIFT) >= p->nframes || pmm_core_type(p, t >> PAGE_SHIFT) != FRAME_PAGETABLE) {
+            return SAMOS_EPERM;
+        }
+        *entry = &g_pd[PD_INDEX(va)];
+        return SAMOS_OK;
+    }
+    uint32_t pde = g_pd[PD_INDEX(va)];
+    if (!(pde & PTE_PRESENT)) {
+        return SAMOS_ENOENT;
+    }
+    uint32_t table = pde & PTE_FRAME;
+    if (table == pd || pmm_core_type(p, table >> PAGE_SHIFT) != FRAME_PAGETABLE) {
+        return SAMOS_EPERM;
+    }
+    if ((value & 0xFFFu & ~PT_GATE_PTE_FLAGS) != 0) {
+        return SAMOS_EINVAL;
+    }
+    bool identity = va < g_idmap_top;
+    if (value & PTE_PRESENT) {
+        uint32_t frame = value & PTE_FRAME;
+        if (va_must_stay_unmapped(va)) {
+            return SAMOS_EPERM;                 /* page nulle, gardes */
+        }
+        if (identity) {
+            if (frame != va || (paging_enabled() && (value & PTE_WRITE) && va_read_only_identity(va))) {
+                return SAMOS_EPERM;             /* identité exacte ; jamais W sur une page RO */
+            }
+        } else if ((frame >> PAGE_SHIFT) >= p->nframes ||
+                   pmm_core_type(p, frame >> PAGE_SHIFT) != FRAME_ALLOCATED) {
+            return SAMOS_EPERM;                 /* M2.5b : seul ALLOCATED est projetable */
+        }
+    } else if (identity && paging_enabled()) {
+        return SAMOS_EPERM;                     /* identité permanente : jamais effacée */
+    }
+    *entry = &((volatile uint32_t *)(uintptr_t)table)[PT_INDEX(va)];
+    return SAMOS_OK;
+}
+
+static SAMOS_NOINLINE samos_err_t pt_gate_write(enum pt_kind kind, uint32_t va, uint32_t value)
+{
+    volatile uint32_t *entry = 0;
+    samos_err_t e = pt_gate_check(kind, va, value, &entry);
+    if (e != SAMOS_OK) {
+        g_pt_gate_refusals++;
+        return e;
+    }
+    if (!paging_enabled()) {
+        *entry = value;                         /* démarrage : WP sans effet (PG = 0) */
+        return SAMOS_OK;
+    }
+    uint32_t cr0 = cpu_read_cr0();
+    if (!(cr0 & CR0_WP)) {
+        g_pt_gate_refusals++;
+        return SAMOS_EPERM;                     /* protection déjà absente : état anormal */
+    }
+    uint32_t flags = irq_save();
+    g_pt_gate_active = 1;
+    cpu_write_cr0(cr0 & ~CR0_WP);
+    *entry = value;                             /* UNE écriture de 32 bits */
+    cpu_write_cr0(cr0);                         /* WP rétabli AVANT IF */
+    g_pt_gate_active = 0;
+    irq_restore(flags);
+    g_pt_gate_windows++;
+    return SAMOS_OK;
+}
+
+void paging_gate_stats(uint32_t *windows, uint32_t *refusals)
+{
+    *windows = g_pt_gate_windows;
+    *refusals = g_pt_gate_refusals;
+}
+
+#if CONFIG_KTEST
+/* Image de TEST uniquement : accès direct au passage pour les tests de refus,
+ * et simulation d'une fenêtre en cours (imbrication). */
+samos_err_t paging_gate_test_write(int kind, uint32_t va, uint32_t value)
+{
+    return pt_gate_write(kind == 0 ? PT_KIND_PDE : PT_KIND_PTE, va, value);
+}
+
+void paging_gate_test_set_active(bool active)
+{
+    g_pt_gate_active = active ? 1u : 0u;
+}
+#endif
 
 /*
  * K0.7-M2.4c — Chemin unique de création d'une projection.
@@ -159,7 +319,19 @@ static samos_err_t map_page(uint32_t va, uint32_t pa, uint32_t flags, bool count
             return e;                          /* aucune PTE écrite, aucune référence prise */
         }
     }
-    pt[PT_INDEX(va)] = pa | flags | PTE_PRESENT;
+    /* K0.7-P4e-1 : écriture par le passage contrôlé, qui revalide la cible
+     * et la valeur. Refus après pmm_ref : la référence est rendue, aucune PTE
+     * n'a été écrite (seule la table éventuellement créée subsiste, comme
+     * pour ERANGE, documenté depuis M2.4c). */
+    samos_err_t ge = pt_gate_write(PT_KIND_PTE, va, pa | flags | PTE_PRESENT);
+    if (ge != SAMOS_OK) {
+        if (counted && t == FRAME_ALLOCATED) {
+            samos_err_t ue = pmm_unref(pa);
+            KASSERT(ue == SAMOS_OK);
+        }
+        return ge;
+    }
+    (void)pt;
     if (paging_enabled()) {
         cpu_invlpg((const void *)(uintptr_t)va);   /* pas d'entrée périmée « non présente » dans le TLB */
     }
@@ -204,10 +376,15 @@ samos_err_t vmm_unmap(uint32_t va, uint32_t *pa)
     if (counted && pmm_refs(frame) == 0) {
         return SAMOS_EINVAL;                   /* incohérence : on ne touche à rien */
     }
+    /* K0.7-P4e-1 : effacement par le passage contrôlé ; un refus laisse la
+     * projection et la référence intactes. */
+    samos_err_t ge = pt_gate_write(PT_KIND_PTE, va, 0);
+    if (ge != SAMOS_OK) {
+        return ge;
+    }
     if (pa != 0) {
         *pa = frame;
     }
-    pt[PT_INDEX(va)] = 0;
     /* Indispensable : sans INVLPG, le TLB peut conserver l'ancienne
      * traduction et l'accès continuerait de réussir (vérifié par autotest). */
     cpu_invlpg((const void *)(uintptr_t)va);
@@ -383,7 +560,18 @@ samos_err_t paging_seal_identity(uint32_t start, uint32_t end)
     }
     for (uint32_t va = start; va < end; va += PAGE_SIZE) {
         uint32_t *pt = get_table(va, false);
-        pt[PT_INDEX(va)] &= ~PTE_WRITE;
+        /* K0.7-P4e-1 : par le passage contrôlé. Préconditions déjà vérifiées
+         * pour toute la plage : un refus est une incohérence interne (par
+         * exemple CR0.WP trouvé à 0). Il est RENVOYÉ, non transformé en
+         * KASSERT : l'appelant de production (kmain) panique déjà sur tout
+         * échec du scellement (refus fermé, scellement éventuellement
+         * partiel jamais utilisé), et l'image de test le signale comme un
+         * échec au lieu d'une panique. Les pages déjà traitées restent
+         * scellées (l'opération ne fait que retirer W). */
+        samos_err_t ge = pt_gate_write(PT_KIND_PTE, va, pt[PT_INDEX(va)] & ~PTE_WRITE);
+        if (ge != SAMOS_OK) {
+            return ge;
+        }
         cpu_invlpg((const void *)(uintptr_t)va);
     }
     return SAMOS_OK;

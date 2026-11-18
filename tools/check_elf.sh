@@ -195,22 +195,52 @@ done
 # Symboles qui ne doivent exister QUE dans l'image de test : autotests, modes de
 # faute volontaire, sortie QEMU. Leur présence dans l'image de production
 # signifierait qu'un mode destructif y est accessible.
-TEST_ONLY_SYMS="ktest_run_all ktest_fatal_mode qemu_exit ktest_check ktest_s2_prefill ptgate_write_entry ptgate_set_pte"
+TEST_ONLY_SYMS="ktest_run_all ktest_fatal_mode qemu_exit ktest_check ktest_s2_prefill ptgate_write_entry ptgate_set_pte paging_gate_test_write paging_gate_test_set_active"
 syms=$(nm "$ELF" | awk '{print $3}')
 case "$MODE" in
     --production)
         for s in $TEST_ONLY_SYMS; do
             if grep -qx "$s" <<<"$syms"; then bad "production: symbole de test present ($s)"; fi
         done
-        # K0.7-P4c : une seule écriture de CR0, dans paging_init (qui POSE
-        # PG et WP). Le prototype de passage (désactivation de WP) ne doit
-        # exister que dans l'image de test.
-        cr0w=$(objdump -d --no-show-raw-insn "$ELF" | awk '/^[0-9a-f]+ <[^>]+>:$/ { fn = $2 }
-            /mov +%e[a-z]+,%cr0/ { printf "%s ", fn }')
-        if [ "$cr0w" = "<paging_init>: " ]; then
-            pass "production: CR0 ecrit uniquement par paging_init"
+        # K0.7-P4c, P4e-1 : écritures de CR0 autorisées en production, par
+        # LOCALISATION et par FONCTION (pas seulement par nombre) :
+        #   paging_init   : 1 écriture, précédée de « or $0x80010000 » (PG|WP) ;
+        #   pt_gate_write : 2 écritures (fenêtre du passage des PDE/PTE) :
+        #     - la 1re suit immédiatement « and $0xfffeffff,%R » sur le même
+        #       registre (retrait de WP seul) ;
+        #     - entre les deux : EXACTEMENT une instruction, un stockage
+        #       « mov %r,(%r) » (l'unique écriture de la fenêtre) ;
+        #     - un « cli » précède la 1re ; aucun « sti » entre les deux.
+        # Toute autre écriture de CR0 est un échec.
+        cr0rep=$(objdump -d --no-show-raw-insn "$ELF" | awk '
+            /^[0-9a-f]+ <[^>]+>:$/ { fn = $2; gsub(/[<>:]/, "", fn); n = 0; next }
+            { sub(/^ *[0-9a-f]+:\t/, ""); ins[fn, ++n] = $0; cnt[fn] = n }
+            /mov +%e[a-z]+,%cr0/ { w[fn] = w[fn] " " n; total++ }
+            END {
+                for (f in w) {
+                    k = split(w[f], at, " ")
+                    if (f == "paging_init") {
+                        if (k != 1) { print "paging_init:" k; continue }
+                        ok = 0; for (d = 1; d <= 3; d++) if (ins[f, at[1] - d] ~ /or +\$0x80010000,/) ok = 1
+                        if (!ok) print "paging_init:sans-or-PG-WP"
+                    } else if (f == "pt_gate_write") {
+                        if (k != 2) { print "pt_gate_write:" k; continue }
+                        a = at[1]; b = at[2]
+                        split(ins[f, a], wa, ","); reg = wa[1]; sub(/^mov +/, "", reg)
+                        if (ins[f, a - 1] !~ ("and +\\$0xfffeffff," reg "$")) print "pt_gate_write:sans-and-WP"
+                        if (b != a + 2 || ins[f, a + 1] !~ /^mov +%e[a-z]+,\(%e[a-z]+\)$/) print "pt_gate_write:fenetre-non-unitaire"
+                        cli = 0; for (x = 1; x < a; x++) if (ins[f, x] ~ /^cli/) cli = 1
+                        if (!cli) print "pt_gate_write:sans-cli"
+                        for (x = a; x <= b; x++) if (ins[f, x] ~ /^sti/) print "pt_gate_write:sti-dans-fenetre"
+                    } else {
+                        print f ":" k
+                    }
+                }
+            }')
+        if [ -z "$cr0rep" ]; then
+            pass "production: CR0 ecrit seulement par paging_init (PG|WP) et la fenetre unitaire de pt_gate_write"
         else
-            bad "production: ecritures de CR0 inattendues : ${cr0w:-aucune}"
+            bad "production: ecritures de CR0 non conformes : $(echo $cr0rep)"
         fi
         # Aucune instruction écrivant sur les ports QEMU 0xE9 / 0xF4.
         if objdump -d --no-show-raw-insn "$ELF" | grep -qE 'out +%(al|ax|eax),\$0x(e9|f4)'; then

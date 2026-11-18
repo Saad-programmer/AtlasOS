@@ -21,13 +21,17 @@ mutant e5_free_referenced kernel/mm/pmm_core.c \
 
 # M2 — E3 : vmm_map accepte de nouveau tout cadre non libre (code, constantes,
 # tables de pages, structures du noyau), comme avant M2.5b.
+# Depuis K0.7-P4e-1, le passage pt_gate_write revalide le type (cadre ALLOCATED
+# hors identité) : la projection reste REFUSÉE (défense en profondeur), donc
+# e3_target_refused passe. Le défaut reste observable : le contrôle de vmm_map
+# n'a plus lieu AVANT get_table, et des tables sont créées pour des refus.
+# Les assertions « aucun effet de bord » des deux scénarios E3 le nomment.
 mutant e3_type_check kernel/arch/i386/paging.c \
     'if (counted && t != FRAME_ALLOCATED) {' \
     'if (counted && t == FRAME_FREE) {' \
     35 \
-    'e3_target_refused(kpage, "kmain")' \
-    'e3_target_refused(paging_directory(), "CR3")' \
-    'e3_target_refused(pt_kmain, "table active")'
+    'paging_table_count() == tables0' \
+    'p->free_count == free0 && total_refs() == refs0 && p->busy_frees == busy0'
 
 # M3 — M2.5c : vmm_map ne filtre plus les droits (PTE_USER, PTE_PRESENT,
 # bits de cache...). Détecté par des tentatives sur un cadre ALLOCATED : les
@@ -165,11 +169,14 @@ mutant ptgate_type_check_removed kernel/tests/test_ptgate.c \
     'ptgate_write_entry(0xB8000u, 0, 0) == SAMOS_EPERM'
 
 # M17 — K0.7-P4c : WP n'est plus rétabli à la fermeture de la fenêtre.
+# Depuis K0.7-P4e-1, l'invariant global de ktest_check (CR0.WP = 1 hors
+# fenêtre) le nomme à l'assertion suivante, puis rétablit WP (image de test
+# seulement) : state_intact ne le voit donc plus, l'invariant le signale.
 mutant ptgate_wp_not_restored kernel/tests/test_ptgate.c \
     'cpu_write_cr0(cr0);                         /* WP rétabli AVANT les IRQ */' \
     '(void)cr0;' \
     35 \
-    'state_intact(ifl)'
+    'CR0.WP actif hors fenetre (invariant global)'
 
 # M18 — K0.7-P4c : l'imbrication n'est plus refusée.
 mutant ptgate_nesting_allowed kernel/tests/test_ptgate.c \
@@ -199,3 +206,34 @@ mutant seal_vmm_removed kernel/arch/i386/paging.c \
     35 \
     'vmm_ro' \
     'write_refused(__kro_vmm_start)'
+
+# M22-M25 — K0.7-P4e-1 : garanties du passage d'écriture des PDE/PTE. Les
+# tests de refus restaurent l'entrée si l'écriture est acceptée à tort.
+mutant gate_user_bit_allowed kernel/arch/i386/paging.c \
+    '    if (value & PTE_USER) {' \
+    '    if (0) {' \
+    35 \
+    'refused(K_PTE, kpage, kpte | PTE_USER, SAMOS_EPERM)'
+mutant gate_ro_identity_writable kernel/arch/i386/paging.c \
+    'if (frame != va || (paging_enabled() && (value & PTE_WRITE) && va_read_only_identity(va))) {' \
+    'if (frame != va || (false && va_read_only_identity(va))) {' \
+    35 \
+    'refused(K_PTE, kpage, kpte | PTE_WRITE, SAMOS_EPERM)'
+mutant gate_nesting_allowed kernel/arch/i386/paging.c \
+    '    if (g_pt_gate_active) {' \
+    '    if (0) {' \
+    35 \
+    'en == SAMOS_EBUSY && entry_of(K_PTE, kpage) == kpte'
+mutant gate_wp_not_restored kernel/arch/i386/paging.c \
+    'cpu_write_cr0(cr0);                         /* WP rétabli AVANT IF */' \
+    '(void)cr0;' \
+    35 \
+    'CR0.WP actif hors fenetre (invariant global)'
+
+# M26 — K0.7-P4e-1 : deux écritures dans la fenêtre WP au lieu d'une. Détecté
+# par la forme du code machine (check_elf.sh --production).
+mutant_tool gate_window_not_unitary kernel/arch/i386/paging.c \
+    '*entry = value;                             /* UNE écriture de 32 bits */' \
+    '*entry = value; *entry = value;' \
+    'tools/check_elf.sh build/samos.elf --production' \
+    'pt_gate_write:fenetre-non-unitaire'

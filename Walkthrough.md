@@ -1656,3 +1656,54 @@ tests/tools/repro_selftest.sh
 | faible RAM | inchangée |
 
 - **Risque principal restant :** les tables de pages, inscriptibles, permettent de remettre W sur une page scellée (P4e).
+
+### K0.7-P4e-1 — Passage d'écriture des PDE/PTE intégré au VMM (tables encore inscriptibles)
+
+- **Document :** `docs/design/K0.7-P4e1-vmm-write-gate.md`. Il contient l'audit des chemins, les chemins migrés et non migrés, les invariants, les risques de la fenêtre WP et les préconditions de P4e-2.
+- **Décision du développeur :** fenêtre CR0.WP de P4c autorisée en production, **uniquement** dans un passage dédié aux PDE/PTE. Aucune API générale de désactivation de WP ; tables **non** scellées (P4e-2 non autorisé).
+- **Mécanisme** (`paging.c`) :
+  - `pt_gate_write(kind, va, value)`, `SAMOS_NOINLINE`. L'entrée est calculée à partir de `(kind, va)` et du répertoire actif, jamais passée en adresse.
+  - Validation complète avant ouverture : réentrance `EBUSY` ; alignement ; répertoire `PAGETABLE` et égal à CR3 ; jamais U ; PDE exactement P | W vers une table `PAGETABLE` distincte du répertoire ; PTE avec drapeaux parmi P, W, A, D ; page nulle et gardes interdites ; identité exacte, jamais effacée, jamais W sur `.text`, `.rodata` ou une page P4d ; hors identité, cadre `ALLOCATED`.
+  - Fenêtre : `irq_save`, WP = 0, **un** stockage 32 bits, WP rétabli **avant** `irq_restore`. Aucun appel dans la fenêtre. Refus si WP est déjà absent à l'entrée.
+  - Avec PG = 0 (`paging_init`) : écriture directe, sans toucher à CR0.
+- **Chemins migrés :**
+  - `get_table` : PDE, `KASSERT` sur refus ;
+  - `map_page` : identité au démarrage et `vmm_map` ; référence PMM rendue sur refus ;
+  - `vmm_unmap` : refus avant `*pa`, `INVLPG` et `pmm_unref` ;
+  - seconde passe de `paging_seal_identity` : erreur renvoyée au lieu d'un `KASSERT`, `kmain` panique toujours.
+- **Chemins non migrés :**
+  - remise à zéro d'une nouvelle table avant sa liaison (`pmm_alloc_pagetable`) ;
+  - prototype P4c (test seulement) ;
+  - écritures A/D du MMU.
+- **Outils :**
+  - `check_elf.sh --production` : CR0 écrit **seulement** par `paging_init` (1 écriture, après `or $0x80010000`) et par `pt_gate_write` (2 écritures : `and $0xfffeffff` sur le même registre, une seule instruction `mov %eX,(%eY)` entre les deux, `cli` avant, pas de `sti` entre). Toute autre fonction est un échec.
+  - `paging_gate_test_write` et `paging_gate_test_set_active` ajoutés à `TEST_ONLY_SYMS`.
+- **Tests :**
+  - nouvelle suite « K0.7 P4e-1 VMM write gate » (`kernel/tests/test_vmmgate.c`, 39 vérifications) : nombre de fenêtres par chemin, nouvelle table, A/D, 14 refus nommés, réentrance, IF conservé, pages P4d et `.text` intactes ;
+  - invariant global dans `ktest_check` : CR0.WP = 1 hors fenêtre, vérifié à chaque assertion, rétabli après signalement (image de test seulement) ;
+  - le scellement de l'image de test est une assertion (`seal_err == SAMOS_OK`), plus une sortie immédiate.
+- **Défauts de test corrigés pendant le jalon :**
+  - **M1 (E5) :** faute de page dans la nouvelle suite (écriture sur une projection échouée). Accès désormais conditionnés.
+  - **M17 et M25 :** WP laissé à 0, puis `KASSERT` du passage refusé, ce qui donnait une panique (statut 37). C'est maintenant l'invariant global nommé.
+  - **M2 (E3) :** masqué fonctionnellement par la revalidation du passage (défense en profondeur). Il est recalé sur les assertions « aucun effet de bord », qui observent les tables créées à tort.
+  - **M23 :** sa première version rendait `va_read_only_identity` inutilisée, donc la compilation échouait (INVALIDE). Le remplacement conserve l'appel.
+  - **`selftest.sh`, situation `panic` :** texte cible devenu ambigu (deux `KASSERT(e == SAMOS_OK);`). La cible est maintenant le `KASSERT` unique de `vmm_unmap`.
+- **Mutations nouvelles :** M22 `gate_user_bit_allowed`, M23 `gate_ro_identity_writable`, M24 `gate_nesting_allowed`, M25 `gate_wp_not_restored`, M26 `gate_window_not_unitary` (`mutant_tool`).
+- **Validation :**
+
+| Commande | Résultat |
+|---|---|
+| `make clean && make test` | 142 `[PASS]`, 0 `[FAIL]`, 45 cas QEMU sur 45 |
+| autotests | 16 suites, 692 vérifications, 0 échec |
+| `make test-mutation` | 26 mutations sur 26 |
+| `tests/mutation/selftest.sh` | 12 situations conformes |
+| `make test-repro` | réussi |
+| `make -j8` depuis zéro | réussi |
+| 1 728 KiB / 1 792 KiB | `ENOMEM` (panique d'initialisation) / démarrage scellé |
+| `info registers`, `info tlb`, `info mem` (deux images) | CR0 = `0x80010011` ; `.text`/`.rodata` et pages P4d `r-` ; trois gardes absentes ; répertoire et tables toujours `W` |
+
+- **Risques restants :**
+  - NMI et #MC pendant la fenêtre (exécutés avec WP = 0) ;
+  - validation dépendante de l'intégrité du PMM ;
+  - tables de pages encore inscriptibles (P4e-2) ;
+  - code ring 0 arbitraire (P5).

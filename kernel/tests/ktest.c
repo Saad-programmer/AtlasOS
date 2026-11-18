@@ -10,6 +10,7 @@
  *   test=kbd      ligne tapée au clavier (frappes injectées par QEMU, K0.5)
  */
 #include <samos/bootinfo.h>
+#include <arch/cpu.h>
 #include <arch/paging.h>
 #include <samos/ktest.h>
 #include <samos/log.h>
@@ -45,9 +46,37 @@ void ktest_suite(const char *name)
     kprintf("[TEST] suite %s\n", name);
 }
 
+/*
+ * K0.7-P4e-1 — Invariant global vérifié à CHAQUE assertion : hors de la
+ * fenêtre du passage (paging.c : pt_gate_write), la pagination active
+ * implique CR0.WP = 1. Aucune assertion n'est évaluée dans une fenêtre (aucun
+ * appel n'y a lieu). Un défaut qui laisserait WP à 0 est donc signalé par une
+ * assertion NOMMÉE, à la première vérification qui suit.
+ *
+ * Réparation (image de TEST seulement) : WP est rétabli après le signalement.
+ * Sans elle, le passage de production refuserait ensuite toute écriture
+ * (« WP déjà absent », refus fermé correct) et les KASSERT de get_table ou du
+ * scellement arrêteraient le noyau par une panique : le défaut serait alors
+ * observé comme une panique (statut 37) et non comme une assertion nommée.
+ * Cette écriture de CR0 n'existe pas dans l'image de production
+ * (check_elf.sh --production n'y admet que paging_init et pt_gate_write).
+ */
+static void wp_invariant(const char *expr, const char *file, int line)
+{
+    uint32_t cr0 = cpu_read_cr0();
+    if ((cr0 & CR0_PG) && !(cr0 & CR0_WP)) {
+        g_checks++;
+        g_failures++;
+        kprintf("[FAIL] CR0.WP actif hors fenetre (invariant global) at %s:%d (constate avant '%s')\n",
+                file, line, expr);
+        cpu_write_cr0(cr0 | CR0_WP);
+    }
+}
+
 void ktest_check(bool cond, const char *expr, const char *file, int line)
 {
     g_checks++;
+    wp_invariant(expr, file, line);
     if (cond) {
         kprintf("[PASS] %s\n", expr);
         return;
@@ -138,9 +167,18 @@ void ktest_run_all(void)
     ktest_suite_ptgate();
 
     /* K0.7-P4d — Dernière écriture légitime des tables scellées passée :
-     * scellement de production, puis vérification de l'état scellé. */
-    seal_or_fail();
+     * scellement de production, puis vérification de l'état scellé.
+     * K0.7-P4e-1 : un échec du scellement est une ASSERTION (et non une sortie
+     * immédiate) : les suites suivantes s'exécutent et nomment le défaut
+     * (par exemple CR0.WP laissé à 0, qui fait refuser le passage). Les modes
+     * destructifs gardent seal_or_fail : ils n'ont de sens que scellés. */
+    samos_err_t seal_err = paging_seal_critical();
+    KTEST_CHECK(seal_err == SAMOS_OK);
+    if (seal_err == SAMOS_OK) {
+        kprintf("[TEST] critical structures sealed\n");
+    }
     ktest_suite_sealed();
+    ktest_suite_vmm_gate();
 
     suite_close();
     kprintf("[TEST] suites=%u checks=%u failures=%u\n", g_suites, g_checks, g_failures);

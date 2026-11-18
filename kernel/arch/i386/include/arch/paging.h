@@ -60,6 +60,15 @@ samos_err_t paging_seal_identity(uint32_t start, uint32_t end);
 /* Scelle kro_idt, kro_handlers et kro_vmm (après la dernière écriture). */
 samos_err_t paging_seal_critical(void);
 
+/* K0.7-P4e-1 — Compteurs du passage d'écriture des PDE/PTE (fenêtres WP
+ * ouvertes sous pagination ; refus). */
+void paging_gate_stats(uint32_t *windows, uint32_t *refusals);
+#if CONFIG_KTEST
+/* Image de test : kind 0 = PDE, 1 = PTE. */
+samos_err_t paging_gate_test_write(int kind, uint32_t va, uint32_t value);
+void paging_gate_test_set_active(bool active);
+#endif
+
 /* Sondes (probe.asm) : 0 = accès réussi, -1 = faute de page interceptée. */
 int mem_probe_read(const volatile void *addr, uint32_t *out);
 int mem_probe_write(volatile void *addr, uint32_t value);

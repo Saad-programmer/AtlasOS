@@ -68,7 +68,7 @@ mutant syntax kernel/mm/pmm_core.c 'if (frame_desc_refs(p->meta[frame]) != 0) {'
 EOF
 expect no_build 1 "compilation en échec"
 cat > "$T/panic.sh" <<'EOF'
-mutant panic kernel/arch/i386/paging.c 'KASSERT(e == SAMOS_OK);' 'KASSERT(e != SAMOS_OK);' 35 'x'
+mutant panic kernel/arch/i386/paging.c 'KASSERT(e == SAMOS_OK);                /* garanti par la vérification préalable */' 'KASSERT(e != SAMOS_OK);' 35 'x'
 EOF
 expect panic 1 "statut QEMU 37"
 cat > "$T/wrong_assert.sh" <<'EOF'
