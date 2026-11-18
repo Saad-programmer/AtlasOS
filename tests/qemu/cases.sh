@@ -161,14 +161,14 @@ run_case stack_overflow "test=stack" 37 \
 # identifiable, statut 37, ni triple fault ni panique récursive. L'adresse
 # n'est pas codée en dur : cr2_matches compare le CR2 affiché à l'adresse
 # calculée depuis la table des symboles de l'image (nm).
-cr2_matches() {   # cr2_matches CAS DÉCALAGE
+cr2_matches() {   # cr2_matches CAS SYMBOLE DÉCALAGE
     local slog="$OUT/$1.serial.log" base want got
     total=$((total + 1))
-    base=$(nm "$TEST_KERNEL" | awk '$3 == "__stack_top_guard_start" { print $1 }')
-    want=$(printf '0x%08x' $(( 0x${base:-0} + $2 )))
+    base=$(nm "$TEST_KERNEL" | awk -v s="$2" '$3 == s { print $1 }')
+    want=$(printf '0x%08x' $(( 0x${base:-0} + $3 )))
     got=$(tr -d '\r' < "$slog" 2>/dev/null | sed -n 's/.*page fault: .*address CR2=\(0x[0-9a-f]*\).*/\1/p' | head -1)
     if [ -n "$base" ] && [ "$got" = "$want" ]; then
-        echo "[PASS] $1_cr2 (CR2=$got = __stack_top_guard_start + $2)"
+        echo "[PASS] $1_cr2 (CR2=$got = $2 + $3)"
         passed=$((passed + 1))
     else
         echo "[FAIL] $1_cr2 (CR2=${got:-absent}, attendu $want)"
@@ -184,14 +184,34 @@ run_case topguard "test=topguard" 37 \
     "!top guard write NOT trapped" \
     "!RECURSIVE PANIC" \
     "!DOUBLE FAULT"
-cr2_matches topguard 0
+cr2_matches topguard __stack_top_guard_start 0
 run_case topguard_end "test=topguard_end" 37 \
     "serial:*** CPU exception 14: Page Fault (#PF), error code 0x00000002" \
     "serial:access above the boot stack top (S1 top guard page)" \
     "!top guard write NOT trapped" \
     "!RECURSIVE PANIC" \
     "!DOUBLE FAULT"
-cr2_matches topguard_end 4092
+cr2_matches topguard_end __stack_top_guard_start 4092
+
+# K0.7-R1f-3 — Garde basse de S2 : même méthode, écriture directe DEPUIS S1
+# (la #PF est livrée sur S1). Aucun débordement réel de S2 : il finirait en
+# triple fault (R1e §5.2), ce que ces cas ne mesurent pas.
+run_case dfguard "test=dfguard" 37 \
+    "serial:[TEST] writing to the S2 guard at 0x" \
+    "serial:*** CPU exception 14: Page Fault (#PF), error code 0x00000002" \
+    "serial:page not present, write access, supervisor mode" \
+    "serial:access to the double-fault stack guard page (below S2)" \
+    "!S2 guard write NOT trapped" \
+    "!RECURSIVE PANIC" \
+    "!DOUBLE FAULT"
+cr2_matches dfguard __df_guard_start 0
+run_case dfguard_end "test=dfguard_end" 37 \
+    "serial:*** CPU exception 14: Page Fault (#PF), error code 0x00000002" \
+    "serial:access to the double-fault stack guard page (below S2)" \
+    "!S2 guard write NOT trapped" \
+    "!RECURSIVE PANIC" \
+    "!DOUBLE FAULT"
+cr2_matches dfguard_end __df_guard_start 4092
 
 # K0.7-R1d — Sentinelles de S2 : un mot sentinelle (le mot 2) est altéré, puis
 # une vraie #DF est provoquée. La tâche #DF doit le signaler (masque 0x4) et

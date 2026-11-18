@@ -34,6 +34,8 @@ void ktest_suite_df_sentinel(void); /* K0.7-R1d */
 void ktest_suite_stack_layout(void); /* K0.7-R1f-1 */
 void ktest_suite_top_guard(void);   /* K0.7-R1f-2 */
 void ktest_top_guard_write(bool last_word); /* K0.7-R1f-2, test=topguard[_end] */
+void ktest_suite_df_guard(void);    /* K0.7-R1f-3 */
+void ktest_df_guard_write(bool last_word);  /* K0.7-R1f-3, test=dfguard[_end] */
 
 /* Déclenche volontairement une faute fatale (modes test=ud, de, gp, np,
  * intbad, df, triple ; K0.6 : null, wtext, wrodata, unmapped, stack). Retourne false si le mode est inconnu. */

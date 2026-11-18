@@ -99,6 +99,10 @@ bool ktest_fatal_mode(const char *mode)
         ktest_top_guard_write(false);          /* K0.7-R1f-2 : doit finir en panic */
     } else if (strcmp(mode, "topguard_end") == 0) {
         ktest_top_guard_write(true);
+    } else if (strcmp(mode, "dfguard") == 0) {
+        ktest_df_guard_write(false);           /* K0.7-R1f-3 : doit finir en panic */
+    } else if (strcmp(mode, "dfguard_end") == 0) {
+        ktest_df_guard_write(true);
     } else if (strcmp(mode, "dfsentinel") == 0) {
         /* K0.7-R1d : altère UN mot sentinelle de S2 (le mot 2, bas de pile,
          * jamais utilisé : 848 octets au plus sont consommés par la tâche #DF,

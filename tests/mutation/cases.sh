@@ -102,3 +102,13 @@ mutant top_guard_mapped kernel/arch/i386/paging.c \
     'raw_pte(tg) == 0' \
     'cr2 == tg && err == 2u' \
     'vmm_map(tg, f, PTE_WRITE) == SAMOS_EPERM'
+
+# M11 — K0.7-R1f-3 : la garde basse de S2 est de nouveau projetée (clause
+# retirée de va_must_stay_unmapped : paging_init ET vmm_map).
+mutant df_guard_mapped kernel/arch/i386/paging.c \
+    'if (in_page_range(page, __df_guard_start, __df_guard_end)) {' \
+    'if (0) {' \
+    35 \
+    'raw_pte(dg) == 0' \
+    'cr2 == dg && err == 2u' \
+    'vmm_map(dg, f, PTE_WRITE) == SAMOS_EPERM && vmm_map(dg, f, 0) == SAMOS_EPERM'

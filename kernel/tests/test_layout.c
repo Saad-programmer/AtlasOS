@@ -30,7 +30,7 @@ static void test_regions(void)
     KTEST_CHECK((r[2].perms & LAYOUT_W) && !(r[2].perms & LAYOUT_X));    /* données RW- */
     KTEST_CHECK(r[5].perms == LAYOUT_GUARD);                             /* garde basse S1 */
     KTEST_CHECK(r[5].end - r[5].start == 4096);
-    KTEST_CHECK((r[3].perms & LAYOUT_RESERVED) && r[3].end - r[3].start == 4096);   /* garde S2 */
+    KTEST_CHECK(r[3].perms == LAYOUT_GUARD && r[3].end - r[3].start == 4096);       /* garde S2 (R1f-3) */
     KTEST_CHECK(r[7].perms == LAYOUT_GUARD && r[7].end - r[7].start == 4096);       /* garde haute (R1f-2) */
     KTEST_CHECK(r[4].end - r[4].start == 4096 && r[6].end - r[6].start == 16384);
     /* Aucune région ne doit être à la fois W et X. */

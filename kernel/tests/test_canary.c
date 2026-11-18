@@ -196,10 +196,9 @@ void ktest_suite_stack_layout(void)
     KTEST_CHECK(esp > (uint32_t)s1 && esp < (uint32_t)tg);         /* on s'exécute sur S1 */
     KTEST_CHECK(df_stack_sentinel_damage() == 0);
 
-    /* Droits effectifs : garde S2 réservée, encore projetée (R1f-3) ; gardes
-     * basse et haute (R1f-2) de S1 non présentes. */
-    uint32_t pa = 0, fl = 0;
-    KTEST_CHECK(vmm_translate(dg, &pa, &fl) && pa == dg && (fl & PTE_WRITE));
+    /* Droits effectifs : les trois gardes non présentes (garde basse de S1
+     * depuis K0.6, garde haute R1f-2, garde de S2 R1f-3). */
+    KTEST_CHECK(!vmm_translate(dg, 0, 0));
     KTEST_CHECK(!vmm_translate(tg, 0, 0));
     KTEST_CHECK(!vmm_translate(g1, 0, 0));
     KTEST_CHECK(vmm_translate(s2, 0, 0) && vmm_translate(s1, 0, 0));
@@ -293,9 +292,9 @@ void ktest_suite_top_guard(void)
     KTEST_CHECK(vmm_unmap(tg, 0) == SAMOS_EPERM);                   /* identité : jamais retirée */
     KTEST_CHECK(pmm_free_frame(f) == SAMOS_OK);
 
-    /* 7-8. Garde basse de S1 toujours absente ; garde S2 encore présente. */
+    /* 7-8. Garde basse de S1 toujours absente ; garde S2 absente (R1f-3). */
     KTEST_CHECK(raw_pte((uint32_t)(uintptr_t)__stack_guard_start) == 0);
-    KTEST_CHECK(raw_pte((uint32_t)(uintptr_t)__df_guard_start) != 0);
+    KTEST_CHECK(raw_pte((uint32_t)(uintptr_t)__df_guard_start) == 0);
     KTEST_CHECK(pmm_core_check(p) == 0);
 }
 
@@ -308,4 +307,92 @@ void ktest_top_guard_write(bool last_word)
     kprintf("[TEST] writing to the S1 top guard at %p\n", (void *)(uintptr_t)target);
     *(volatile uint32_t *)(uintptr_t)target = 0x70F6A7D0u;
     kprintf("[TEST] top guard write NOT trapped\n");
+}
+
+/*
+ * K0.7-R1f-3 — Garde basse de S2 : [__df_guard_start, +4 KiB), juste sous la
+ * pile de la tâche #DF. Toutes les sondes sont faites DEPUIS S1 (la #PF est
+ * livrée sur S1, valide) : jamais de débordement réel de S2 ici, car il finirait
+ * en triple fault (R1e §5.2). Scénario destructif : test=dfguard / dfguard_end.
+ */
+void ktest_suite_df_guard(void)
+{
+    ktest_suite("K0.7 S2 guard");
+    uint32_t dg = (uint32_t)(uintptr_t)__df_guard_start;
+    uint32_t s2 = (uint32_t)(uintptr_t)__df_stack_start;
+    uint32_t below = dg - 4096u;                        /* dernière page de .bss */
+    const struct pmm *p = pmm_state();
+
+    /* Non présente : PTE nulle, aucune traduction (premier et dernier mot). */
+    KTEST_CHECK(s2 == dg + 4096u && (dg & 0xFFFu) == 0);
+    KTEST_CHECK(raw_pte(dg) == 0);
+    KTEST_CHECK(!vmm_translate(dg, 0, 0) && !vmm_translate(dg + 4092u, 0, 0));
+
+    /* S2 entièrement projetée en écriture ; page voisine du dessous aussi. */
+    uint32_t pa = 0, fl = 0;
+    KTEST_CHECK(vmm_translate(s2, &pa, &fl) && pa == s2 && (fl & PTE_WRITE));
+    KTEST_CHECK(vmm_translate(s2 + 4092u, &pa, &fl) && (fl & PTE_WRITE));
+    KTEST_CHECK(vmm_translate(below, &pa, &fl) && pa == below && (fl & PTE_WRITE));
+    uint32_t pte_s2 = raw_pte(s2), pte_below = raw_pte(below);
+
+    /* Sondes depuis S1 : premier et dernier mot ; code 2 = non présente,
+     * écriture ; code 0 = non présente, lecture. */
+    uint32_t cr2 = 0, err = 0, v = 0;
+    KTEST_CHECK(mem_probe_write((void *)(uintptr_t)dg, 0x5A5A5A5Au) == -1);
+    mem_probe_last_fault(&cr2, &err);
+    KTEST_CHECK(cr2 == dg && err == 2u);
+    KTEST_CHECK(mem_probe_write((void *)(uintptr_t)(dg + 4092u), 0x5A5A5A5Au) == -1);
+    mem_probe_last_fault(&cr2, &err);
+    KTEST_CHECK(cr2 == dg + 4092u && err == 2u);
+    KTEST_CHECK(mem_probe_read((const void *)(uintptr_t)(dg + 4092u), &v) == -1);
+    mem_probe_last_fault(&cr2, &err);
+    KTEST_CHECK(cr2 == dg + 4092u && err == 0u);
+
+    /* vmm_map / vmm_unmap refusés (EPERM), sans effet de bord. */
+    uint32_t f = pmm_alloc_frame();
+    uint32_t tables0 = paging_table_count(), free0 = p->free_count;
+    KTEST_CHECK(f != 0);
+    KTEST_CHECK(vmm_map(dg, f, PTE_WRITE) == SAMOS_EPERM && vmm_map(dg, f, 0) == SAMOS_EPERM);
+    KTEST_CHECK(pmm_refs(f) == 0 && raw_pte(dg) == 0);
+    KTEST_CHECK(paging_table_count() == tables0 && p->free_count == free0);
+    KTEST_CHECK(raw_pte(s2) == pte_s2 && raw_pte(below) == pte_below);
+    KTEST_CHECK(vmm_unmap(dg, 0) == SAMOS_EPERM);
+    KTEST_CHECK(pmm_free_frame(f) == SAMOS_OK);
+
+    /* PMM : cadre du noyau, ni distribuable, ni libérable, ni projetable ailleurs. */
+    KTEST_CHECK(pmm_core_type(p, dg >> 12) == FRAME_KERNEL);
+    KTEST_CHECK(pmm_free_frame(dg) == SAMOS_EINVAL);
+    KTEST_CHECK(vmm_map(0xD0071000u, dg, PTE_WRITE) == SAMOS_EPERM);
+
+    /* S2 : TSS au sommet exact, sentinelles intactes, reste de S2 à zéro
+     * (remise à zéro de gdt_init ; S2 inutilisée en fonctionnement normal). */
+    KTEST_CHECK(tss_double_fault()->esp == (uint32_t)(uintptr_t)__df_stack_end);
+    KTEST_CHECK(df_stack_sentinel_damage() == 0);
+    const volatile uint32_t *w = (const volatile uint32_t *)(uintptr_t)s2;
+    bool zero = true;
+    for (uint32_t i = DF_SENTINEL_WORDS; i < 1024u; i++) {
+        zero = zero && w[i] == 0;
+    }
+    KTEST_CHECK(zero);
+
+    /* Structures critiques accessibles (lecture par sonde : aucune faute). */
+    KTEST_CHECK(mem_probe_read((const void *)(uintptr_t)gdt_table(), &v) == 0);
+    KTEST_CHECK(mem_probe_read((const void *)(uintptr_t)tss_double_fault(), &v) == 0);
+    KTEST_CHECK(mem_probe_read((const void *)(uintptr_t)idt_table(), &v) == 0);
+    KTEST_CHECK(mem_probe_read((const void *)(uintptr_t)paging_directory(), &v) == 0);
+
+    /* Les deux gardes de S1 restent absentes. */
+    KTEST_CHECK(raw_pte((uint32_t)(uintptr_t)__stack_guard_start) == 0);
+    KTEST_CHECK(raw_pte((uint32_t)(uintptr_t)__stack_top_guard_start) == 0);
+    KTEST_CHECK(pmm_core_check(p) == 0);
+}
+
+/* Mode destructif test=dfguard (premier mot) / dfguard_end (dernier mot) :
+ * écriture DIRECTE depuis un cadre sur S1 ; #PF livrée sur S1, puis panic. */
+void ktest_df_guard_write(bool last_word)
+{
+    uint32_t target = (uint32_t)(uintptr_t)__df_guard_start + (last_word ? 4092u : 0u);
+    kprintf("[TEST] writing to the S2 guard at %p\n", (void *)(uintptr_t)target);
+    *(volatile uint32_t *)(uintptr_t)target = 0xDF6A7D00u;
+    kprintf("[TEST] S2 guard write NOT trapped\n");
 }

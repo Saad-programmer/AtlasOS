@@ -1464,3 +1464,30 @@ tests/tools/repro_selftest.sh
 | `make test-repro` | 2 images reproductibles |
 | `make -j8` depuis zéro | réussi |
 | cas couverts | canaris, sentinelles, double faute, débordement, exceptions imbriquées, RAM de 16 MiB à 4 GiB |
+
+### K0.7-R1f-3 — Activation de la garde basse de S2
+
+- **Changement :**
+  - `paging.c` : `va_must_stay_unmapped()` couvre `[__df_guard_start, __df_guard_end)`, donc la page est absente de l'identité et refusée par `vmm_map` ;
+  - diagnostic « access to the double-fault stack guard page (below S2) » ;
+  - région `df-guard` en `---G`.
+  - Disposition et gardes de S1 inchangées.
+- **Gardes actives :**
+  - production : `0x18b000` (S2), `0x18d000` et `0x192000` (S1) ;
+  - test : `0x199000`, `0x19b000` et `0x1a0000`. L'image de test a grandi, d'où un décalage d'une page par rapport au relevé de R1f-1 ; les adresses ne sont jamais codées en dur.
+  - Moniteur QEMU : S2 est une page `rw` isolée entre deux gardes ; CR3 `rw`.
+- **Tests :**
+  - suite « K0.7 S2 guard » (32 vérifications : PTE nulle, sondes depuis S1 avec CR2 et code exacts, `vmm_map` et `vmm_unmap` refusés sans effet de bord, cadre du noyau non libérable, TSS au sommet exact de S2, sentinelles intactes, reste de S2 à zéro, structures critiques lisibles, gardes de S1 absentes) ;
+  - cas QEMU `dfguard` et `dfguard_end` (écriture directe depuis S1, #PF code 0x2, panique identifiable, statut 37, sans triple fault) ;
+  - `cr2_matches` généralisé à un symbole quelconque.
+- **Mutation :** `df_guard_mapped` détectée (12 échecs, 3 assertions nommées) ; `top_guard_mapped` est toujours détectée.
+- **Rappel :** un débordement réel de S2 se termine par un triple fault (prototype R1e) ; ce scénario n'est pas dans le banc.
+- **Validation :**
+
+| Commande | Résultat |
+|---|---|
+| `make clean && make test` | code 0, 130 `[PASS]`, 0 `[FAIL]`, 36 cas QEMU sur 36 |
+| autotests | 564 vérifications |
+| `make test-mutation` | 11 mutations sur 11 détectées |
+| `make test-repro` | 2 images reproductibles |
+| `make -j8` depuis zéro | réussi |

@@ -75,8 +75,8 @@ static bool in_page_range(uint32_t page, const char *lo, const char *hi)
  * au-dessus de boot_stack_top. Même règle que la garde basse : jamais
  * projetée par paging_init (boucle d'identité ci-dessous), et toute
  * projection dynamique refusée (EPERM) AVANT la recherche de table, donc
- * indépendamment de l'état actuel de la PTE. La future garde de S2
- * (__df_guard_*) n'est pas encore concernée (R1f-3). */
+ * indépendamment de l'état actuel de la PTE. Depuis R1f-3, la garde basse
+ * de S2 (__df_guard_*) suit la même règle. */
 static bool va_must_stay_unmapped(uint32_t va)
 {
     uint32_t page = va & PTE_FRAME;
@@ -85,6 +85,14 @@ static bool va_must_stay_unmapped(uint32_t va)
     }
     if (in_page_range(page, __stack_guard_start, __stack_guard_end)) {
         return true;                           /* garde basse de S1 (E2) */
+    }
+    /* K0.7-R1f-3 — Garde basse de S2, [__df_guard_start, __df_guard_end) :
+     * page juste sous la pile de la tâche #DF. Un débordement de S2 y fait une
+     * #PF que le CPU ne peut pas livrer (il empilerait sur S2, dans la garde),
+     * puis une #DF vers une tâche déjà occupée : triple fault, mais aucune
+     * écriture sous S2 (mesuré sur le prototype R1e, §5.2). */
+    if (in_page_range(page, __df_guard_start, __df_guard_end)) {
+        return true;
     }
     return in_page_range(page, __stack_top_guard_start, __stack_top_guard_end);
 }
@@ -253,6 +261,9 @@ const char *paging_classify(uint32_t addr, uint32_t err)
     if (in_range(addr, __stack_top_guard_start, __stack_top_guard_end)) {
         return "access above the boot stack top (S1 top guard page)";
     }
+    if (in_range(addr, __df_guard_start, __df_guard_end)) {
+        return "access to the double-fault stack guard page (below S2)";
+    }
     if (protection && write && in_range(addr, __text_start, __rodata_start)) {
         return "write to read-only kernel code (.text)";
     }
@@ -305,8 +316,8 @@ samos_err_t paging_init(uint32_t idmap_top)
     uint32_t ro_start = (uint32_t)(uintptr_t)__text_start;
     uint32_t ro_end = (uint32_t)(uintptr_t)__data_start;      /* .text + .rodata */
     /* Page 0 : jamais projetée (on commence à 4 KiB). Les pages de garde
-     * (va_must_stay_unmapped : garde basse et, depuis R1f-2, garde haute de
-     * S1) restent NON présentes : une seule règle pour l'identité et pour
+     * (va_must_stay_unmapped : garde basse de S1, garde haute de S1 depuis
+     * R1f-2, garde basse de S2 depuis R1f-3) restent NON présentes : une seule règle pour l'identité et pour
      * vmm_map. */
     for (uint32_t va = PAGE_SIZE; va < idmap_top; va += PAGE_SIZE) {
         if (va_must_stay_unmapped(va)) {
