@@ -1548,3 +1548,13 @@ tests/tools/repro_selftest.sh
 | gardes | absentes dans les deux images (`info mem`) |
 
 - **Recommandation :** R1 peut être clôturé ; clôture en attente de l'autorisation du développeur. P4 reste ouvert.
+
+### K0.7-R1 — Clôture du durcissement des piles (autorisée par le développeur)
+
+- **Document :** `docs/review/K0.7-R1-closure.md`. Il contient les objectifs, les étapes R1a à R1h avec leurs commits, les protections mises en œuvre, la matrice des preuves P1 à P15 (invariant, code, test, contre-épreuve, résultat, limites ; propriétés reposant sur la seule analyse signalées), les défauts corrigés et les risques résiduels acceptés.
+- **Validation finale sur arbre propre** (`ddff10d`), sans aucun écart avec R1h :
+  - `make test` : 133 `[PASS]`, 0 `[FAIL]`, 39 cas QEMU sur 39, 571 vérifications ;
+  - 13 mutations sur 13 ; auto-tests des outils 12 et 5 conformes ;
+  - `make test-repro` et `make -j8` réussis ;
+  - 11 fonctions instrumentées en production.
+- **Statut :** R1 clôturé ; K0.7 en cours ; **P4 non résolu** ; K1 non commencé. Aucun code modifié.

@@ -1693,7 +1693,7 @@ Ce mécanisme est aussi le **prototype** de l'accès sûr du noyau à la mémoir
 > **Mise à jour K0.7 (en cours, branche `claude/k0.7-hardening`).** Cette table décrit l'état de K0.6 et est conservée comme historique. Plusieurs limites y sont **dépassées** en K0.7 :
 > - « aucun compteur de références » : les cadres ont désormais des références, et un cadre projeté n'est plus libérable (E5) ;
 > - « `vmm_map` accepte n'importe quelle adresse physique » : seuls les cadres `ALLOCATED` sont acceptés, avec des droits `0` ou `PTE_WRITE` (E3) ;
-> - les piles disposent de canaris, de sentinelles et de trois pages de garde.
+> - les piles disposent de canaris, de sentinelles et de trois pages de garde (sous-jalon **R1 clôturé**, `docs/review/K0.7-R1-closure.md`).
 >
 > Restent vrais : **pas de NX**, identité **entièrement inscriptible, tables de pages comprises (P4)**, GDT, IDT et TSS inscriptibles, PMM monoprocesseur sans verrou. Voir `docs/design/K0.7-*.md` et `docs/review/K0.7-R1g-audit.md`.
 

@@ -46,7 +46,7 @@ Le but n'est pas d'assembler des bibliothèques existantes. Il s'agit de **compr
 | K0.6 | Carte mémoire, allocateur physique, pagination, protections | ✅ implémenté et vérifié |
 | K0.7 | Durcissement : correction des défauts mémoire E1-E5, références des cadres, politique de `vmm_map`, canaris de pile, sentinelles et pages de garde des piles, outils de mutation et de reproductibilité | 🔶 en cours sur la branche `claude/k0.7-hardening` (non fusionnée) |
 
-La phase K0 (K0.1 à K0.6) est terminée ; sa revue se trouve dans [`docs/review/K0-review.md`](docs/review/K0-review.md). **K0.7 (sécurisation) est en cours**, sans nouvelle fonctionnalité. Son état est suivi dans `Walkthrough.md`, `docs/design/` et [`docs/review/K0.7-R1g-audit.md`](docs/review/K0.7-R1g-audit.md). La phase K1 (x86-64, processus, ordonnanceur, appels système) attend l'autorisation du développeur.
+La phase K0 (K0.1 à K0.6) est terminée ; sa revue se trouve dans [`docs/review/K0-review.md`](docs/review/K0-review.md). **K0.7 (sécurisation) est en cours**, sans nouvelle fonctionnalité. Son sous-jalon **R1 (durcissement des piles) est clôturé** : voir [`docs/review/K0.7-R1-closure.md`](docs/review/K0.7-R1-closure.md). Une clôture de jalon ne signifie pas que le noyau est sécurisé ; **P4** (tables de pages et structures critiques inscriptibles par l'identité) reste **non résolu**. Son état est suivi dans `Walkthrough.md`, `docs/design/` et [`docs/review/K0.7-R1g-audit.md`](docs/review/K0.7-R1g-audit.md). La phase K1 (x86-64, processus, ordonnanceur, appels système) attend l'autorisation du développeur.
 
 ## 4. Vue d'ensemble de l'architecture
 
