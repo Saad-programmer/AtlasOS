@@ -1759,3 +1759,41 @@ tests/tools/repro_selftest.sh
   - analyse statique heuristique ;
   - monoprocesseur ;
   - P5.
+
+### K0.7-P4f-B1 — Frontière de confiance du PMM (correction de D1)
+
+- **Document :** `docs/review/K0.7-P4f-B1-pmm-trust-boundary.md`. Il contient la reproduction, la cause racine, les solutions comparées, les preuves, les risques et les critères.
+- **Reproduction** (copie isolée, avant correction) :
+  - **V1 :** une écriture de 16 bits dans `meta[]` retype une table active en ALLOCATED ; `vmm_map` crée un alias W, puis la table est écrite sans CR0 ; `pmm_core_check` ne signale rien.
+  - **V2 (nouvelle) :** un cadre projeté, marqué FREE par falsification, est distribué comme table neuve et publié ; l'ancien alias reste W.
+- **Solution retenue (A) :** les cadres protégés sont déduits **sans le PMM**. Est protégé tout cadre qui est le répertoire actif (`g_pd`, RO), la cible d'un PDE présent (répertoire RO), ou un cadre de l'image du noyau (`[__kernel_start, __kernel_end)`).
+  - **Contrôles appliqués :**
+    - `map_page`, avant toute création de table ;
+    - `pt_gate_check` (PTE hors identité, W sur l'identité) ;
+    - `table_create` (aucun alias hors identité préexistant) ;
+    - `paging_audit` (`foreign_aliases`, `struct_writable`, panique au démarrage).
+  - **B et C écartés :** un registre séparé serait une seconde structure mutable ; sceller `meta` changerait l'architecture du PMM.
+- **Tests :**
+  - mode isolé `test=pmmtrust` (`kernel/tests/test_pmmtrust.c`, 70 vérifications) : 7 cibles (première table, autre table, répertoire, table neuve, `.text`, IDT, GDT), V2, et contre-épreuve de l'audit ;
+  - nouveau cas QEMU `pmmtrust` ;
+  - les autotests normaux ne falsifient rien (727 vérifications, inchangés).
+- **Moteur de mutations :** `MUT_CMDLINE` choisit le mode du noyau muté, et la version saine doit d'abord réussir ce mode. Nouvelle situation d'auto-test `bad_mode` (13 situations).
+- **Mutations :**
+  - M34-M40 détectées ;
+  - M2 (E3) et M32 recalées : le nouveau contrôle refuse plus tôt.
+- **Validation :**
+
+| Commande | Résultat |
+|---|---|
+| `make clean && make test` | 157 `[PASS]`, 0 `[FAIL]`, 56 cas QEMU sur 56 |
+| `make test-mutation` | 40 mutations sur 40 |
+| `tests/mutation/selftest.sh` | 13 situations conformes |
+| `make test-repro` | réussi |
+| `make -j8` depuis zéro | réussi |
+| `info mem` (production) | identique à P4e-2 |
+
+- **Risques non corrigés :**
+  - D3 : le répertoire reste fiable seulement si le passage refuse l'écrasement d'un PDE ;
+  - références falsifiées (E5 sous corruption, données) ;
+  - déni de service par retypage ;
+  - D2, D4, GDT/TSS, NMI.

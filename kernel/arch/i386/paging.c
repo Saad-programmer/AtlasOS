@@ -41,6 +41,7 @@ static bool paging_enabled(void)
 enum pt_kind { PT_KIND_PDE, PT_KIND_PTE };
 static samos_err_t pt_gate_write(enum pt_kind kind, uint32_t va, uint32_t value);
 static SAMOS_NOINLINE samos_err_t seal_table_frame(uint32_t table);
+static bool frame_has_foreign_alias(uint32_t frame);
 
 /* Table de pages couvrant va, ou 0 si le PDE est absent. Lecture seule : les
  * tables publiées sont en lecture seule dans l'identité depuis K0.7-P4e-2. */
@@ -77,6 +78,13 @@ static samos_err_t table_create(uint32_t va, uint32_t **out)
     uint32_t pt = pmm_alloc_pagetable();
     if (pt == 0) {
         return SAMOS_ENOMEM;
+    }
+    /* K0.7-P4f-B1 — Un cadre qui a DÉJÀ un alias hors identité ne devient
+     * jamais une table : sous un PMM corrompu, un cadre projeté peut être
+     * redistribué (D1, V2). Le cadre reste PAGETABLE, non publié et RW
+     * (traitement des échecs internes : D4, non corrigé ici). */
+    if (paging_enabled() && frame_has_foreign_alias(pt)) {
+        return SAMOS_EPERM;
     }
     if (paging_enabled()) {
         samos_err_t se = seal_table_frame(pt);
@@ -191,6 +199,76 @@ static bool frame_is_pagetable(uint32_t frame)
            pmm_core_type(p, frame >> PAGE_SHIFT) == FRAME_PAGETABLE;
 }
 
+/*
+ * K0.7-P4f-B1 — Frontière de confiance du PMM (défaut D1 de l'audit P4f-A).
+ * Les types PMM (meta[], données RW) ne suffisent plus à autoriser une
+ * projection : une seule écriture de 16 bits qui retypait une table en
+ * ALLOCATED permettait à vmm_map d'en créer un alias inscriptible
+ * (docs/review/K0.7-P4f-B1-pmm-trust-boundary.md).
+ * Les deux critères ci-dessous n'utilisent PAS le PMM :
+ *   - structure de pagination = le répertoire actif (g_pd, page kro_vmm RO)
+ *     ou la cible d'un PDE présent (répertoire RO depuis P4e-2) ; ces
+ *     sources ne sont modifiables que par la fenêtre du passage ;
+ *   - image du noyau = [__kernel_start, __kernel_end) (symboles de l'éditeur
+ *     de liens, constants) : .text, .rodata, IDT, gestionnaires, racines du
+ *     VMM, GDT/TSS, piles.
+ * Aucun de ces cadres n'a d'autre alias légitime que son identité exacte.
+ * Coût : parcours des 1024 PDE (lecture seule) par vérification.
+ */
+static bool frame_is_paging_structure(uint32_t frame)
+{
+    if (frame == (uint32_t)(uintptr_t)g_pd) {
+        return true;
+    }
+    for (uint32_t i = 0; i < 1024u; i++) {
+        uint32_t pde = g_pd[i];
+        if ((pde & PTE_PRESENT) && (pde & PTE_FRAME) == frame) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool frame_in_kernel_image(uint32_t frame)
+{
+    return frame >= ((uint32_t)(uintptr_t)__kernel_start & PTE_FRAME) &&
+           frame < (uint32_t)(uintptr_t)__kernel_end;
+}
+
+/* Cadre qui ne doit JAMAIS être projeté ailleurs que dans son identité. */
+static bool frame_alias_forbidden(uint32_t frame)
+{
+    return frame_in_kernel_image(frame) || frame_is_paging_structure(frame);
+}
+
+/*
+ * Alias hors identité existant d'un cadre : PTE présente, à va >= g_idmap_top,
+ * désignant `frame`. Dans l'identité, le passage impose frame == va (critère
+ * d'adresse, indépendant du PMM) : seul l'au-delà de g_idmap_top peut porter
+ * un alias. Parcours limité aux PDE couvrant [g_idmap_top, 4 GiB).
+ * Utilisé avant de sceller et de publier une table neuve : le PMM, s'il est
+ * corrompu, peut distribuer comme table un cadre déjà projeté ailleurs (D1,
+ * variante V2).
+ */
+static bool frame_has_foreign_alias(uint32_t frame)
+{
+    for (uint32_t i = PD_INDEX(g_idmap_top); i < 1024u; i++) {
+        uint32_t pde = g_pd[i];
+        if (!(pde & PTE_PRESENT)) {
+            continue;
+        }
+        const volatile uint32_t *pt = (const volatile uint32_t *)(uintptr_t)(pde & PTE_FRAME);
+        for (uint32_t j = 0; j < 1024u; j++) {
+            uint32_t va = (i << 22) | (j << 12);
+            uint32_t pte = pt[j];
+            if (va >= g_idmap_top && (pte & PTE_PRESENT) && (pte & PTE_FRAME) == frame) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 static samos_err_t pt_gate_check(enum pt_kind kind, uint32_t va, uint32_t value,
                                  volatile uint32_t **entry)
 {
@@ -239,9 +317,12 @@ static samos_err_t pt_gate_check(enum pt_kind kind, uint32_t va, uint32_t value,
             if (frame != va || (paging_enabled() && (value & PTE_WRITE) && va_read_only_identity(va))) {
                 return SAMOS_EPERM;             /* identité exacte ; jamais W sur une page RO */
             }
-            if (paging_enabled() && (value & PTE_WRITE) && frame_is_pagetable(frame)) {
-                return SAMOS_EPERM;             /* P4e-2 : jamais W sur un cadre de pagination */
+            if (paging_enabled() && (value & PTE_WRITE) &&
+                (frame_is_pagetable(frame) || frame_is_paging_structure(frame))) {
+                return SAMOS_EPERM;             /* P4e-2, P4f-B1 : jamais W sur un cadre de pagination */
             }
+        } else if (frame_alias_forbidden(frame)) {
+            return SAMOS_EPERM;                 /* P4f-B1 : critère indépendant du PMM */
         } else if ((frame >> PAGE_SHIFT) >= p->nframes ||
                    pmm_core_type(p, frame >> PAGE_SHIFT) != FRAME_ALLOCATED) {
             return SAMOS_EPERM;                 /* M2.5b : seul ALLOCATED est projetable */
@@ -419,8 +500,30 @@ bool paging_audit(struct paging_audit *a)
         }
     }
     a->unpublished = typed > published ? typed - published : 0;
+    /* K0.7-P4f-B1 — Contrôles SANS le PMM : alias hors identité d'un cadre
+     * de pagination publié ou de l'image ; identité inscriptible d'un cadre
+     * de pagination publié. */
+    for (uint32_t i = 0; i < 1024u; i++) {
+        uint32_t pde = g_pd[i];
+        if (!(pde & PTE_PRESENT)) {
+            continue;
+        }
+        const volatile uint32_t *pt = (const volatile uint32_t *)(uintptr_t)(pde & PTE_FRAME);
+        for (uint32_t j = 0; j < 1024u; j++) {
+            uint32_t pte = pt[j], va = (i << 22) | (j << 12);
+            if (!(pte & PTE_PRESENT)) {
+                continue;
+            }
+            uint32_t frame = pte & PTE_FRAME;
+            if (frame != va && frame_alias_forbidden(frame)) {
+                a->foreign_aliases++;
+            } else if (frame == va && (pte & PTE_WRITE) && frame_is_paging_structure(frame)) {
+                a->struct_writable++;
+            }
+        }
+    }
     return a->writable == 0 && a->aliases == 0 && a->bad_pdes == 0 && a->unpublished == 0 &&
-           typed == published;
+           typed == published && a->foreign_aliases == 0 && a->struct_writable == 0;
 }
 
 #if CONFIG_KTEST
@@ -481,6 +584,13 @@ static samos_err_t map_page(uint32_t va, uint32_t pa, uint32_t flags, bool count
      * gérée (pmm_core_type renvoie FRAME_RESERVED au-delà de nframes).
      * Vérifié AVANT get_table()/table_create() : un refus ne crée aucune table. */
     if (counted && t != FRAME_ALLOCATED) {
+        return SAMOS_EPERM;
+    }
+    /* K0.7-P4f-B1 — Second critère, INDÉPENDANT du PMM : jamais d'alias d'un
+     * cadre de pagination publié ni de l'image du noyau, même si leur
+     * descripteur PMM a été falsifié (D1). Avant toute création de table :
+     * un refus reste sans effet de bord. Le passage le revérifie. */
+    if (counted && frame_alias_forbidden(pa)) {
         return SAMOS_EPERM;
     }
     uint32_t *pt = get_table(va);

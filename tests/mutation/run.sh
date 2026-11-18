@@ -109,7 +109,7 @@ build_and_run() {
         return
     fi
     timeout "$TIMEOUT" "$QEMU" -m "$QEMU_MEM" -display none -no-reboot \
-        -kernel "$dir/$IMAGE" -append test \
+        -kernel "$dir/$IMAGE" -append "${MUT_CMDLINE:-test}" \
         -debugcon "file:$dir/debugcon.log" -serial "file:$RUN_LOG" \
         -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
         -d cpu_reset,guest_errors -D "$RUN_QLOG" </dev/null >/dev/null 2>&1
@@ -145,6 +145,21 @@ echo "[PASS] version saine : statut 33, $(tr -d '\r' < "$RUN_LOG" | grep -o 'che
 # L'arbre sain est conservé : les mutations d'outil (mutant_tool) y exécutent
 # leur commande de référence.
 
+# sane_mode_ok CMDLINE -> vrai si la version saine réussit ce mode (résultat
+# mémorisé : une seule exécution par mode). Le binaire sain est le même.
+SANE_MODES=""
+sane_mode_ok() {
+    case " $SANE_MODES " in *" ok:$1 "*) return 0 ;; *" ko:$1 "*) return 1 ;; esac
+    local log="$SANE/mode-$(echo "$1" | tr -c 'a-z0-9' '_').log" st nf
+    timeout "$TIMEOUT" "$QEMU" -m "$QEMU_MEM" -display none -no-reboot \
+        -kernel "$SANE/$IMAGE" -append "$1" -serial "file:$log" \
+        -device isa-debug-exit,iobase=0xf4,iosize=0x04 </dev/null >/dev/null 2>&1
+    st=$?
+    nf="$(summary_failures "$log")"
+    if [ "$st" -eq 33 ] && [ "$nf" = 0 ]; then SANE_MODES="$SANE_MODES ok:$1"; return 0; fi
+    SANE_MODES="$SANE_MODES ko:$1"; return 1
+}
+
 # --- Mutations ---------------------------------------------------------------------
 total=0; detected=0; bad=0
 
@@ -169,6 +184,11 @@ mutant() {
         elif [ "$(count_literal "$dir/$file" "$repl")" -lt 1 ]; then
             verdict=INVALIDE; why="texte muté absent après substitution"
         fi
+    fi
+    # K0.7-P4f-B1 — Mode isolé (MUT_CMDLINE, par ex. « test=pmmtrust ») : la
+    # version saine doit d'abord réussir CE mode (statut 33, 0 échec).
+    if [ -z "$verdict" ] && [ -n "${MUT_CMDLINE:-}" ] && ! sane_mode_ok "$MUT_CMDLINE"; then
+        verdict=INVALIDE; why="version saine en échec pour « $MUT_CMDLINE »"
     fi
     if [ -z "$verdict" ]; then
         build_and_run "$dir"

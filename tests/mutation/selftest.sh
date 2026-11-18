@@ -71,6 +71,12 @@ cat > "$T/panic.sh" <<'EOF'
 mutant panic kernel/arch/i386/paging.c 'KASSERT(e == SAMOS_OK);                /* garanti par la vérification préalable */' 'KASSERT(e != SAMOS_OK);' 35 'x'
 EOF
 expect panic 1 "statut QEMU 37"
+# K0.7-P4f-B1 — Mode isolé (MUT_CMDLINE) que la version saine ne réussit pas
+# (« test=nope » : mode inconnu, statut 35) : la mutation est INVALIDE.
+cat > "$T/bad_mode.sh" <<'EOF'
+MUT_CMDLINE=test=nope mutant badmode kernel/arch/i386/paging.c 'if (counted && (flags & ~PTE_WRITE) != 0) {' 'if (0) {' 35 'x'
+EOF
+expect bad_mode 1 "version saine en échec pour « test=nope »"
 cat > "$T/wrong_assert.sh" <<'EOF'
 mutant wrong kernel/arch/i386/paging.c 'if (counted && (flags & ~PTE_WRITE) != 0) {' 'if (0) {' 35 'assertion qui n existe pas'
 EOF

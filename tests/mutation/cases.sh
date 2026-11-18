@@ -25,13 +25,17 @@ mutant e5_free_referenced kernel/mm/pmm_core.c \
 # hors identité) : la projection reste REFUSÉE (défense en profondeur), donc
 # e3_target_refused passe. Le défaut reste observable : le contrôle de vmm_map
 # n'a plus lieu AVANT get_table, et des tables sont créées pour des refus.
-# Les assertions « aucun effet de bord » des deux scénarios E3 le nomment.
+# Les assertions « aucun effet de bord » des scénarios E3 le nomment.
+# Depuis K0.7-P4f-B1, le contrôle indépendant du PMM de map_page refuse aussi,
+# AVANT toute création de table, les cadres de l'image et les structures de
+# pagination : le second scénario (cibles toutes dans l'image ou dans les
+# tables) ne crée plus de table. Le premier (cibles hors image : VGA, cadre
+# libre, au-delà de la RAM...) en crée encore : c'est lui qui nomme le défaut.
 mutant e3_type_check kernel/arch/i386/paging.c \
     'if (counted && t != FRAME_ALLOCATED) {' \
     'if (counted && t == FRAME_FREE) {' \
     35 \
-    'paging_table_count() == tables0' \
-    'p->free_count == free0 && total_refs() == refs0 && p->busy_frees == busy0'
+    'paging_table_count() == tables0'
 
 # M3 — M2.5c : vmm_map ne filtre plus les droits (PTE_USER, PTE_PRESENT,
 # bits de cache...). Détecté par des tentatives sur un cadre ALLOCATED : les
@@ -282,8 +286,8 @@ mutant_tool seal_invlpg_removed kernel/arch/i386/paging.c \
     'tools/check_elf.sh build/samos.elf --production' \
     'seal_table_frame:sans-invlpg'
 mutant gate_pagetable_w_allowed kernel/arch/i386/paging.c \
-    'if (paging_enabled() && (value & PTE_WRITE) && frame_is_pagetable(frame)) {' \
-    'if (false && frame_is_pagetable(frame)) {' \
+    '(frame_is_pagetable(frame) || frame_is_paging_structure(frame))) {' \
+    '(false && frame_is_pagetable(frame) && frame_is_paging_structure(frame))) {' \
     35 \
     'gate_keeps_pd_ro'
 # Écriture directe d'une PTE réintroduite (sans passer par pt_gate_write) :
@@ -293,3 +297,46 @@ mutant_tool pt_direct_write kernel/arch/i386/paging.c \
     'pt[PT_INDEX(va)] = 0; samos_err_t ge = SAMOS_OK;' \
     'tests/tools/pt_write_lint.sh' \
     'pt_write_lint: ecriture directe d'"'"'entree'
+
+# M34-M40 — K0.7-P4f-B1 : frontière de confiance du PMM (D1). Exécutées dans
+# le mode ISOLÉ test=pmmtrust (MUT_CMDLINE), qui falsifie des descripteurs ;
+# la version saine doit d'abord réussir ce mode.
+MUT_CMDLINE=test=pmmtrust mutant pmmtrust_map_check_removed kernel/arch/i386/paging.c \
+    'if (counted && frame_alias_forbidden(pa)) {' \
+    'if (false && frame_alias_forbidden(pa)) {' \
+    35 \
+    'no_table_created'
+MUT_CMDLINE=test=pmmtrust mutant pmmtrust_gate_check_removed kernel/arch/i386/paging.c \
+    '} else if (frame_alias_forbidden(frame)) {' \
+    '} else if (false && frame_alias_forbidden(frame)) {' \
+    35 \
+    'gate_refused'
+MUT_CMDLINE=test=pmmtrust mutant pmmtrust_pde_targets_ignored kernel/arch/i386/paging.c \
+    'if ((pde & PTE_PRESENT) && (pde & PTE_FRAME) == frame) {' \
+    'if (false && (pde & PTE_PRESENT) && (pde & PTE_FRAME) == frame) {' \
+    35 \
+    'first_table_refused' \
+    'other_table_refused' \
+    'new_table_refused'
+MUT_CMDLINE=test=pmmtrust mutant pmmtrust_directory_ignored kernel/arch/i386/paging.c \
+    'if (frame == (uint32_t)(uintptr_t)g_pd) {' \
+    'if (false) {' \
+    35 \
+    'directory_refused'
+MUT_CMDLINE=test=pmmtrust mutant pmmtrust_image_ignored kernel/arch/i386/paging.c \
+    'return frame_in_kernel_image(frame) || frame_is_paging_structure(frame);' \
+    'return (false && frame_in_kernel_image(frame)) || frame_is_paging_structure(frame);' \
+    35 \
+    'text_refused' \
+    'idt_refused' \
+    'gdt_refused'
+MUT_CMDLINE=test=pmmtrust mutant pmmtrust_prior_alias_ignored kernel/arch/i386/paging.c \
+    'if (paging_enabled() && frame_has_foreign_alias(pt)) {' \
+    'if (false && frame_has_foreign_alias(pt)) {' \
+    35 \
+    'v2_refused'
+MUT_CMDLINE=test=pmmtrust mutant pmmtrust_audit_blind kernel/arch/i386/paging.c \
+    'if (frame != va && frame_alias_forbidden(frame)) {' \
+    'if (false && frame_alias_forbidden(frame)) {' \
+    35 \
+    'audit_sees_foreign_alias'

@@ -129,6 +129,19 @@ static void seal_or_fail(void)
     kprintf("[TEST] critical structures sealed\n");
 }
 
+/* Bilan final et sortie QEMU (33 si aucun échec, 35 sinon). */
+static SAMOS_NORETURN void finish(void)
+{
+    suite_close();
+    kprintf("[TEST] suites=%u checks=%u failures=%u\n", g_suites, g_checks, g_failures);
+    if (g_failures == 0) {
+        kprintf("[TEST] ALL TESTS PASSED\n");
+        qemu_exit(QEMU_EXIT_SUCCESS);
+    }
+    kprintf("[TEST] SOME TESTS FAILED\n");
+    qemu_exit(QEMU_EXIT_FAILURE);
+}
+
 void ktest_run_all(void)
 {
     char mode[32];
@@ -142,6 +155,12 @@ void ktest_run_all(void)
         if (strcmp(mode, "kbd") == 0) {
             ktest_keyboard_line();
             qemu_exit(QEMU_EXIT_SUCCESS);   /* le verdict porte sur la ligne affichée */
+        }
+        /* K0.7-P4f-B1 — Mode ISOLÉ : falsifie des descripteurs PMM (D1). Jamais
+         * exécuté par le mode « test » normal. */
+        if (strcmp(mode, "pmmtrust") == 0) {
+            ktest_suite_pmm_trust();
+            finish();
         }
         if (ktest_fatal_mode(mode)) {
             kprintf("[TEST] fatal mode '%s' returned: fault not raised\n", mode);
@@ -181,12 +200,5 @@ void ktest_run_all(void)
     ktest_suite_vmm_gate();
     ktest_suite_pt_seal();
 
-    suite_close();
-    kprintf("[TEST] suites=%u checks=%u failures=%u\n", g_suites, g_checks, g_failures);
-    if (g_failures == 0) {
-        kprintf("[TEST] ALL TESTS PASSED\n");
-        qemu_exit(QEMU_EXIT_SUCCESS);
-    }
-    kprintf("[TEST] SOME TESTS FAILED\n");
-    qemu_exit(QEMU_EXIT_FAILURE);
+    finish();
 }

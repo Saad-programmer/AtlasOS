@@ -73,6 +73,9 @@ struct paging_audit {
     uint32_t aliases;       /* projections d'un cadre de pagination hors identité */
     uint32_t bad_pdes;      /* PDE non conformes */
     uint32_t unpublished;   /* cadres PAGETABLE non publiés */
+    /* K0.7-P4f-B1 — sans le PMM (répertoire actif et image du noyau) : */
+    uint32_t foreign_aliases;   /* alias hors identité d'un cadre de pagination publié ou de l'image */
+    uint32_t struct_writable;   /* cadre de pagination publié dont l'identité porte W */
 };
 bool paging_audit(struct paging_audit *a);
 #if CONFIG_KTEST

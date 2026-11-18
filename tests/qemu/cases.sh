@@ -296,6 +296,17 @@ for m in sealpd sealpt sealnewpt; do
     cr2_printed "$m"
 done
 
+# K0.7-P4f-B1 — Mode ISOLÉ : falsification de descripteurs PMM (D1). Le VMM
+# doit refuser tout alias d'une structure de pagination ou de l'image du
+# noyau, quel que soit le type affiché par le PMM.
+run_case pmmtrust "test=pmmtrust" 33 \
+    "serial:[TEST] suite K0.7 P4f-B1 PMM trust boundary (isolated) done:" \
+    "serial:[TEST] D1 first table frame=" \
+    "serial:[TEST] D1 page directory frame=" \
+    "serial:[TEST] D1 V2 aliased frame x=" \
+    "serial:[TEST] ALL TESTS PASSED" \
+    "![FAIL]" "!KERNEL PANIC"
+
 # K0.7-R1d — Sentinelles de S2 : un mot sentinelle (le mot 2) est altéré, puis
 # une vraie #DF est provoquée. La tâche #DF doit le signaler (masque 0x4) et
 # paniquer avec un message identifiable ; aucune panique récursive.
