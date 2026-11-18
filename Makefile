@@ -129,7 +129,8 @@ TEST_SRCS := kernel/tests/ktest.c \
              kernel/tests/test_faults.c \
              kernel/tests/test_irq.c \
              kernel/tests/test_mm.c \
-             kernel/tests/test_canary.c
+             kernel/tests/test_canary.c \
+             kernel/tests/test_ptgate.c
 
 objs = $(patsubst %.asm,$(BUILD)/$(1)/%.o,$(ASM_SRCS)) $(patsubst %.c,$(BUILD)/$(1)/%.o,$(2))
 PROD_OBJS := $(call objs,prod,$(C_SRCS))

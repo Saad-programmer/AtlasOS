@@ -195,13 +195,23 @@ done
 # Symboles qui ne doivent exister QUE dans l'image de test : autotests, modes de
 # faute volontaire, sortie QEMU. Leur présence dans l'image de production
 # signifierait qu'un mode destructif y est accessible.
-TEST_ONLY_SYMS="ktest_run_all ktest_fatal_mode qemu_exit ktest_check ktest_s2_prefill"
+TEST_ONLY_SYMS="ktest_run_all ktest_fatal_mode qemu_exit ktest_check ktest_s2_prefill ptgate_write_entry ptgate_set_pte"
 syms=$(nm "$ELF" | awk '{print $3}')
 case "$MODE" in
     --production)
         for s in $TEST_ONLY_SYMS; do
             if grep -qx "$s" <<<"$syms"; then bad "production: symbole de test present ($s)"; fi
         done
+        # K0.7-P4c : une seule écriture de CR0, dans paging_init (qui POSE
+        # PG et WP). Le prototype de passage (désactivation de WP) ne doit
+        # exister que dans l'image de test.
+        cr0w=$(objdump -d --no-show-raw-insn "$ELF" | awk '/^[0-9a-f]+ <[^>]+>:$/ { fn = $2 }
+            /mov +%e[a-z]+,%cr0/ { printf "%s ", fn }')
+        if [ "$cr0w" = "<paging_init>: " ]; then
+            pass "production: CR0 ecrit uniquement par paging_init"
+        else
+            bad "production: ecritures de CR0 inattendues : ${cr0w:-aucune}"
+        fi
         # Aucune instruction écrivant sur les ports QEMU 0xE9 / 0xF4.
         if objdump -d --no-show-raw-insn "$ELF" | grep -qE 'out +%(al|ax|eax),\$0x(e9|f4)'; then
             bad "production: ecriture sur un port QEMU (0xE9/0xF4)"

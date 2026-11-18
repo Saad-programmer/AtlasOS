@@ -1597,3 +1597,33 @@ tests/tools/repro_selftest.sh
 | `make test-repro` | réussi |
 | `make -j8` depuis zéro | réussi |
 | `info tlb` et `info mem` | quatre pages `rw` ; `.text` et `.rodata` `r-` ; trois gardes absentes |
+
+### K0.7-P4c — Passage d'écriture contrôlé : conception et prototype (image de test seulement)
+
+- **Document :** `docs/design/K0.7-P4c-controlled-writes.md`. Il contient l'analyse de CR0.WP (ce que `cli` ne bloque pas : NMI, #MC, exceptions synchrones), la comparaison A, B et C, la décision, le prototype, les contre-épreuves, les risques et les conditions préalables à P4d et P4e.
+- **Décision :** fenêtre CR0.WP (A). C'est la seule approche sans alias inscriptible résiduel, sans dépendance circulaire ni coût mémoire. B et C laissent une table inscriptible en permanence.
+- **Prototype** (`kernel/tests/test_ptgate.c`, `TEST_SRCS` uniquement) :
+  - `ptgate_write_entry` : validation complète **avant** ouverture, IRQ masquées, WP = 0, un stockage, WP rétabli avant IF, relecture ;
+  - `ptgate_set_pte` : politique des pages interdites et `INVLPG`.
+  - **Le VMM ne l'utilise pas** ; les tables ne sont pas scellées.
+- **Isolement :** symboles du prototype interdits en production ; nouvelle règle de `check_elf.sh` : **une seule écriture de CR0 en production**, dans `paging_init` ; la même règle appliquée à l'image de test signale le prototype.
+- **Tests :**
+  - suite P4c (40 vérifications) : cibles `KERNEL`, `ALLOCATED`, `RESERVED`, hors limites, non alignées, `PTE_USER`, gardes et page nulle refusées ; imbrication `EBUSY` ; erreur après validation, avec restauration ;
+  - écriture sur une table scellée pour le test : valeur relue, TLB effectif, retrait avec IF = 1 conservé, `INVLPG` effectif ;
+  - après fermeture, une écriture directe faute.
+- **Défauts de test corrigés :**
+  - comparaison qui ignorait les bits A et D posés par le CPU ;
+  - scénario non conditionné à ses préconditions, ce qui rendait INVALIDE la mutation E5 (lecture de `0x4`).
+- **Mutations :** `ptgate_type_check_removed`, `ptgate_wp_not_restored` et `ptgate_nesting_allowed` détectées.
+- **Validation :**
+
+| Commande | Résultat |
+|---|---|
+| `make clean && make test` | 135 `[PASS]`, 0 `[FAIL]`, 39 cas QEMU sur 39 |
+| autotests | 621 vérifications |
+| `make test-mutation` | 18 mutations sur 18 |
+| `make test-repro` | réussi |
+| `make -j8` depuis zéro | réussi |
+| faible RAM, droits (`info mem`) | inchangés |
+
+- **Risques non résolus :** NMI et #MC pendant la fenêtre (WP = 0, puis panique) ; validation dépendante de l'intégrité du PMM ; P5.

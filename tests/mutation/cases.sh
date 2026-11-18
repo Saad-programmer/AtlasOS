@@ -150,3 +150,30 @@ mutant_tool p4b_rw_in_handlers_page kernel/arch/i386/exceptions.c \
     'static volatile uint32_t g_exc_depth SAMOS_SECTION(".bss.p4_handlers");' \
     'tools/check_elf.sh build/samos.elf --production' \
     'P4b: page [__kro_handlers_start, __kro_handlers_end) : intrus:g_exc_depth'
+
+# M16 — K0.7-P4c : le prototype de passage n'exige plus un cadre de type
+# PAGETABLE. Les tests négatifs réécrivent la valeur actuelle (aucune
+# destruction) : le refus attendu (EPERM) devient un succès pour un cadre
+# ALLOCATED et pour la VGA. (La cible .text reste refusée par la politique de
+# valeur : son premier mot a le bit 0x4, lu comme PTE_USER ; elle n'est donc
+# pas une assertion ciblée de cette mutation.)
+mutant ptgate_type_check_removed kernel/tests/test_ptgate.c \
+    'pmm_core_type(p, table_phys >> PAGE_SHIFT) != FRAME_PAGETABLE) {' \
+    'false) {' \
+    35 \
+    'ptgate_write_entry(a, 0, raw_entry(a, 0)) == SAMOS_EPERM' \
+    'ptgate_write_entry(0xB8000u, 0, 0) == SAMOS_EPERM'
+
+# M17 — K0.7-P4c : WP n'est plus rétabli à la fermeture de la fenêtre.
+mutant ptgate_wp_not_restored kernel/tests/test_ptgate.c \
+    'cpu_write_cr0(cr0);                         /* WP rétabli AVANT les IRQ */' \
+    '(void)cr0;' \
+    35 \
+    'state_intact(ifl)'
+
+# M18 — K0.7-P4c : l'imbrication n'est plus refusée.
+mutant ptgate_nesting_allowed kernel/tests/test_ptgate.c \
+    '    if (g_ptgate_active) {' \
+    '    if (0) {' \
+    35 \
+    'en == SAMOS_EBUSY && g_ptgate_nested_refusals == nested0 + 1u'
