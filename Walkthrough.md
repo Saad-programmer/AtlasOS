@@ -1179,3 +1179,17 @@ Premier sous-jalon de M2.4 (correction de E5), limité au cœur pur. `paging.c` 
 - **Contre-épreuves** (copies isolées, statut 35, aucun triple fault) : C1 (politique de type ancienne) donne 21 échecs, dont 9 dans le scénario ; C2 (flags non filtrés) donne 12 échecs, dont 5 ; C3 (les deux) donne 33 échecs, dont 14. Le code de `kmain` reste intact sous C1 et C3.
 - **Validation :** `make clean && make test` donne 101 `[PASS]`, 0 `[FAIL]`, 26 cas QEMU sur 26 (démarrage de production de 16 MiB à 4 GiB, autotests à 128 et 512 MiB, fautes de page, débordement de pile) ; `make -j8` propre pour les deux images ; autotests manuels à 128 et 512 MiB : 453/0. À 16 MiB, une seule assertion préexistante échoue (`test_memmap` attend plus de 100 MiB), identique au commit `0876cd3`.
 - **Verdict :** E3 corrigé pour `vmm_map()` (P2, P3, alias ring 3). **P4 reste ouvert** : les tables de pages restent inscriptibles par l'identité.
+
+### K0.7-M2 — Audit de clôture (PMM, VMM, protections mémoire), sans changement de code
+
+- **Document :** `docs/design/K0.7-M2-closure-audit.md`. Il contient les mécanismes en place, la vérification des 10 invariants dans le code réel (inventaire de **tous** les écrivains de descripteurs, de PTE et de PDE), l'inventaire des tests et contre-épreuves, les risques résiduels classés (exploitable, architectural, futur), les hypothèses et les recommandations.
+- **Verdict :** E1, E2, E4 et E5 sont corrigés ; E3 est corrigé pour `vmm_map()`, mais **P4 reste ouvert** (tables de pages inscriptibles par l'identité). Les 10 invariants sont vérifiés ; l'invariant 9 l'est avec une réserve déjà documentée : une table vide subsiste après un `ERANGE`. Aucune vulnérabilité exploitable par les interfaces actuelles.
+- **Expériences de l'audit** (copies isolées, non commitées) :
+  - 4095 projections d'un même cadre, puis `ERANGE` : aucune PTE ni référence, une table vide créée ;
+  - démarrage de production dès 1792 KiB ;
+  - en dessous de la fin de l'image (environ 1,57 MiB), le noyau ne prend jamais la main.
+- **Constats nouveaux :**
+  - N1 : les cibles `make test-mutation` et `make test-repro`, annoncées plus haut (entrée sur les images séparées), **ne fonctionnent pas** : leurs scripts n'ont jamais été commités ;
+  - N2 : `test_memmap` suppose plus de 100 MiB, d'où un échec unique des autotests à 16 MiB ;
+  - N3 : la table des limites K0.6 de `Details.md` n'a pas encore de pendant K0.7.
+- **Validation :** `make clean && make test` donne 101 `[PASS]`, 0 `[FAIL]`, 26 cas QEMU sur 26 ; `make -j8` depuis zéro produit des binaires identiques bit à bit à la compilation séquentielle ; autotests à 128 et 512 MiB : 453 vérifications, 0 échec ; à 16 MiB : 1 échec préexistant (N2).
