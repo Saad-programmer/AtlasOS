@@ -1915,3 +1915,29 @@ tests/tools/repro_selftest.sh
   - scellements : preuve structurelle seulement dans le VMM réel (la copie du harnais a WP = 0) ;
   - ordre « avant `pmm_unref` » : contrôlé, mais non muté ;
   - monoprocesseur.
+
+### K0.7 — Intégration de sauvegarde dans `main` (2026-11-18)
+
+- **Nature :** sauvegarde demandée par le développeur. Ce **n'est pas une clôture de K0.7**.
+- **État Git avant l'intégration :**
+  - arbre propre ; `claude/k0.7-hardening` = `origin/claude/k0.7-hardening` = `b664b41` ;
+  - `main` = `95b9cb5`, ancêtre de `b664b41`, soit 44 commits en avance rapide possible ;
+  - stash non touché.
+- **Sauvegarde :** branche `backup/k0.7-pre-final-audit` → `b664b41`, poussée sur GitHub.
+- **Validation finale :**
+
+| Commande | Résultat |
+|---|---|
+| `make clean && make test` | code 0 ; 175 `[PASS]`, 0 `[FAIL]`, 66 cas QEMU sur 66, `tlb_integration` phases A et B réussies |
+| `make test-mutation` | 58 mutations sur 58 |
+| `make test-repro` | réussi |
+| `make -j8` depuis zéro | réussi |
+
+- **Intégration :** avance rapide de `main` de `95b9cb5` à `b664b41` (`git push origin HEAD:refs/heads/main`), sans force-push, sans rebase ni réécriture. `main` contient les 136 fichiers suivis, sans différence avec la branche de développement.
+- **Statut :**
+  - K0.7 en cours ;
+  - D1, D3 et D4 corrigés et validés ;
+  - correction de D2 implémentée en P4f-B4, en attente de validation ;
+  - P4f-C non commencé ;
+  - K1 non commencé.
+- **Branches :** aucune branche supprimée (`claude/k0.7-hardening`, `claude/trusting-lovelace-x7fiip`, `backup/k0.7-pre-final-audit` conservées).

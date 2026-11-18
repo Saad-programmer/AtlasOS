@@ -44,9 +44,21 @@ Le but n'est pas d'assembler des bibliothèques existantes. Il s'agit de **compr
 | K0.4 | GDT, IDT, exceptions CPU | ✅ implémenté et vérifié |
 | K0.5 | PIC 8259, PIT, clavier PS/2, file circulaire | ✅ implémenté et vérifié |
 | K0.6 | Carte mémoire, allocateur physique, pagination, protections | ✅ implémenté et vérifié |
-| K0.7 | Durcissement : correction des défauts mémoire E1-E5, références des cadres, politique de `vmm_map`, canaris de pile, sentinelles et pages de garde des piles, outils de mutation et de reproductibilité | 🔶 en cours sur la branche `claude/k0.7-hardening` (non fusionnée) |
+| K0.7 | Durcissement : correction des défauts mémoire E1-E5, références des cadres, politique de `vmm_map`, canaris de pile, sentinelles et pages de garde des piles, outils de mutation et de reproductibilité | 🔶 **en cours** (non clôturé) ; état intégré dans `main` le 2026-11-18 à titre de **sauvegarde** |
 
-La phase K0 (K0.1 à K0.6) est terminée ; sa revue se trouve dans [`docs/review/K0-review.md`](docs/review/K0-review.md). **K0.7 (sécurisation) est en cours**, sans nouvelle fonctionnalité. Son sous-jalon **R1 (durcissement des piles) est clôturé** : voir [`docs/review/K0.7-R1-closure.md`](docs/review/K0.7-R1-closure.md). Une clôture de jalon ne signifie pas que le noyau est sécurisé ; **P4** (tables de pages et structures critiques inscriptibles par l'identité) reste **non résolu**. Il est réduit par étapes : P4d a scellé l'IDT, les tables de gestionnaires et les racines du VMM ; P4e-1 fait passer toutes les écritures de PDE/PTE par un passage contrôlé (fenêtre CR0.WP) ; P4e-2 scelle le répertoire et les tables de pages (lecture seule dans l'identité). L'audit contradictoire P4f-A a relevé des défauts : D1 (alias obtenu par falsification du PMM) est corrigé en P4f-B1, D3 (substitution de PDE) en P4f-B2, D4 (échecs de création des tables) en P4f-B3, D2 (preuves d'INVLPG masquées sous QEMU) en P4f-B4. La GDT/TSS et la table du PMM restent inscriptibles. Son état est suivi dans `Walkthrough.md`, `docs/design/` et [`docs/review/K0.7-R1g-audit.md`](docs/review/K0.7-R1g-audit.md). La phase K1 (x86-64, processus, ordonnanceur, appels système) attend l'autorisation du développeur.
+La phase K0 (K0.1 à K0.6) est terminée ; sa revue se trouve dans [`docs/review/K0-review.md`](docs/review/K0-review.md). **K0.7 (sécurisation) est en cours**, sans nouvelle fonctionnalité. Son sous-jalon **R1 (durcissement des piles) est clôturé** : voir [`docs/review/K0.7-R1-closure.md`](docs/review/K0.7-R1-closure.md). Une clôture de jalon ne signifie pas que le noyau est sécurisé ; **P4** (tables de pages et structures critiques inscriptibles par l'identité) reste **non résolu**. Il est réduit par étapes : P4d a scellé l'IDT, les tables de gestionnaires et les racines du VMM ; P4e-1 fait passer toutes les écritures de PDE/PTE par un passage contrôlé (fenêtre CR0.WP) ; P4e-2 scelle le répertoire et les tables de pages (lecture seule dans l'identité). L'audit contradictoire P4f-A a relevé des défauts. Leur état au 2026-11-18 :
+
+| Défaut | État |
+|---|---|
+| D1 — alias obtenu par falsification du PMM | corrigé en P4f-B1, validé par le développeur |
+| D3 — substitution de PDE | corrigé en P4f-B2, validé par le développeur |
+| D4 — échecs de création des tables | corrigé en P4f-B3, validé par le développeur |
+| D2 — preuves d'INVLPG masquées sous QEMU | correction **implémentée** en P4f-B4 (commit `b664b41`), **en attente de validation par le développeur** ; matériel réel non testé |
+| P4f-C | **non commencé** |
+
+La GDT/TSS et la table du PMM restent inscriptibles.
+
+**Intégration dans `main` (2026-11-18).** L'état de `claude/k0.7-hardening` a été intégré dans `main` par avance rapide, pour **sauvegarder** le travail. Une sauvegarde permanente existe en plus : la branche `backup/k0.7-pre-final-audit`. Cette intégration **n'est pas une clôture** : K0.7 reste en cours, P4 n'est pas clôturé, et le noyau n'est pas déclaré sécurisé ni terminé. Son état est suivi dans `Walkthrough.md`, `docs/design/` et [`docs/review/K0.7-R1g-audit.md`](docs/review/K0.7-R1g-audit.md). La phase K1 (x86-64, processus, ordonnanceur, appels système) n'est **pas commencée** et attend l'autorisation du développeur.
 
 ## 4. Vue d'ensemble de l'architecture
 
