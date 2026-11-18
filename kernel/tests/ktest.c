@@ -167,6 +167,12 @@ void ktest_run_all(void)
             ktest_suite_pde_integrity();
             finish();
         }
+        /* K0.7-P4f-B3 — Mode ISOLÉ : erreurs ordinaires de la création des
+         * tables (épuise réellement le PMM). */
+        if (strcmp(mode, "tablelife") == 0) {
+            ktest_suite_table_lifecycle();
+            finish();
+        }
         if (ktest_fatal_mode(mode)) {
             kprintf("[TEST] fatal mode '%s' returned: fault not raised\n", mode);
             qemu_exit(QEMU_EXIT_FAILURE);

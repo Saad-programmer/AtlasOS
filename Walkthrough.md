@@ -1838,3 +1838,45 @@ tests/tools/repro_selftest.sh
   - les tables ne peuvent plus être retirées : chemin dédié à concevoir si K1 l'exige ;
   - le compteur `unpublished` reste fondé sur le PMM ;
   - D2 et D4 ouverts ; GDT/TSS et NMI inchangés.
+
+### K0.7-P4f-B3 — Intégrité transactionnelle de la création des tables (correction de D4)
+
+- **Document :** `docs/review/K0.7-P4f-B3-table-lifecycle.md`.
+- **Reproduction** (copie isolée, avant correction) :
+  - scellement refusé, PDE refusée ou cadre déjà aliasé : un code ordinaire (EBUSY, EPERM) était rendu alors qu'un cadre `PAGETABLE` était définitivement perdu (inscriptible dans deux des cas) ;
+  - ERANGE, atteignable sans injection, laissait une table neuve publiée pour une projection refusée ;
+  - l'OOM réel était correct (ENOMEM, sans effet).
+- **Correction** (`paging.c`) :
+  - erreurs ordinaires (EINVAL, EPERM, **ERANGE**, ENOMEM, EEXIST) rendues **avant** toute création de table ; nouveau pré-contrôle des références dans `map_page` ;
+  - tout refus **après** l'allocation est une violation d'invariant : `table_create_fatal` provoque une panique déterministe, avec étape, erreur, va, cadre, type, PTE d'identité et PDE ;
+  - aucun retour arrière ni mécanisme de libération ajouté ;
+  - crochet de test `paging_test_inject_pde_refusal`, image de test seulement (`TEST_ONLY_SYMS`).
+- **Tests :**
+  - mode isolé `test=tablelife` (19 vérifications : OOM réel, paramètres, projections interdites, ERANGE, EEXIST, cycle de vie réussi) ;
+  - modes destructifs `test=tcseal`, `test=tcpde`, `test=tablealias` (V2, sortie de `pmmtrust`), avec diagnostic et cadre vérifiés par le banc QEMU (64 cas) ;
+  - `pmmtrust` : les assertions sur la région à table existante sont signalées avant la sonde « région sans table ».
+- **Moteur de mutations :**
+  - `mutant_mode` : mode destructif, statut 35 ou 37, diagnostics exacts absents de la version saine du même mode ;
+  - auto-test à 15 situations.
+- **Mutations :**
+  - nouvelles : M47-M52 ;
+  - converties : M30, M34, M36, M37 et M39, dont les défauts mènent désormais à un arrêt contrôlé.
+- **Validation :**
+
+| Commande | Résultat |
+|---|---|
+| `make clean && make test` | 165 `[PASS]`, 0 `[FAIL]`, 64 cas QEMU sur 64 |
+| `make test-mutation` | 52 mutations sur 52 |
+| `tests/mutation/selftest.sh` | 15 situations conformes |
+| `make test-repro` | réussi |
+| `make -j8` depuis zéro | réussi |
+| `info mem` | inchangé |
+
+- **Invariants :**
+  - D1 maintenu (V2 désormais fatale) ;
+  - D3 maintenu ;
+  - D4 atteint.
+- **Limites :**
+  - un PMM falsifié peut provoquer un arrêt (refus fermé) ;
+  - les tables restent conservées jusqu'à l'arrêt ; leur libération future exigera un chemin dédié ;
+  - D2 reste ouvert.

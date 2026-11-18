@@ -69,42 +69,76 @@ static uint32_t *get_table(uint32_t va)
  * Une table publiée n'est donc jamais inscriptible. Avant l'activation de
  * la pagination (paging_init), l'étape 3 est faite en bloc par
  * seal_paging_structures, juste après PG | WP.
- * Refus du passage (incohérence interne : le cadre vient d'être validé) :
- * l'erreur est renvoyée ; le cadre reste PAGETABLE, non publié (fuite d'un
- * cadre, jamais réutilisé) : refus fermé, plutôt qu'un cadre de table rendu
- * au PMM avec un alias dans un état incertain.
+ *
+ * K0.7-P4f-B3 (D4) — Politique d'échec (docs/review/K0.7-P4f-B3-table-lifecycle.md) :
+ *   - AVANT l'allocation, seule erreur possible : ENOMEM (PMM vide), sans
+ *     aucun effet ; toutes les erreurs ORDINAIRES (paramètres, projection
+ *     interdite, région occupée, références saturées) sont rendues par
+ *     map_page AVANT d'appeler table_create ;
+ *   - APRÈS l'allocation, tout refus est une VIOLATION D'INVARIANT (le PMM a
+ *     distribué un cadre aliasé ou déjà structure, ou le passage refuse une
+ *     valeur que le noyau vient de valider). Le cadre ne peut être ni rendu
+ *     (PAGETABLE n'est jamais libéré, et le rendre exigerait de désceller
+ *     son alias) ni publié : il est définitivement perdu. Renvoyer un code
+ *     ordinaire serait trompeur pour l'appelant ; table_create_fatal arrête
+ *     le noyau, de façon déterministe, avec un diagnostic complet.
  */
+#if CONFIG_KTEST
+/* Image de TEST uniquement : refus injecté de la publication du PDE
+ * (étape 4), pour éprouver le chemin fatal (mode test=tcpde). */
+static volatile bool g_tc_inject_pde_refusal;
+void paging_test_inject_pde_refusal(bool on)
+{
+    g_tc_inject_pde_refusal = on;
+}
+#define TC_PDE_INJECTED() (g_tc_inject_pde_refusal)
+#else
+#define TC_PDE_INJECTED() (false)
+#endif
+
+static SAMOS_NORETURN void table_create_fatal(const char *step, samos_err_t e, uint32_t va, uint32_t pt)
+{
+    uint32_t idpte = 0;
+    if (pt != 0 && pt < g_idmap_top && (g_pd[PD_INDEX(pt)] & PTE_PRESENT)) {
+        idpte = ((const volatile uint32_t *)(uintptr_t)(g_pd[PD_INDEX(pt)] & PTE_FRAME))[PT_INDEX(pt)];
+    }
+    panic("page-table creation: %s (error %d) for va %p: frame %p type %d identity PTE 0x%08x, "
+          "PDE 0x%08x; kernel invariant violated, frame not returned",
+          step, (int)e, (void *)(uintptr_t)va, (void *)(uintptr_t)pt,
+          pt != 0 ? (int)pmm_core_type(pmm_state(), pt >> PAGE_SHIFT) : -1, idpte, g_pd[PD_INDEX(va)]);
+}
+
 static samos_err_t table_create(uint32_t va, uint32_t **out)
 {
     uint32_t pt = pmm_alloc_pagetable();
     if (pt == 0) {
-        return SAMOS_ENOMEM;
+        return SAMOS_ENOMEM;                    /* seule erreur ordinaire : aucun effet */
     }
+    /* À partir d'ici, le cadre est PAGETABLE : tout échec est fatal. */
     /* K0.7-P4f-B1 — Un cadre qui a DÉJÀ un alias hors identité ne devient
      * jamais une table : sous un PMM corrompu, un cadre projeté peut être
-     * redistribué (D1, V2). Le cadre reste PAGETABLE, non publié et RW
-     * (traitement des échecs internes : D4, non corrigé ici). */
+     * redistribué (D1, V2). */
     if (paging_enabled() && frame_has_foreign_alias(pt)) {
-        return SAMOS_EPERM;
+        table_create_fatal("frame already mapped elsewhere", SAMOS_EPERM, va, pt);
     }
     /* K0.7-P4f-B2 (D3) — Le cadre ne doit pas être déjà une structure active
      * (PMM falsifié distribuant une table publiée). En pratique la remise à
      * zéro par le PMM aurait déjà fauté (identité scellée) : ce contrôle
      * couvre l'appelant ; le passage le refait. */
     if (frame_is_paging_structure(pt)) {
-        return SAMOS_EPERM;
+        table_create_fatal("frame already a paging structure", SAMOS_EPERM, va, pt);
     }
     if (paging_enabled()) {
         samos_err_t se = seal_table_frame(pt);
         if (se != SAMOS_OK) {
-            return se;
+            table_create_fatal("sealing refused", se, va, pt);
         }
     }
     /* PDE permissive (P | W) : les droits effectifs sont l'INTERSECTION des
      * droits du PDE et du PTE (SDM vol. 3A §4.6) ; c'est le PTE qui décide. */
-    samos_err_t e = pt_gate_write(PT_KIND_PDE, va, pt | PTE_PRESENT | PTE_WRITE);
+    samos_err_t e = TC_PDE_INJECTED() ? SAMOS_EPERM : pt_gate_write(PT_KIND_PDE, va, pt | PTE_PRESENT | PTE_WRITE);
     if (e != SAMOS_OK) {
-        return e;
+        table_create_fatal("PDE publication refused", e, va, pt);
     }
     g_tables++;
     *out = (uint32_t *)(uintptr_t)pt;
@@ -655,6 +689,14 @@ static samos_err_t map_page(uint32_t va, uint32_t pa, uint32_t flags, bool count
      * un refus reste sans effet de bord. Le passage le revérifie. */
     if (counted && frame_alias_forbidden(pa)) {
         return SAMOS_EPERM;
+    }
+    /* K0.7-P4f-B3 (D4) — Références saturées : erreur ORDINAIRE, rendue AVANT
+     * toute création de table (auparavant, pmm_ref échouait APRÈS
+     * table_create : une table neuve restait publiée pour une projection
+     * refusée). Monoprocesseur, aucun gestionnaire d'IRQ ne prend de
+     * référence : pmm_ref ci-dessous ne peut plus échouer pour cette raison. */
+    if (counted && t == FRAME_ALLOCATED && pmm_refs(pa) >= FRAME_REFS_MAX) {
+        return SAMOS_ERANGE;
     }
     uint32_t *pt = get_table(va);
     if (pt == 0) {

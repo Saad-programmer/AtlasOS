@@ -90,18 +90,25 @@ static bool d1_refused(uint32_t frame, uint32_t alias, bool ro, const char *what
     if (e_ro == SAMOS_OK) {
         (void)vmm_unmap(alias, 0);
     }
-    samos_err_t e_nt = vmm_map(notable, frame, PTE_WRITE);
-    if (e_nt == SAMOS_OK) {
-        (void)vmm_unmap(notable, 0);
-    }
     samos_err_t e_gate = paging_gate_test_write(1, alias, frame | PTE_PRESENT | PTE_WRITE);
     if (e_gate == SAMOS_OK) {
         (void)paging_gate_test_write(1, alias, 0);
         cpu_invlpg((const void *)(uintptr_t)alias);
     }
-    paging_gate_stats(&w1, &r1);
-    bool refused = e_rw == SAMOS_EPERM && e_ro == SAMOS_EPERM && e_nt == SAMOS_EPERM;
+    /* Signalés AVANT la sonde « région sans table » : depuis K0.7-P4f-B3, si
+     * un défaut laissait cette requête atteindre la création d'une table
+     * sous un PMM falsifié, le noyau s'arrêterait (refus fatal) ; ces
+     * assertions nommées sont alors déjà dans le journal. */
+    bool refused_existing_region = e_rw == SAMOS_EPERM && e_ro == SAMOS_EPERM;
+    KTEST_CHECK(refused_existing_region);
     bool gate_refused = e_gate == SAMOS_EPERM;
+    KTEST_CHECK(gate_refused);
+    samos_err_t e_nt = vmm_map(notable, frame, PTE_WRITE);
+    if (e_nt == SAMOS_OK) {
+        (void)vmm_unmap(notable, 0);
+    }
+    paging_gate_stats(&w1, &r1);
+    bool refused = refused_existing_region && e_nt == SAMOS_EPERM;
     bool unchanged = pdir()[alias >> 22] == pde_a && entry_pte(alias) == pte_a &&
                      pdir()[notable >> 22] == pde_n && w1 == w0;
     bool no_table_created = paging_table_count() == tables;
@@ -115,7 +122,6 @@ static bool d1_refused(uint32_t frame, uint32_t alias, bool ro, const char *what
             what, frame, saved, frame_desc_make(FRAME_ALLOCATED, 0), (int)e_rw, (int)e_ro, (int)e_nt, (int)e_gate);
     KTEST_CHECK(corrupted && pmm_lies);
     KTEST_CHECK(refused);
-    KTEST_CHECK(gate_refused);
     KTEST_CHECK(unchanged);
     KTEST_CHECK(no_table_created);
     KTEST_CHECK(counters);
@@ -165,49 +171,10 @@ void ktest_suite_pmm_trust(void)
     bool gdt_refused = d1_refused((uint32_t)(uintptr_t)__kcpu_start, 0xD0007000u, false, "GDT/TSS");
     KTEST_CHECK(gdt_refused);
 
-    /* Variante V2 : cadre déjà projeté, rendu « libre » par falsification,
-     * puis distribué par le PMM comme table neuve. La table ne doit pas être
-     * publiée. */
-    struct pmm *pw = (struct pmm *)(uintptr_t)p;
-    uint32_t y = pmm_alloc_frame();             /* cadre de données (AVANT x) */
-    uint32_t x = pmm_alloc_frame();             /* next-fit : hint = x */
-    const uint32_t a2 = 0xD0008000u, nv = 0xCA000000u;
-    bool v2_prep = y != 0 && x != 0 && vmm_map(a2, x, PTE_WRITE) == SAMOS_OK &&
-                   !(pdir()[nv >> 22] & PTE_PRESENT);
-    KTEST_CHECK(v2_prep);
-    if (v2_prep) {
-        uint32_t tables = paging_table_count(), freec = p->free_count, vw0 = 0, vr0 = 0, vw1 = 0, vr1 = 0;
-        meta_rw()[x >> 12] = frame_desc_make(FRAME_FREE, 0);
-        pw->free_count++;                       /* compteur RW, falsifié de même */
-        paging_gate_stats(&vw0, &vr0);
-        samos_err_t ev2 = vmm_map(nv, y, PTE_WRITE);
-        paging_gate_stats(&vw1, &vr1);
-        bool stolen = pmm_core_type(p, x >> 12) == FRAME_PAGETABLE;    /* le PMM a bien donné x */
-        bool v2_refused = ev2 == SAMOS_EPERM && !(pdir()[nv >> 22] & PTE_PRESENT) &&
-                          paging_table_count() == tables && pmm_refs(y) == 0;
-        kprintf("[TEST] D1 V2 aliased frame x=0x%08x handed out as table: %d, vmm_map=%d\n", x, (int)stolen, (int)ev2);
-        KTEST_CHECK(stolen);
-        KTEST_CHECK(v2_refused);
-        /* Refus par table_create AVANT toute écriture privilégiée (ni
-         * scellement, ni PDE) : depuis P4f-B2, le passage refuserait aussi la
-         * publication, mais seulement après le scellement de x. */
-        bool v2_refused_before_any_window = ev2 == SAMOS_EPERM && vw1 == vw0;
-        KTEST_CHECK(v2_refused_before_any_window);
-        if ((pdir()[nv >> 22] & PTE_PRESENT) && (pdir()[nv >> 22] & PTE_FRAME) == x) {
-            /* Mutation : x a été PUBLIÉE comme table. Elle le reste (une table
-             * n'est jamais libérée) : retirer la projection et l'alias, sans
-             * rendre x au PMM. */
-            (void)vmm_unmap(nv, 0);
-            (void)vmm_unmap(a2, 0);
-            (void)pmm_free_frame(y);
-        } else {
-            /* Restauration de l'état réel de x : ALLOCATED, projeté une fois. */
-            meta_rw()[x >> 12] = frame_desc_make(FRAME_ALLOCATED, 1);
-            KTEST_CHECK(p->free_count == freec && pmm_core_check(p) == 0);
-            KTEST_CHECK(vmm_unmap(a2, 0) == SAMOS_OK && pmm_free_frame(x) == SAMOS_OK &&
-                        pmm_free_frame(y) == SAMOS_OK);
-        }
-    }
+    /* Variante V2 (cadre déjà projeté redistribué comme table) : depuis
+     * K0.7-P4f-B3, le refus est FATAL (le cadre volé ne peut être ni publié
+     * ni rendu) ; elle est éprouvée par le mode destructif test=tablealias
+     * (ktest_table_alias ci-dessous). */
     KTEST_CHECK(audit_clean());
     KTEST_CHECK((cpu_read_cr0() & CR0_WP) && (cpu_read_eflags() & EFLAGS_IF) == ifl);
 
@@ -240,4 +207,34 @@ void ktest_suite_pmm_trust(void)
         bool audit_clean_after_removal = entry_pte(av) == 0 && audit_clean();
         KTEST_CHECK(audit_clean_after_removal);
     }
+}
+
+/*
+ * K0.7-P4f-B3 — Mode destructif test=tablealias (statut 37) : variante V2 de
+ * D1. Un cadre x, projeté à 0xD0008000, est marqué FREE par falsification ;
+ * le PMM le distribue comme table neuve. table_create doit arrêter le noyau
+ * (« frame already mapped elsewhere ») AVANT tout scellement ou publication.
+ */
+void ktest_table_alias(void)
+{
+    struct pmm *pw = (struct pmm *)(uintptr_t)pmm_state();
+    const uint32_t a2 = 0xD0008000u, nv = 0xCA000000u;
+    /* La table de la région de a2 doit exister AVANT d'allouer x : sinon sa
+     * création déplacerait le curseur du PMM au-delà de x. */
+    uint32_t z = pmm_alloc_frame();
+    if (z == 0 || vmm_map(0xD0000000u, z, PTE_WRITE) != SAMOS_OK) {
+        kprintf("[TEST] tablealias: preconditions not met\n");
+        return;
+    }
+    uint32_t y = pmm_alloc_frame();             /* cadre de données (AVANT x) */
+    uint32_t x = pmm_alloc_frame();             /* next-fit : hint = x */
+    if (y == 0 || x == 0 || vmm_map(a2, x, PTE_WRITE) != SAMOS_OK || (pdir()[nv >> 22] & PTE_PRESENT)) {
+        kprintf("[TEST] tablealias: preconditions not met\n");
+        return;
+    }
+    meta_rw()[x >> 12] = frame_desc_make(FRAME_FREE, 0);
+    pw->free_count++;
+    kprintf("[TEST] tablealias: frame 0x%08x mapped at 0x%08x, marked FREE; creating a table\n", x, a2);
+    samos_err_t e = vmm_map(nv, y, PTE_WRITE);
+    kprintf("[TEST] internal violation NOT fatal (vmm_map returned %d)\n", (int)e);
 }

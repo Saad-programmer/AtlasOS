@@ -77,6 +77,17 @@ cat > "$T/bad_mode.sh" <<'EOF'
 MUT_CMDLINE=test=nope mutant badmode kernel/arch/i386/paging.c 'if (counted && (flags & ~PTE_WRITE) != 0) {' 'if (0) {' 35 'x'
 EOF
 expect bad_mode 1 "version saine en échec pour « test=nope »"
+# K0.7-P4f-B3 — mutant_mode : un diagnostic que la version saine produit
+# aussi ne discrimine rien (INVALIDE) ; un statut autre que 35/37 n'est pas
+# une détection admise (INVALIDE).
+cat > "$T/mode_shared.sh" <<'EOF'
+mutant_mode shared kernel/arch/i386/paging.c 'table_create_fatal("PDE publication refused", e, va, pt);' 'table_create_fatal("PDE publication refused ", e, va, pt);' test=tcpde 37 'kernel invariant violated'
+EOF
+expect mode_shared 1 "diagnostic présent aussi dans la version saine"
+cat > "$T/mode_status.sh" <<'EOF'
+mutant_mode badstatus kernel/arch/i386/paging.c 'table_create_fatal("PDE publication refused", e, va, pt);' 'return e;' test=tcpde 124 'x'
+EOF
+expect mode_status 1 "statut attendu 124 non admis"
 cat > "$T/wrong_assert.sh" <<'EOF'
 mutant wrong kernel/arch/i386/paging.c 'if (counted && (flags & ~PTE_WRITE) != 0) {' 'if (0) {' 35 'assertion qui n existe pas'
 EOF

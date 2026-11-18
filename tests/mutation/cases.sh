@@ -274,11 +274,14 @@ mutant seal_t0_removed kernel/arch/i386/paging.c \
 # créée après le démarrage (refus fermé). Les autotests normaux s'en
 # trouveraient interrompus par une cascade d'échecs ; la mutation est donc
 # observée dans le mode isolé test=pdeint, qui le nomme.
-MUT_CMDLINE=test=pdeint mutant seal_new_table_removed kernel/arch/i386/paging.c \
+# Depuis K0.7-P4f-B3, un refus après l'allocation est FATAL : la première
+# création de table du mode pdeint arrête le noyau par le diagnostic de la
+# publication refusée, absent de la version saine (mutant_mode).
+mutant_mode seal_new_table_removed kernel/arch/i386/paging.c \
     'samos_err_t se = seal_table_frame(pt);' \
     'samos_err_t se = SAMOS_OK;' \
-    35 \
-    'vmm_tables_created'
+    test=pdeint 37 \
+    'KERNEL PANIC: page-table creation: PDE publication refused'
 # INVLPG oublié après le scellement : la PTE est correcte (sans W), mais un
 # processeur réel garderait la traduction inscriptible chargée dans le TLB
 # par la remise à zéro. Sous QEMU, la fenêtre du passage (changement de
@@ -305,28 +308,39 @@ mutant_tool pt_direct_write kernel/arch/i386/paging.c \
 # M34-M40 — K0.7-P4f-B1 : frontière de confiance du PMM (D1). Exécutées dans
 # le mode ISOLÉ test=pmmtrust (MUT_CMDLINE), qui falsifie des descripteurs ;
 # la version saine doit d'abord réussir ce mode.
-MUT_CMDLINE=test=pmmtrust mutant pmmtrust_map_check_removed kernel/arch/i386/paging.c \
+# Depuis K0.7-P4f-B3 : sans le contrôle de map_page, la requête refusée par
+# le passage dans une région SANS table atteint la création d'une table ; le
+# passage refuse alors d'écrire dans la table dont le type PMM est falsifié
+# (première table), et ce refus après allocation est FATAL. La version saine
+# n'atteint jamais ce point (aucune table créée pour une requête interdite).
+mutant_mode pmmtrust_map_check_removed kernel/arch/i386/paging.c \
     'if (counted && frame_alias_forbidden(pa)) {' \
     'if (false && frame_alias_forbidden(pa)) {' \
-    35 \
-    'no_table_created'
+    test=pmmtrust 37 \
+    'KERNEL PANIC: page-table creation: sealing refused'
 MUT_CMDLINE=test=pmmtrust mutant pmmtrust_gate_check_removed kernel/arch/i386/paging.c \
     '} else if (frame_alias_forbidden(frame)) {' \
     '} else if (false && frame_alias_forbidden(frame)) {' \
     35 \
     'gate_refused'
-MUT_CMDLINE=test=pmmtrust mutant pmmtrust_pde_targets_ignored kernel/arch/i386/paging.c \
+# Depuis K0.7-P4f-B3 : l'alias est accepté dans la région à table existante
+# (assertion nommée), puis la sonde sans table atteint une création de table
+# fatale (diagnostic). Les deux sont exigés.
+mutant_mode pmmtrust_pde_targets_ignored kernel/arch/i386/paging.c \
     'if ((pde & PTE_PRESENT) && (pde & PTE_FRAME) == frame) {' \
     'if (false && (pde & PTE_PRESENT) && (pde & PTE_FRAME) == frame) {' \
-    35 \
-    'first_table_refused' \
-    'other_table_refused' \
-    'new_table_refused'
-MUT_CMDLINE=test=pmmtrust mutant pmmtrust_directory_ignored kernel/arch/i386/paging.c \
+    test=pmmtrust 37 \
+    '[FAIL] refused_existing_region at' \
+    'KERNEL PANIC: page-table creation: sealing refused'
+# Répertoire falsifié : le contrôle de TYPE du passage sur le répertoire
+# (fondé sur le PMM) refuse alors toute écriture, si bien que la région à
+# table existante reste refusée ; la requête sans table atteint en revanche
+# la création d'une table, dont le scellement refusé est fatal.
+mutant_mode pmmtrust_directory_ignored kernel/arch/i386/paging.c \
     'if (frame == (uint32_t)(uintptr_t)g_pd) {' \
     'if (false) {' \
-    35 \
-    'directory_refused'
+    test=pmmtrust 37 \
+    'KERNEL PANIC: page-table creation: sealing refused'
 MUT_CMDLINE=test=pmmtrust mutant pmmtrust_image_ignored kernel/arch/i386/paging.c \
     'return frame_in_kernel_image(frame) || frame_is_paging_structure(frame);' \
     'return (false && frame_in_kernel_image(frame)) || frame_is_paging_structure(frame);' \
@@ -334,11 +348,15 @@ MUT_CMDLINE=test=pmmtrust mutant pmmtrust_image_ignored kernel/arch/i386/paging.
     'text_refused' \
     'idt_refused' \
     'gdt_refused'
-MUT_CMDLINE=test=pmmtrust mutant pmmtrust_prior_alias_ignored kernel/arch/i386/paging.c \
+# Depuis K0.7-P4f-B3, V2 est un mode destructif (test=tablealias). Sans le
+# contrôle de table_create, le cadre volé est SCELLÉ, puis le passage refuse
+# sa publication (alias préexistant) : l'arrêt survient plus tard et par un
+# autre diagnostic que celui de la version saine.
+mutant_mode pmmtrust_prior_alias_ignored kernel/arch/i386/paging.c \
     'if (paging_enabled() && frame_has_foreign_alias(pt)) {' \
     'if (false && frame_has_foreign_alias(pt)) {' \
-    35 \
-    'v2_refused_before_any_window'
+    test=tablealias 37 \
+    'KERNEL PANIC: page-table creation: PDE publication refused'
 MUT_CMDLINE=test=pmmtrust mutant pmmtrust_audit_blind kernel/arch/i386/paging.c \
     'if (frame != va && frame_alias_forbidden(frame)) {' \
     'if (false && frame_alias_forbidden(frame)) {' \
@@ -385,3 +403,46 @@ MUT_CMDLINE=test=pdeint mutant pde_audit_blind kernel/arch/i386/paging.c \
     'dup = false;' \
     35 \
     'audit_sees_duplicate_pde'
+
+# M47-M52 — K0.7-P4f-B3 : intégrité transactionnelle de la création des
+# tables (D4).
+# Effet de bord avant un refus : sans le pré-contrôle des références, une
+# table neuve est publiée avant que pmm_ref ne rende ERANGE.
+MUT_CMDLINE=test=tablelife mutant tl_erange_precheck_removed kernel/arch/i386/paging.c \
+    'if (counted && t == FRAME_ALLOCATED && pmm_refs(pa) >= FRAME_REFS_MAX) {' \
+    'if (false && t == FRAME_ALLOCATED && pmm_refs(pa) >= FRAME_REFS_MAX) {' \
+    35 \
+    'erange_no_table_created'
+# Violation interne transformée en retour ordinaire : le mode destructif
+# constate que vmm_map est revenu (« NOT fatal ») et échoue (statut 35).
+mutant_mode tc_pde_fatal_to_return kernel/arch/i386/paging.c \
+    'table_create_fatal("PDE publication refused", e, va, pt);' \
+    'return e;' \
+    test=tcpde 35 \
+    '[TEST] internal violation NOT fatal'
+mutant_mode tc_seal_fatal_to_return kernel/arch/i386/paging.c \
+    'table_create_fatal("sealing refused", se, va, pt);' \
+    'return se;' \
+    test=tcseal 35 \
+    '[TEST] internal violation NOT fatal'
+mutant_mode tc_alias_fatal_to_return kernel/arch/i386/paging.c \
+    'table_create_fatal("frame already mapped elsewhere", SAMOS_EPERM, va, pt);' \
+    'return SAMOS_EPERM;' \
+    test=tablealias 35 \
+    '[TEST] internal violation NOT fatal'
+# Publication d'une table non scellée : le scellement ne retire plus W. Le
+# passage refuse d'écrire W sur l'identité d'un cadre de pagination (règle à
+# sens unique de P4e-2) : le scellement en bloc de paging_init échoue et le
+# noyau s'arrête dès le démarrage (refus fermé), avec ce diagnostic.
+mutant_mode seal_keeps_write kernel/arch/i386/paging.c \
+    'samos_err_t e = pt_gate_write(PT_KIND_PTE, table, pte & ~PTE_WRITE);' \
+    'samos_err_t e = pt_gate_write(PT_KIND_PTE, table, pte);' \
+    test=tablelife 37 \
+    'KERNEL PANIC: memory management initialisation failed (-10)'
+# Contrôle d'erreur supprimé : l'épuisement du PMM n'est plus reconnu ; le
+# cadre 0 est traité comme une table, et son scellement est refusé.
+mutant_mode tl_enomem_check_removed kernel/arch/i386/paging.c \
+    '        return SAMOS_ENOMEM;                    /* seule erreur ordinaire : aucun effet */' \
+    '        (void)0;' \
+    test=tablelife 37 \
+    'KERNEL PANIC: page-table creation: sealing refused (error -1)'

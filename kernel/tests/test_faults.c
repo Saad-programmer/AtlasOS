@@ -104,6 +104,12 @@ bool ktest_fatal_mode(const char *mode)
         ktest_pt_sealed_write(mode);           /* K0.7-P4e-2 : doit finir en panic */
     } else if (strcmp(mode, "pdesteal") == 0) {
         ktest_pde_steal();                     /* K0.7-P4f-B2 : doit finir en panic */
+    } else if (strcmp(mode, "tablealias") == 0) {
+        ktest_table_alias();                   /* K0.7-P4f-B3 : doit finir en panic */
+    } else if (strcmp(mode, "tcseal") == 0) {
+        ktest_table_seal_refused();            /* K0.7-P4f-B3 : doit finir en panic */
+    } else if (strcmp(mode, "tcpde") == 0) {
+        ktest_table_pde_refused();             /* K0.7-P4f-B3 : doit finir en panic */
     } else if (strcmp(mode, "recursive_panic") == 0) {
         /* K0.7-R1h (F4) — Panique PENDANT une panique : le formatage du
          * message de la première lit une chaîne à une adresse non projetée

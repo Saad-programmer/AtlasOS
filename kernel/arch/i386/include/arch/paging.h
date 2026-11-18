@@ -82,6 +82,8 @@ bool paging_audit(struct paging_audit *a);
 #if CONFIG_KTEST
 /* Image de test : kind 0 = PDE, 1 = PTE. */
 samos_err_t paging_gate_test_write(int kind, uint32_t va, uint32_t value);
+/* K0.7-P4f-B3 : refus injecté de la publication du PDE dans table_create. */
+void paging_test_inject_pde_refusal(bool on);
 void paging_gate_test_set_active(bool active);
 #endif
 

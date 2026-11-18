@@ -229,6 +229,66 @@ mutant() {
     [ "${KEEP:-0}" = 1 ] || rm -rf "$dir"
 }
 
+# K0.7-P4f-B3 — mutant_mode NOM FICHIER 'ORIG' 'MUTÉ' MODE STATUT 'DIAGNOSTIC'...
+# Pour un mode DESTRUCTIF (la version saine s'y arrête elle-même, par exemple
+# par une panique attendue, statut 37) : la mutation est DÉTECTÉE si le noyau
+# muté se termine avec le STATUT attendu (35 ou 37 seulement : jamais un
+# délai, un arrêt CPU ou un triple fault), si chaque DIAGNOSTIC (texte exact)
+# figure dans son journal série et si AUCUN ne figure dans celui de la
+# version saine du même mode (le diagnostic discrimine donc le défaut).
+mutant_mode() {
+    local name="$1" file="$2" orig="$3" repl="$4" mode="$5" want="$6"; shift 6
+    local dir="$WORK/m$total" verdict="" why="" slog="$SANE/mode-$(echo "$mode" | tr -c 'a-z0-9' '_').log"
+    total=$((total + 1))
+    echo "== mutation $name ($file, mode $mode)"
+    if [ "$want" != 35 ] && [ "$want" != 37 ]; then
+        verdict=INVALIDE; why="statut attendu $want non admis (35 ou 37)"
+    fi
+    if [ -z "$verdict" ] && [ ! -f "$slog" ]; then
+        timeout "$TIMEOUT" "$QEMU" -m "$QEMU_MEM" -display none -no-reboot \
+            -kernel "$SANE/$IMAGE" -append "$mode" -serial "file:$slog" \
+            -device isa-debug-exit,iobase=0xf4,iosize=0x04 </dev/null >/dev/null 2>&1
+    fi
+    if [ -z "$verdict" ]; then
+        cp -a "$SRC" "$dir"
+        why="$(apply_mutation "$dir" "$file" "$orig" "$repl")"
+        [ -z "$why" ] || verdict=INVALIDE
+    fi
+    if [ -z "$verdict" ]; then
+        MUT_CMDLINE="$mode" build_and_run "$dir"
+        if [ "$RUN_BUILD" -ne 0 ]; then
+            verdict=INVALIDE; why="compilation en échec ($dir/build.log)"
+        elif [ "$(sha256sum < "$dir/$IMAGE")" = "$SANE_SHA" ]; then
+            verdict=INVALIDE; why="binaire identique à la version saine"
+        elif abnormal_cpu "$RUN_QLOG"; then
+            verdict=INVALIDE; why="triple fault, reset inattendu ou journal QEMU absent"
+        elif [ "$RUN_STATUS" -ne "$want" ]; then
+            verdict=INVALIDE; why="statut QEMU $RUN_STATUS, attendu $want (124 = délai, 0 = arrêt CPU)"
+        else
+            local a missing="" shared=""
+            for a in "$@"; do
+                tr -d '\r' < "$RUN_LOG" | grep -qF -- "$a" || missing="$missing
+      diagnostic absent : $a"
+                tr -d '\r' < "$slog" 2>/dev/null | grep -qF -- "$a" && shared="$shared
+      diagnostic présent aussi dans la version saine : $a"
+            done
+            if [ -n "$missing$shared" ]; then
+                verdict=INVALIDE; why="diagnostic non discriminant :$missing$shared"
+            else
+                verdict=DÉTECTÉE; why="statut $RUN_STATUS, $# diagnostic(s) propre(s) au défaut"
+            fi
+        fi
+    fi
+    if [ "$verdict" = DÉTECTÉE ]; then
+        echo "[PASS] $name : DÉTECTÉE ($why)"
+        detected=$((detected + 1))
+    else
+        echo "[FAIL] $name : $verdict ($why)"
+        bad=1
+    fi
+    [ "${KEEP:-0}" = 1 ] || rm -rf "$dir"
+}
+
 # apply_mutation DIR FICHIER ORIG REPL -> vide si appliquée, sinon la raison.
 apply_mutation() {
     local dir="$1" file="$2" orig="$3" repl="$4" n

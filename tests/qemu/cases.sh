@@ -303,7 +303,6 @@ run_case pmmtrust "test=pmmtrust" 33 \
     "serial:[TEST] suite K0.7 P4f-B1 PMM trust boundary (isolated) done:" \
     "serial:[TEST] D1 first table frame=" \
     "serial:[TEST] D1 page directory frame=" \
-    "serial:[TEST] D1 V2 aliased frame x=" \
     "serial:[TEST] ALL TESTS PASSED" \
     "![FAIL]" "!KERNEL PANIC"
 
@@ -333,6 +332,36 @@ if [ -n "$want" ] && [ "$got" = "$want" ]; then
     echo "[PASS] pdesteal_cr2 (CR2=$got = table falsifiée)"; passed=$((passed + 1))
 else
     echo "[FAIL] pdesteal_cr2 (CR2=${got:-absent}, attendu ${want:-absent})"; fail=1
+fi
+
+# K0.7-P4f-B3 — Création des tables de pages (D4). Mode ISOLÉ tablelife :
+# erreurs ordinaires (mémoire épuisée réellement, paramètres, projections
+# interdites, région occupée, références saturées) sans aucun effet.
+run_case tablelife "test=tablelife" 33 \
+    "serial:[TEST] suite K0.7 P4f-B3 page-table creation lifecycle (isolated) done:" \
+    "serial:[TEST] D4 OOM: vmm_map=-2" \
+    "serial:[TEST] ALL TESTS PASSED" \
+    "![FAIL]" "!KERNEL PANIC"
+# Violations d'invariant APRÈS l'allocation : arrêt déterministe, diagnostic
+# explicite, jamais de retour au VMM, ni triple fault ni panique récursive.
+for tc in "tcseal:sealing refused (error -9)" "tcpde:PDE publication refused (error -10)" \
+          "tablealias:frame already mapped elsewhere (error -10)"; do
+    run_case "${tc%%:*}" "test=${tc%%:*}" 37 \
+        "serial:KERNEL PANIC: page-table creation: ${tc#*:}" \
+        "serial:kernel invariant violated, frame not returned" \
+        "!internal violation NOT fatal" \
+        "!preconditions not met" \
+        "!RECURSIVE PANIC" \
+        "!DOUBLE FAULT"
+done
+# tablealias : le cadre du diagnostic est exactement le cadre aliasé.
+total=$((total + 1))
+want=$(tr -d '\r' < "$OUT/tablealias.serial.log" 2>/dev/null | sed -n 's/.*tablealias: frame \(0x[0-9a-f]*\) mapped.*/\1/p' | head -1)
+got=$(tr -d '\r' < "$OUT/tablealias.serial.log" 2>/dev/null | sed -n 's/.*frame already mapped elsewhere.*: frame \(0x[0-9a-f]*\) type.*/\1/p' | head -1)
+if [ -n "$want" ] && [ "$got" = "$want" ]; then
+    echo "[PASS] tablealias_frame (cadre $got)"; passed=$((passed + 1))
+else
+    echo "[FAIL] tablealias_frame (diagnostic ${got:-absent}, attendu ${want:-absent})"; fail=1
 fi
 
 # K0.7-R1d — Sentinelles de S2 : un mot sentinelle (le mot 2) est altéré, puis
