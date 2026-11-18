@@ -658,6 +658,108 @@ static void test_vmm_flags_policy(void)
     KTEST_CHECK(pmm_core_check(p) == 0);
 }
 
+/* K0.7-M2.5d — Rejeu du scénario E3 d'origine (k06-evidence.c.txt) :
+ * vmm_map(0xD0000000, page de kmain, PTE_WRITE) puis écriture par l'alias.
+ * Ici, AUCUNE écriture n'est faite par un alias : la preuve repose sur le code
+ * de retour, l'absence de PTE et des sondes en lecture. Si une projection est
+ * acceptée à tort (contre-épreuves), elle est aussitôt retirée, et l'échec
+ * est signalé avec le code obtenu. */
+static bool e3_attempt(uint32_t va, uint32_t pa, uint32_t flags, samos_err_t want,
+                       const char *what)
+{
+    uint32_t v = 0;
+    samos_err_t e = vmm_map(va, pa, flags);
+    bool ok = e == want && pte_of(va) == 0 && !vmm_translate(va, 0, 0) &&
+              mem_probe_read((const void *)(uintptr_t)va, &v) == -1;
+    if (e == SAMOS_OK) {
+        (void)vmm_unmap(va, 0);                    /* nettoyage : alias accepté à tort */
+    }
+    if (!ok) {
+        klog(LOG_ERROR, "M2.5d: %s flags 0x%x -> %d (attendu %d)\n",
+             what, flags, (int)e, (int)want);
+    }
+    return ok;
+}
+
+/* Tente l'alias en écriture puis en lecture seule, dans une table existante
+ * (0xD000xxxx) et dans un répertoire sans table (0xEE000000 + n * 4 MiB). */
+static unsigned g_e3s_slot;
+static bool e3_target_refused(uint32_t pa, const char *what)
+{
+    uint32_t va1 = 0xD0000000u + g_e3s_slot * PAGE_SIZE;
+    uint32_t va2 = 0xEE000000u + g_e3s_slot * 0x400000u;
+    g_e3s_slot++;
+    bool ok = e3_attempt(va1, pa, PTE_WRITE, SAMOS_EPERM, what);
+    ok = e3_attempt(va1, pa, 0, SAMOS_EPERM, what) && ok;
+    ok = e3_attempt(va2, pa, PTE_WRITE, SAMOS_EPERM, what) && ok;
+    ok = e3_attempt(va2, pa, 0, SAMOS_EPERM, what) && ok;
+    return ok && pmm_refs(pa) == 0;
+}
+
+static void test_e3_scenario(void)
+{
+    const struct pmm *p = pmm_state();
+    const volatile uint32_t *pd = (const volatile uint32_t *)(uintptr_t)paging_directory();
+    uint32_t tables0 = paging_table_count(), free0 = p->free_count, refs0 = total_refs();
+    uint32_t busy0 = p->busy_frees;
+
+    /* 1. Page physique de kmain (identité : va == pa) */
+    uint32_t kpage = (uint32_t)(uintptr_t)&kmain & PTE_FRAME;
+    uint32_t ro_page = (uint32_t)(uintptr_t)__rodata_start & PTE_FRAME;
+    uint32_t pt_kmain = pd[kpage >> 22] & PTE_FRAME;
+    uint32_t text_before = *(const volatile uint32_t *)(uintptr_t)&kmain;
+    uint32_t pte_kmain0 = pte_of(kpage);
+    KTEST_CHECK(pmm_core_type(p, kpage >> PAGE_SHIFT) == FRAME_KERNEL);
+    KTEST_CHECK(pmm_core_type(p, paging_directory() >> PAGE_SHIFT) == FRAME_PAGETABLE);
+    KTEST_CHECK(pmm_core_type(p, pt_kmain >> PAGE_SHIFT) == FRAME_PAGETABLE);
+
+    /* 2-3. Attaque d'origine, à l'adresse d'origine 0xD0000000 */
+    KTEST_CHECK(e3_target_refused(kpage, "kmain"));
+    /* 4. Code intact, identité toujours en lecture seule, CR0.WP actif */
+    KTEST_CHECK(*(const volatile uint32_t *)(uintptr_t)&kmain == text_before);
+    KTEST_CHECK(pte_of(kpage) == pte_kmain0 && !(pte_kmain0 & PTE_WRITE) && !(pte_kmain0 & PTE_USER));
+    KTEST_CHECK((cpu_read_cr0() & CR0_WP) != 0);
+    KTEST_CHECK(mem_probe_write((void *)(uintptr_t)&kmain, 0) == -1);
+    /* 5-8. Autres cibles critiques */
+    KTEST_CHECK(e3_target_refused(ro_page, ".rodata"));
+    KTEST_CHECK(!(pte_of(ro_page) & PTE_WRITE));
+    KTEST_CHECK(e3_target_refused(paging_directory(), "CR3"));
+    KTEST_CHECK(e3_target_refused(pt_kmain, "table active"));
+    KTEST_CHECK(e3_target_refused((uint32_t)(uintptr_t)gdt_table() & PTE_FRAME, "GDT"));
+    KTEST_CHECK(e3_target_refused((uint32_t)(uintptr_t)p->meta & PTE_FRAME, "table PMM"));
+
+    /* 9. Aucun effet de bord */
+    KTEST_CHECK(paging_table_count() == tables0);
+    KTEST_CHECK(p->free_count == free0 && total_refs() == refs0 && p->busy_frees == busy0);
+    KTEST_CHECK(pmm_core_check(p) == 0);
+
+    /* 10. Cycle normal d'un cadre ALLOCATED, et droits interdits sur ce même
+     * cadre (détecte la désactivation du filtrage des flags, M2.5c). */
+    uint32_t f = pmm_alloc_frame();
+    KTEST_CHECK(f != 0 && pmm_core_type(p, f >> PAGE_SHIFT) == FRAME_ALLOCATED);
+    KTEST_CHECK(e3_attempt(0xD0060000u, f, PTE_USER, SAMOS_EINVAL, "alloue"));
+    KTEST_CHECK(e3_attempt(0xD0060000u, f, PTE_USER | PTE_WRITE, SAMOS_EINVAL, "alloue"));
+    KTEST_CHECK(e3_attempt(0xD0060000u, f, PTE_PRESENT | PTE_WRITE, SAMOS_EINVAL, "alloue"));
+    KTEST_CHECK(e3_attempt(0xD0060000u, f, 0x010u /* PCD */, SAMOS_EINVAL, "alloue"));
+    KTEST_CHECK(pmm_refs(f) == 0);
+    uint32_t v = 0;
+    KTEST_CHECK(vmm_map(0xD0060000u, f, PTE_WRITE) == SAMOS_OK && pmm_refs(f) == 1);
+    KTEST_CHECK((pte_of(0xD0060000u) & 0xFFFu & ~FLAGS_HW_SET) == (PTE_PRESENT | PTE_WRITE));
+    KTEST_CHECK(mem_probe_write((void *)(uintptr_t)0xD0060000u, 0xE3D0E3D0u) == 0);
+    KTEST_CHECK(mem_probe_read((const void *)(uintptr_t)f, &v) == 0 && v == 0xE3D0E3D0u);
+    KTEST_CHECK(pmm_free_frame(f) == SAMOS_EBUSY);                                  /* E5 */
+    KTEST_CHECK(vmm_unmap(0xD0060000u, 0) == SAMOS_OK && pmm_refs(f) == 0);
+    KTEST_CHECK(pmm_free_frame(f) == SAMOS_OK);
+
+    /* E1, E2, E4 ; bilan final */
+    KTEST_CHECK(vmm_map(0, f, PTE_WRITE) == SAMOS_EPERM);                           /* E1 */
+    KTEST_CHECK(mem_probe_read((const void *)(uintptr_t)__stack_guard_start, &v) == -1); /* E2 */
+    KTEST_CHECK(pmm_free_frame(paging_directory()) == SAMOS_EINVAL);                /* E4 */
+    KTEST_CHECK(no_user_bit_anywhere());
+    KTEST_CHECK(paging_table_count() == tables0 && p->free_count == free0 && total_refs() == refs0);
+    KTEST_CHECK(pmm_core_check(p) == 0);
+}
+
 void ktest_suite_mm(void)
 {
     ktest_suite("K0.6 mm");
@@ -675,4 +777,5 @@ void ktest_suite_mm(void)
     test_e5_scenario();
     test_e3_type_policy();
     test_vmm_flags_policy();
+    test_e3_scenario();
 }

@@ -1172,3 +1172,10 @@ Premier sous-jalon de M2.4 (correction de E5), limité au cœur pur. `paging.c` 
 - **Contre-épreuve** (`if (0)`, copie isolée) : statut 35, 7 échecs ; les 14 combinaisons de bits bas sont acceptées et prennent chacune une référence ; aucun triple fault.
 - **Validation :** `make clean && make test` donne 101 `[PASS]`, 0 `[FAIL]`, 26 cas QEMU sur 26 ; compilation parallèle propre (`make -j8`, images de production et de test) réussie.
 - **Limites :** l'identité reste `RW`, y compris les tables de pages (P4) ; pas de bit NX en i386 sans PAE ; **E3 n'est pas déclaré corrigé avant M2.5d.**
+
+### K0.7-M2.5d — Validation finale de E3
+
+- **Test** `test_e3_scenario` : rejeu de l'attaque d'origine (`vmm_map(0xD0000000, page de kmain, PTE_WRITE)`), puis des alias de `.rodata`, de CR3, de la table active, de la GDT et de la table du PMM. Chaque cible est tentée avec `PTE_WRITE` et `0`, dans une table existante et dans un répertoire sans table : toujours `EPERM`. Aucune écriture par alias, même sous contre-épreuve. Vérifiés ensuite : code et PTE d'identité intacts, CR0.WP actif, compteurs inchangés, droits interdits refusés sur un cadre `ALLOCATED` (`EINVAL`), cycle normal d'un cadre alloué, E1, E2, E4, E5, aucun bit U/S. Autotests : 417 → 453 vérifications, 0 échec.
+- **Contre-épreuves** (copies isolées, statut 35, aucun triple fault) : C1 (politique de type ancienne) donne 21 échecs, dont 9 dans le scénario ; C2 (flags non filtrés) donne 12 échecs, dont 5 ; C3 (les deux) donne 33 échecs, dont 14. Le code de `kmain` reste intact sous C1 et C3.
+- **Validation :** `make clean && make test` donne 101 `[PASS]`, 0 `[FAIL]`, 26 cas QEMU sur 26 (démarrage de production de 16 MiB à 4 GiB, autotests à 128 et 512 MiB, fautes de page, débordement de pile) ; `make -j8` propre pour les deux images ; autotests manuels à 128 et 512 MiB : 453/0. À 16 MiB, une seule assertion préexistante échoue (`test_memmap` attend plus de 100 MiB), identique au commit `0876cd3`.
+- **Verdict :** E3 corrigé pour `vmm_map()` (P2, P3, alias ring 3). **P4 reste ouvert** : les tables de pages restent inscriptibles par l'identité.
