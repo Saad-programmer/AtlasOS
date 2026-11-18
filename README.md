@@ -44,8 +44,9 @@ Le but n'est pas d'assembler des bibliothèques existantes. Il s'agit de **compr
 | K0.4 | GDT, IDT, exceptions CPU | ✅ implémenté et vérifié |
 | K0.5 | PIC 8259, PIT, clavier PS/2, file circulaire | ✅ implémenté et vérifié |
 | K0.6 | Carte mémoire, allocateur physique, pagination, protections | ✅ implémenté et vérifié |
+| K0.7 | Durcissement : correction des défauts mémoire E1-E5, références des cadres, politique de `vmm_map`, canaris de pile, sentinelles et pages de garde des piles, outils de mutation et de reproductibilité | 🔶 en cours sur la branche `claude/k0.7-hardening` (non fusionnée) |
 
-**La phase K0 est terminée.** Conformément au plan, le développement fonctionnel est arrêté. La revue complète du noyau et l'analyse de préparation à x86-64 se trouvent dans [`docs/review/K0-review.md`](docs/review/K0-review.md). La phase K1 (x86-64, processus, ordonnanceur, appels système) attend l'autorisation du développeur.
+La phase K0 (K0.1 à K0.6) est terminée ; sa revue se trouve dans [`docs/review/K0-review.md`](docs/review/K0-review.md). **K0.7 (sécurisation) est en cours**, sans nouvelle fonctionnalité. Son état est suivi dans `Walkthrough.md`, `docs/design/` et [`docs/review/K0.7-R1g-audit.md`](docs/review/K0.7-R1g-audit.md). La phase K1 (x86-64, processus, ordonnanceur, appels système) attend l'autorisation du développeur.
 
 ## 4. Vue d'ensemble de l'architecture
 
@@ -244,7 +245,8 @@ Seuls des outils de développement standard sont utilisés : compilateur, assemb
 - Le port série est en émission seule, par scrutation (pas d'IRQ 4, pas de réception).
 - Le journal n'est pas réentrant : les futurs gestionnaires d'IRQ ne devront pas journaliser.
 - **Pas de bit NX** (pagination 32 bits sans PAE) : les données du noyau sont exécutables ; W^X n'est réalisé que pour le code.
-- Projection en identité : seule la RAM sous 1 GiB est gérée ; toute la RAM est inscriptible par le noyau ; pas encore d'espaces d'adressage séparés ni de noyau *higher-half*.
+- Projection en identité : seule la RAM sous 1 GiB est gérée ; toute la RAM est inscriptible par le noyau, **y compris les tables de pages** (risque P4, ouvert en K0.7) ; pas encore d'espaces d'adressage séparés ni de noyau *higher-half*.
+- K0.7 : les canaris de pile ne protègent que les fonctions que Clang instrumente (11 en production), et seulement à leur retour ; les pages de garde des piles ne couvrent que 4 KiB ; un débordement de la pile de double faute se termine par un triple fault (voir `docs/review/K0.7-R1g-audit.md`).
 - Pas d'allocateur d'objets (`kmalloc`) ; l'allocateur physique n'a ni verrou ni compteur de références (monoprocesseur, appelé hors interruption).
 - Le code d'autotest et les modes de faute volontaire sont compilés dans le noyau (sélectionnés par la ligne de commande) : à exclure d'une future version de production.
 - Testé uniquement sous QEMU. Sur un PC UEFI récent, le mode texte VGA ne sera pas disponible.

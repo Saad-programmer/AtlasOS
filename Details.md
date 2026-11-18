@@ -1690,6 +1690,13 @@ Ce mécanisme est aussi le **prototype** de l'accès sûr du noyau à la mémoir
 | **Tests** | 60 vérifications noyau K0.6 ; 5 démarrages fatals (null, wtext, wrodata, unmapped, stack) ; 4 tailles de RAM (16 Mio, 512 Mio, 1,5 Gio, 4 Gio) + autotests à 512 Mio ; hébergés : 20 000 cartes aléatoires, 200 000 opérations de PMM contre un modèle |
 | **Limites** | **pas de NX** : données exécutables (i386 sans PAE) ; identité : toute la RAM est inscriptible par le noyau ; mémoire basse projetée en RW ; GDT, IDT et TSS inscriptibles (le TSS doit l'être : le CPU y écrit lors des commutations de tâche) ; PMM monoprocesseur et sans verrou (correct tant qu'il n'est pas appelé en interruption) ; aucun compteur de références : libérer un cadre encore projeté n'est pas détecté ; `vmm_map` accepte n'importe quelle adresse physique (API interne de confiance) ; RAM au-delà de 1 Gio ignorée ; pas d'espaces d'adressage séparés (K1) |
 
+> **Mise à jour K0.7 (en cours, branche `claude/k0.7-hardening`).** Cette table décrit l'état de K0.6 et est conservée comme historique. Plusieurs limites y sont **dépassées** en K0.7 :
+> - « aucun compteur de références » : les cadres ont désormais des références, et un cadre projeté n'est plus libérable (E5) ;
+> - « `vmm_map` accepte n'importe quelle adresse physique » : seuls les cadres `ALLOCATED` sont acceptés, avec des droits `0` ou `PTE_WRITE` (E3) ;
+> - les piles disposent de canaris, de sentinelles et de trois pages de garde.
+>
+> Restent vrais : **pas de NX**, identité **entièrement inscriptible, tables de pages comprises (P4)**, GDT, IDT et TSS inscriptibles, PMM monoprocesseur sans verrou. Voir `docs/design/K0.7-*.md` et `docs/review/K0.7-R1g-audit.md`.
+
 ---
 
 ## 38. Questions de jury et réponses (K0.6)

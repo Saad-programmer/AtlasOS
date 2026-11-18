@@ -1491,3 +1491,29 @@ tests/tools/repro_selftest.sh
 | `make test-mutation` | 11 mutations sur 11 détectées |
 | `make test-repro` | 2 images reproductibles |
 | `make -j8` depuis zéro | réussi |
+
+### K0.7-R1g — Audit final contradictoire des protections de piles et de la mémoire
+
+- **Document :** `docs/review/K0.7-R1g-audit.md`. Il contient les invariants G1-G11 (gardes), C1-C7 (canaris) et S1-S7 (S2), avec leurs preuves et leurs limites, la recherche de contournements X1-X7, les défauts F1-F6, les risques et la décision. **Aucun code du noyau modifié.**
+- **Expériences de l'audit** (copies isolées, supprimées) :
+  - gardes peintes dans `_start` et vérifiées juste avant la pagination : 0 mot modifié ;
+  - profondeur maximale : S1 2 204 octets sur l'ensemble des autotests, S2 848 octets dans les trois scénarios de double faute ;
+  - `info tlb` : 32 732 traductions, toutes en identité, aucun alias vers une garde, aucune page `U`, `.text` et `.rodata` sans W ;
+  - RAM : démarrage normal dès 1 792 KiB, panique `ENOMEM` déterministe à 1 664-1 728 KiB, aucune sortie à 1 600 KiB.
+- **Défauts trouvés :**
+  - **F1** (preuve insuffisante) : la remise à zéro de S2 par `gdt_init` n'est pas démontrée ; la mutation `s2_zeroing_removed` n'est **pas détectée**, car le chargeur remplit déjà S2 de zéros ;
+  - F2 et F3 (documentation inexacte ou obsolète) : corrigés dans R1 §16, R1e §12.3, le README et `Details.md` §37, avec P4 explicite ;
+  - F4 à F6 : lacunes de couverture et outillage.
+  - Aucun constat critique ou élevé, aucune défaillance de protection.
+- **Validation contradictoire :**
+
+| Commande | Résultat |
+|---|---|
+| `make clean && make test` | 130 `[PASS]`, 0 `[FAIL]`, 36 cas QEMU sur 36 |
+| `make test-mutation` | 11 mutations sur 11 |
+| auto-tests des outils | 12 situations (mutation) et 5 (reproductibilité) conformes |
+| `make test-repro` | réussi |
+| `make -j8` depuis zéro | réussi |
+| options de compilation | 61 unités C, toutes avec `-fstack-protector-strong` et `-Wframe-larger-than=3072` |
+
+- **Décision :** protections conformes ; clôture formelle de R1 recommandée **après** un court R1h (F1, puis éventuellement F4 et F6). P4 reste ouvert.
