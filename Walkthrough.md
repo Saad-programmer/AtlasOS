@@ -1264,3 +1264,31 @@ make test-repro
 tests/mutation/selftest.sh
 tests/tools/repro_selftest.sh
 ```
+
+### K0.7-R1a — Audit et conception des canaris de pile, sans changement de code
+
+- **Document :** `docs/design/K0.7-R1-stack-canaries.md`. Il contient l'inventaire des piles, les risques K1 à K6, l'étude des deux mécanismes (canaris de fonctions et sentinelles de frontières), la stratégie, les changements nécessaires, les tests T1 à T7 et C1 à C3, les critères d'acceptation et le découpage R1b à R1e.
+- **Piles réelles :**
+  - S1, pile de démarrage de 16 KiB : utilisée par `kmain` et par **toutes** les interruptions et exceptions, car une porte ring 0 vers ring 0 ne change pas de pile ;
+  - S2, pile de double faute de 4 KiB dans `.bss`, via la porte de tâche.
+  - Profondeur maximale mesurée de S1 : 836 octets ; plus grand cadre hors tests : 300 octets (`kvprintf`, mesuré par `-fstack-usage` dans une copie isolée).
+- **Constats :**
+  - S2 n'a aucune garde : son débordement écraserait les TSS, puis la GDT ;
+  - le sommet de S1 (`0x191000`) touche le **répertoire de pages** ;
+  - un cadre de plus de 4 KiB peut sauter la page de garde, car Clang ignore `-fstack-clash-protection` pour cette cible.
+- **Faits vérifiés sur Clang 18 (cible `i686-unknown-none-elf`) :**
+  - canari global `__stack_chk_guard` et appel à `__stack_chk_fail` ;
+  - `-mstack-protector-guard=tls` et `-mstack-protector-guard-symbol=` sont ignorés sans avertissement ;
+  - `no_stack_protector` est respecté ; `stack_protect` est inconnu, d'où une activation progressive **par fichier** ;
+  - `-Wframe-larger-than` fonctionne avec `-Werror`.
+- **Stratégie retenue :**
+  - `-fstack-protector-strong` dans les deux images ;
+  - canari défini en NASM dans `.rodata`, écrit par `_start` (à partir de `RDTSC`, octet faible nul) avant `kmain` et avant la pagination, donc en lecture seule ensuite ;
+  - `__stack_chk_fail` appelle `panic` ;
+  - `-Wframe-larger-than=3072` ;
+  - sentinelles en bas de S2.
+  - **Décision D1 demandée** au développeur : pages de garde supplémentaires (au-dessus de S1, sous S2), car elles changent la disposition mémoire.
+- **État de référence :**
+  - `make clean && make test` donne 101 `[PASS]`, 0 `[FAIL]`, 26 cas QEMU sur 26 ;
+  - `make test-mutation` donne 3 mutations sur 3 détectées ;
+  - `make test-repro` donne 2 images reproductibles.
