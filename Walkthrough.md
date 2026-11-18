@@ -1558,3 +1558,17 @@ tests/tools/repro_selftest.sh
   - `make test-repro` et `make -j8` réussis ;
   - 11 fonctions instrumentées en production.
 - **Statut :** R1 clôturé ; K0.7 en cours ; **P4 non résolu** ; K1 non commencé. Aucun code modifié.
+
+### K0.7-P4a — Audit de conception : protection des structures critiques (sans changement de code)
+
+- **Document :** `docs/design/K0.7-P4a-critical-structures.md`. Il contient la carte des structures critiques (adresse, taille, alignement, propriétaire, droits), la matrice des écritures légitimes (initialisation, exécution, écritures implicites du CPU), les chemins de corruption, la comparaison des stratégies A à D, les dépendances, les risques de régression, la recommandation et le découpage P4b à P4f.
+- **Constats :**
+  - le répertoire (`0x193000`) et les tables de pages (32 tables contiguës dès `0x194000` à 128 MiB, 256 à 1 GiB) sont `rw` par l'identité ;
+  - la page `0x109000` mélange la GDT, les TSS, l'IDT, les pointeurs de gestionnaires, les racines du VMM et les compteurs écrits à chaque interruption ; une séparation préalable est donc nécessaire.
+- **Prototype jetable** (copie isolée, supprimée) :
+  - **GDT et TSS en lecture seule, puis double faute : triple fault**. Le CPU y écrit lors de la commutation de tâche ; ils doivent rester inscriptibles ;
+  - **IDT en lecture seule** : 571 vérifications passent ; seuls les modes de test qui la modifient fautent ;
+  - **tables en lecture seule dans l'identité** : démarrage complet, et le bit A est posé par le CPU (accès physique) ; la première écriture logicielle de PTE faute ;
+  - toutes les PTE des tables sont dans la première table, ce qui impose un ordre des mises à jour.
+- **Recommandation :** séparation (C), scellement (A) de l'IDT, des gestionnaires et des racines du VMM, fonction de passage B1 (désactivation temporaire de CR0.WP, interruptions masquées, validation stricte de la cible) pour les tables de pages. GDT et TSS restent inscriptibles (limite imposée par la porte de tâche). P4 sera **réduit, pas éliminé**.
+- **État de référence :** `make test` donne 133 `[PASS]`, 39 cas QEMU sur 39 ; `make test-mutation` 13 sur 13 ; `make test-repro` réussi.
