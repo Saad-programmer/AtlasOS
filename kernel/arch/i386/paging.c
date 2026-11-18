@@ -267,6 +267,11 @@ const char *paging_classify(uint32_t addr, uint32_t err)
     if (in_range(addr, __df_guard_start, __df_guard_end)) {
         return "access to the double-fault stack guard page (below S2)";
     }
+    if (protection && write && (in_range(addr, __kro_idt_start, __kro_idt_end) ||
+                                in_range(addr, __kro_handlers_start, __kro_handlers_end) ||
+                                in_range(addr, __kro_vmm_start, __kro_vmm_end))) {
+        return "write to a sealed kernel structure (IDT, handler tables or VMM roots)";
+    }
     if (protection && write && in_range(addr, __text_start, __rodata_start)) {
         return "write to read-only kernel code (.text)";
     }
@@ -344,4 +349,66 @@ samos_err_t paging_init(uint32_t idmap_top)
      * pour le ring 0 (sinon le noyau pourrait écrire dans .text sans faute). */
     cpu_write_cr0(cpu_read_cr0() | CR0_PG | CR0_WP);
     return SAMOS_OK;
+}
+
+/*
+ * K0.7-P4d — Scellement d'une plage de la projection d'identité : retire
+ * PTE_WRITE de chaque page, puis INVLPG. Opération à SENS UNIQUE (elle ne fait
+ * que retirer un droit ; aucune fonction ne le rend) ; elle passe par les
+ * tables de pages, encore inscriptibles en P4d, et non par une fenêtre
+ * CR0.WP : CR0.WP reste actif en permanence.
+ * Préconditions, TOUTES vérifiées avant la première modification (pas de
+ * scellement partiel en cas de refus) :
+ *   - pagination active, bornes alignées, start < end <= g_idmap_top (EINVAL) ;
+ *   - chaque page présente, en identité (PTE -> cadre de même adresse), et
+ *     de type FRAME_KERNEL : seules les structures de l'image sont visées
+ *     (EPERM). Les identités ne sont pas comptées : aucune référence PMM ne
+ *     change.
+ */
+samos_err_t paging_seal_identity(uint32_t start, uint32_t end)
+{
+    if (!paging_enabled() || ((start | end) & 0xFFFu) != 0 || start >= end || end > g_idmap_top) {
+        return SAMOS_EINVAL;
+    }
+    for (uint32_t va = start; va < end; va += PAGE_SIZE) {
+        uint32_t *pt = get_table(va, false);
+        if (pt == 0) {
+            return SAMOS_EPERM;
+        }
+        uint32_t pte = pt[PT_INDEX(va)];
+        if (!(pte & PTE_PRESENT) || (pte & PTE_FRAME) != va ||
+            pmm_core_type(pmm_state(), va >> PAGE_SHIFT) != FRAME_KERNEL) {
+            return SAMOS_EPERM;
+        }
+    }
+    for (uint32_t va = start; va < end; va += PAGE_SIZE) {
+        uint32_t *pt = get_table(va, false);
+        pt[PT_INDEX(va)] &= ~PTE_WRITE;
+        cpu_invlpg((const void *)(uintptr_t)va);
+    }
+    return SAMOS_OK;
+}
+
+/*
+ * K0.7-P4d — Scellement des trois pages préparées en P4b (linker.ld) :
+ * kro_idt (IDT), kro_handlers (g_handlers, g_irq_handlers), kro_vmm
+ * (g_idmap_top, g_pd). À appeler APRÈS la dernière écriture légitime :
+ * dans kmain, après pit_init et keyboard_init (dernières irq_register) ;
+ * dans l'image de test, ktest_run_all l'appelle après les suites qui
+ * modifient l'IDT ou les gestionnaires. Idempotente. Une page par appel :
+ * chaque scellement est une ligne distincte (mutations M19 à M21).
+ */
+samos_err_t paging_seal_critical(void)
+{
+    samos_err_t e;
+    e = paging_seal_identity((uint32_t)(uintptr_t)__kro_idt_start, (uint32_t)(uintptr_t)__kro_idt_end);
+    if (e != SAMOS_OK) {
+        return e;
+    }
+    e = paging_seal_identity((uint32_t)(uintptr_t)__kro_handlers_start, (uint32_t)(uintptr_t)__kro_handlers_end);
+    if (e != SAMOS_OK) {
+        return e;
+    }
+    e = paging_seal_identity((uint32_t)(uintptr_t)__kro_vmm_start, (uint32_t)(uintptr_t)__kro_vmm_end);
+    return e;
 }

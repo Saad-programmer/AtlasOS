@@ -73,6 +73,7 @@ run_case unknown_mode "test=nope" 35 \
 # K0.4 — Exceptions fatales : rapport complet puis panique (statut 37).
 # ---------------------------------------------------------------------------
 run_case exc_ud "test=ud" 37 \
+    "serial:[TEST] critical structures sealed" \
     "serial:*** CPU exception 6: Invalid Opcode (#UD), error code 0x00000000" \
     "serial:EIP=0x001" "serial:CS=0008" "serial:CR0=" \
     "serial:KERNEL PANIC: unhandled Invalid Opcode (#UD)"
@@ -122,6 +123,7 @@ EXPECT_TRIPLE=1 run_case exc_triple "test=triple" 0 \
 # ---------------------------------------------------------------------------
 TIMEOUT=20 run_case_keys keyboard_e2e "test=kbd" 33 \
     "shift-s a m o s spc shift-k 0 dot 5 spc shift-1 ret" \
+    "serial:[TEST] critical structures sealed" \
     "serial:[TEST] kbd ready" \
     "serial:[TEST] kbd line: 'Samos K0.5 !'" \
     "serial:dropped=0"
@@ -149,6 +151,7 @@ run_case pf_unmapped "test=unmapped" 37 \
 # Débordement de pile : page de garde (K0.2) + pagination (K0.6) => #PF non
 # livrable => #DF attrapée par la porte de tâche (K0.4), SANS triple fault.
 run_case stack_overflow "test=stack" 37 \
+    "serial:[TEST] critical structures sealed" \
     "serial:*** DOUBLE FAULT (#DF) caught by task gate, running on dedicated stack" \
     "serial:double-fault stack sentinels: intact" \
     "!sentinels CORRUPTED" \
@@ -242,6 +245,24 @@ run_case recursive_panic "test=recursive_panic" 37 \
 count_is recursive_panic "RECURSIVE PANIC" 1
 count_is recursive_panic "KERNEL PANIC" 1
 
+# K0.7-P4d — Écriture DIRECTE dans chacune des trois pages scellées, après le
+# scellement de production (ktest_run_all). Attendu : #PF code 0x3 (page
+# présente, écriture, superviseur), diagnostic dédié, statut 37, ni triple
+# fault ni panique récursive ; CR2 = début de la page, lu par nm.
+for sp in "sealidt __kro_idt_start" "sealhandlers __kro_handlers_start" "sealvmm __kro_vmm_start"; do
+    set -- $sp
+    run_case "$1" "test=$1" 37 \
+        "serial:[TEST] critical structures sealed" \
+        "serial:[TEST] writing to sealed page ($1)" \
+        "serial:*** CPU exception 14: Page Fault (#PF), error code 0x00000003" \
+        "serial:protection violation, write access, supervisor mode" \
+        "serial:write to a sealed kernel structure (IDT, handler tables or VMM roots)" \
+        "!sealed write NOT trapped" \
+        "!RECURSIVE PANIC" \
+        "!DOUBLE FAULT"
+    cr2_matches "$1" "$2" 0
+done
+
 # K0.7-R1d — Sentinelles de S2 : un mot sentinelle (le mot 2) est altéré, puis
 # une vraie #DF est provoquée. La tâche #DF doit le signaler (masque 0x4) et
 # paniquer avec un message identifiable ; aucune panique récursive.
@@ -257,6 +278,7 @@ run_case dfsentinel "test=dfsentinel" 37 \
 # __stack_chk_fail, donc panic. Le message « NOT detected » signalerait un
 # retour normal (statut 35 : échec du cas).
 run_case canary_smash "test=canary" 37 \
+    "serial:[TEST] critical structures sealed" \
     "serial:[TEST] corrupting the local canary copy of canary_frame_probe" \
     "serial:KERNEL PANIC: stack smashing detected: canary corrupted in the function containing 0x" \
     "serial:at kernel/core/stack_protector.c:" \

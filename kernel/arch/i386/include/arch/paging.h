@@ -54,6 +54,12 @@ bool vmm_translate(uint32_t va, uint32_t *pa, uint32_t *flags);
 uint32_t paging_directory(void);       /* adresse physique du répertoire (CR3) */
 uint32_t paging_table_count(void);     /* tables de pages allouées */
 
+/* K0.7-P4d — Retire PTE_WRITE de la projection d'identité de [start, end)
+ * (pages de l'image, FRAME_KERNEL), sans retour possible. */
+samos_err_t paging_seal_identity(uint32_t start, uint32_t end);
+/* Scelle kro_idt, kro_handlers et kro_vmm (après la dernière écriture). */
+samos_err_t paging_seal_critical(void);
+
 /* Sondes (probe.asm) : 0 = accès réussi, -1 = faute de page interceptée. */
 int mem_probe_read(const volatile void *addr, uint32_t *out);
 int mem_probe_write(volatile void *addr, uint32_t value);

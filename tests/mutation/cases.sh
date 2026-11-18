@@ -177,3 +177,25 @@ mutant ptgate_nesting_allowed kernel/tests/test_ptgate.c \
     '    if (0) {' \
     35 \
     'en == SAMOS_EBUSY && g_ptgate_nested_refusals == nested0 + 1u'
+
+# M19-M21 — K0.7-P4d : une des trois pages n'est plus scellée. La sonde
+# d'écriture réussit (elle restaure aussitôt la valeur) : l'échec est une
+# assertion nommée, pas une corruption.
+mutant seal_idt_removed kernel/arch/i386/paging.c \
+    'e = paging_seal_identity((uint32_t)(uintptr_t)__kro_idt_start, (uint32_t)(uintptr_t)__kro_idt_end);' \
+    'e = SAMOS_OK;' \
+    35 \
+    'idt_ro' \
+    'write_refused(__kro_idt_start)'
+mutant seal_handlers_removed kernel/arch/i386/paging.c \
+    'e = paging_seal_identity((uint32_t)(uintptr_t)__kro_handlers_start, (uint32_t)(uintptr_t)__kro_handlers_end);' \
+    'e = SAMOS_OK;' \
+    35 \
+    'handlers_ro' \
+    'write_refused(__kro_handlers_start)'
+mutant seal_vmm_removed kernel/arch/i386/paging.c \
+    'e = paging_seal_identity((uint32_t)(uintptr_t)__kro_vmm_start, (uint32_t)(uintptr_t)__kro_vmm_end);' \
+    'e = SAMOS_OK;' \
+    35 \
+    'vmm_ro' \
+    'write_refused(__kro_vmm_start)'

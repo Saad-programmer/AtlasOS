@@ -96,6 +96,9 @@ bool ktest_fatal_mode(const char *mode)
         (void)*(volatile uint32_t *)(uintptr_t)0xE0000000u;
     } else if (strcmp(mode, "stack") == 0) {
         (void)recurse_forever(0);
+    } else if (strcmp(mode, "sealidt") == 0 || strcmp(mode, "sealhandlers") == 0 ||
+               strcmp(mode, "sealvmm") == 0) {
+        ktest_sealed_write(mode);              /* K0.7-P4d : doit finir en panic */
     } else if (strcmp(mode, "recursive_panic") == 0) {
         /* K0.7-R1h (F4) — Panique PENDANT une panique : le formatage du
          * message de la première lit une chaîne à une adresse non projetée

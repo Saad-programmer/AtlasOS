@@ -42,6 +42,8 @@ void ktest_s2_prefill(void);
 void ktest_suite_s2_init(void);     /* K0.7-R1h (F1) */
 void ktest_suite_critical_layout(void); /* K0.7-P4b */
 void ktest_suite_ptgate(void);      /* K0.7-P4c (prototype, image de test) */
+void ktest_suite_sealed(void);      /* K0.7-P4d (après scellement) */
+void ktest_sealed_write(const char *what); /* K0.7-P4d, test=sealidt|sealhandlers|sealvmm */
 #define KTEST_S2_PREFILL 0x5F2A11EDu
 
 /* Déclenche volontairement une faute fatale (modes test=ud, de, gp, np,

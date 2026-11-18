@@ -1627,3 +1627,32 @@ tests/tools/repro_selftest.sh
 | faible RAM, droits (`info mem`) | inchangés |
 
 - **Risques non résolus :** NMI et #MC pendant la fenêtre (WP = 0, puis panique) ; validation dépendante de l'intégrité du PMM ; P5.
+
+### K0.7-P4d — Scellement des structures critiques immuables
+
+- **Document :** `docs/design/K0.7-P4d-sealed-structures.md`.
+- **Audit des écritures :** aucune adresse n'échappe en écriture vers les trois pages ; en production, la dernière écriture est `irq_register(1)` dans `keyboard_init`. Le CPU n'écrit jamais l'IDT. En test : `test_cpu`, et les modes `df`, `dfsentinel` et `nested`.
+- **Mécanisme :**
+  - `paging_seal_identity` : à sens unique, toutes les préconditions vérifiées avant modification, pages `FRAME_KERNEL` en identité seulement, aucune référence PMM touchée ;
+  - `paging_seal_critical` : trois pages ; appelée dans `kmain` après `keyboard_init`.
+  - **Aucune fenêtre CR0.WP en production** (`check_elf.sh` : une seule écriture de CR0, dans `paging_init`).
+- **Image de test :** suites, puis scellement, puis suite « K0.7 sealed structures (P4d) » (31 vérifications). Modes destructifs scellés, sauf `df`, `dfsentinel` et `nested`.
+- **Carte :** production `0x10a000-0x10d000 r-` (IDT, gestionnaires, racines du VMM) ; `kcpu` `0x109000`, `.bss`, CR3 `0x196000` et les tables restent `rw` ; CR0 = `0x80010011`.
+- **Preuves :**
+  - écriture refusée (CR2 exact, code 3) ; une seule projection par cadre, sans W ;
+  - IRQ0 livrées, #PF traitée, VMM fonctionnel en état scellé ;
+  - cas QEMU `sealidt`, `sealhandlers` et `sealvmm` (#PF code 0x3, diagnostic dédié, statut 37, CR2 lu par `nm`) ;
+  - `exc_ud`, `stack_overflow`, `canary_smash` et `keyboard_e2e` exécutés en état scellé.
+- **Mutations :** `seal_idt_removed`, `seal_handlers_removed` et `seal_vmm_removed` détectées. Les sondes restaurent la valeur si elles réussissent sous mutation.
+- **Validation :**
+
+| Commande | Résultat |
+|---|---|
+| `make clean && make test` | 142 `[PASS]`, 0 `[FAIL]`, 45 cas QEMU sur 45 |
+| autotests | 652 vérifications |
+| `make test-mutation` | 21 mutations sur 21 |
+| `make test-repro` | réussi |
+| `make -j8` depuis zéro | réussi |
+| faible RAM | inchangée |
+
+- **Risque principal restant :** les tables de pages, inscriptibles, permettent de remettre W sur une page scellée (P4e).

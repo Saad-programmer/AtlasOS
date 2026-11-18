@@ -29,6 +29,7 @@
 #include <samos/serial.h>
 #include <arch/cpu.h>
 #include <arch/gdt.h>
+#include <arch/paging.h>
 #include <arch/interrupt.h>
 #include <arch/pic.h>
 #include <samos/keyboard.h>
@@ -141,6 +142,15 @@ void kmain(uint32_t magic, uint32_t mbi_phys)
     }
 #endif
 
+    /* K0.7-P4d — Scellement des structures critiques immuables, APRÈS leurs
+     * dernières écritures légitimes (idt_init, interrupt_register du #PF dans
+     * paging_init, irq_register du PIT et du clavier ci-dessus). Ne passe pas
+     * par une fenêtre CR0.WP : la protection reste active en permanence. */
+    samos_err_t seal_err = paging_seal_critical();
+    if (seal_err != SAMOS_OK) {
+        panic("critical structure sealing failed (%d)", seal_err);
+    }
+    kprintf("SAMOS: critical structures sealed read-only (IDT, handler tables, VMM roots)\n");
     kprintf("SAMOS: boot stack high-water %zu bytes, guard page %s\n",
             boot_stack_high_water(), boot_stack_guard_intact() ? "unmapped (MMU-enforced)" : "MAPPED (unsafe)");
     /* K0.7-R1d — Point de vérification de fonctionnement normal. */

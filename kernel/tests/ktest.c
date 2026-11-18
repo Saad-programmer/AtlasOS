@@ -10,6 +10,7 @@
  *   test=kbd      ligne tapée au clavier (frappes injectées par QEMU, K0.5)
  */
 #include <samos/bootinfo.h>
+#include <arch/paging.h>
 #include <samos/ktest.h>
 #include <samos/log.h>
 #include <samos/panic.h>
@@ -72,10 +73,40 @@ static __attribute__((noinline)) SAMOS_NORETURN void deliberate_panic(void)
     deliberate_panic_inner(42);
 }
 
+/*
+ * K0.7-P4d — Scellement dans l'image de test. Les modes qui écrivent
+ * VOLONTAIREMENT dans l'IDT ou les gestionnaires pour provoquer leur faute
+ * (df et dfsentinel : idt_set_present ; nested : interrupt_register)
+ * s'exécutent sans scellement. Tous les autres modes, y compris stack
+ * (double faute par débordement de S1) et kbd (IRQ clavier), s'exécutent
+ * APRÈS le scellement de production : ils prouvent que le noyau scellé
+ * fonctionne. Les suites, dont certaines enregistrent des gestionnaires,
+ * s'exécutent avant le scellement ; la suite P4d vérifie ensuite l'état
+ * scellé.
+ */
+static bool mode_writes_tables(const char *mode)
+{
+    return strcmp(mode, "df") == 0 || strcmp(mode, "dfsentinel") == 0 ||
+           strcmp(mode, "nested") == 0;
+}
+
+static void seal_or_fail(void)
+{
+    samos_err_t e = paging_seal_critical();
+    if (e != SAMOS_OK) {
+        kprintf("[TEST] critical structure sealing failed (%d)\n", (int)e);
+        qemu_exit(QEMU_EXIT_FAILURE);
+    }
+    kprintf("[TEST] critical structures sealed\n");
+}
+
 void ktest_run_all(void)
 {
     char mode[32];
     if (cmdline_value("test", mode, sizeof(mode))) {
+        if (!mode_writes_tables(mode)) {
+            seal_or_fail();
+        }
         if (strcmp(mode, "panic") == 0) {
             deliberate_panic();
         }
@@ -105,6 +136,11 @@ void ktest_run_all(void)
     ktest_suite_s2_init();
     ktest_suite_critical_layout();
     ktest_suite_ptgate();
+
+    /* K0.7-P4d — Dernière écriture légitime des tables scellées passée :
+     * scellement de production, puis vérification de l'état scellé. */
+    seal_or_fail();
+    ktest_suite_sealed();
 
     suite_close();
     kprintf("[TEST] suites=%u checks=%u failures=%u\n", g_suites, g_checks, g_failures);
