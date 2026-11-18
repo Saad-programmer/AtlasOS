@@ -1671,7 +1671,7 @@ Toute autre #PF reste fatale : la correction est strictement limitée à des adr
 | écriture dans `.rodata` | faute, valeur intacte |
 | lecture dans la page de garde | faute, CR2 exact, P = 0 |
 | lecture de `0xE0000000` | faute |
-| `0xD0000000` après `vmm_unmap` | faute (INVLPG effectif) |
+| `0xD0000000` après `vmm_unmap` | faute (INVLPG effectif en K0.6 ; depuis K0.7-P4e-1, la fenêtre CR0.WP vide le TLB sous QEMU et cette observation ne prouve plus l'INVLPG : voir `docs/review/K0.7-P4f-B4-tlb-invalidation-evidence.md`) |
 | écriture dans une projection en lecture seule | faute ; la lecture réussit |
 
 Ce mécanisme est aussi le **prototype** de l'accès sûr du noyau à la mémoire des futurs programmes utilisateur (K1) : un pointeur fourni par un programme non fiable sera lu par une sonde, et non par un déréférencement direct.

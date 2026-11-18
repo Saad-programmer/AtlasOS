@@ -364,6 +364,18 @@ else
     echo "[FAIL] tablealias_frame (diagnostic ${got:-absent}, attendu ${want:-absent})"; fail=1
 fi
 
+# K0.7-P4f-B4 — Cohérence du TLB (D2). tlbexp : expérience isolée, PTE
+# modifiée par un alias temporaire SANS écriture de CR0 : traduction périmée
+# sans INVLPG, nouvelle traduction après INVLPG (cadre, retrait, retrait de
+# W). tlbvmm : opérations du VMM réel (pouvoir de détection apporté par
+# tests/tools/tlb_integration.sh, lancé par make test-tools).
+run_case tlbexp "test=tlbexp" 33 \
+    "serial:[TEST] suite K0.7 P4f-B4 TLB invalidation experiment (isolated) done:" \
+    "serial:[TEST] ALL TESTS PASSED" "![FAIL]" "!KERNEL PANIC"
+run_case tlbvmm "test=tlbvmm" 33 \
+    "serial:[TEST] suite K0.7 P4f-B4 VMM TLB coherence (integration) done:" \
+    "serial:[TEST] ALL TESTS PASSED" "![FAIL]" "!KERNEL PANIC"
+
 # K0.7-R1d — Sentinelles de S2 : un mot sentinelle (le mot 2) est altéré, puis
 # une vraie #DF est provoquée. La tâche #DF doit le signaler (masque 0x4) et
 # paniquer avec un message identifiable ; aucune panique récursive.

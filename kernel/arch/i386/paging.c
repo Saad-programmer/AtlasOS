@@ -651,7 +651,9 @@ void paging_gate_test_set_active(bool active)
  * Transaction : toutes les vérifications faillibles précèdent la prise de
  * référence, et l'écriture de la PTE, qui ne peut plus échouer, la suit.
  */
-static samos_err_t map_page(uint32_t va, uint32_t pa, uint32_t flags, bool counted)
+/* SAMOS_NOINLINE (K0.7-P4f-B4) : l'INVLPG est vérifié sur le code machine
+ * de CETTE fonction (check_elf.sh). */
+static SAMOS_NOINLINE samos_err_t map_page(uint32_t va, uint32_t pa, uint32_t flags, bool counted)
 {
     if ((va | pa) & 0xFFFu || (flags & ~0xFFFu) != 0) {
         return SAMOS_EINVAL;
@@ -728,7 +730,13 @@ static samos_err_t map_page(uint32_t va, uint32_t pa, uint32_t flags, bool count
     }
     (void)pt;
     if (paging_enabled()) {
-        cpu_invlpg((const void *)(uintptr_t)va);   /* pas d'entrée périmée « non présente » dans le TLB */
+        /* Absent -> présent : invalidation OPTIONNELLE selon l'architecture
+         * (SDM vol. 3A §4.10.4.3 : aucune entrée de TLB ni de cache des
+         * structures n'est créée à partir d'une entrée P = 0). Conservée par
+         * défense (coût négligeable) ; sa suppression ne peut être détectée
+         * par aucun test de comportement, même sur matériel réel : seul le
+         * code machine la vérifie (K0.7-P4f-B4). */
+        cpu_invlpg((const void *)(uintptr_t)va);    /* map_page : défensive (P 0 -> 1) */
     }
     return SAMOS_OK;
 }
@@ -754,7 +762,7 @@ samos_err_t vmm_map(uint32_t va, uint32_t pa, uint32_t flags)
  * la projection reste intacte ; aucune PTE présente ne désigne jamais un
  * cadre ALLOCATED sans référence.
  */
-samos_err_t vmm_unmap(uint32_t va, uint32_t *pa)
+SAMOS_NOINLINE samos_err_t vmm_unmap(uint32_t va, uint32_t *pa)
 {
     if ((va & 0xFFFu) != 0) {
         return SAMOS_EINVAL;                   /* K0.6 arrondissait silencieusement */
@@ -780,9 +788,15 @@ samos_err_t vmm_unmap(uint32_t va, uint32_t *pa)
     if (pa != 0) {
         *pa = frame;
     }
-    /* Indispensable : sans INVLPG, le TLB peut conserver l'ancienne
-     * traduction et l'accès continuerait de réussir (vérifié par autotest). */
-    cpu_invlpg((const void *)(uintptr_t)va);
+    /* Indispensable (présent -> absent) : sans INVLPG, le TLB peut conserver
+     * l'ancienne traduction, et l'accès réussirait encore vers un cadre que
+     * pmm_unref va rendre au PMM (E5). Exécuté AVANT pmm_unref.
+     * K0.7-P4f-B4 : l'ancienne mention « vérifié par autotest » était devenue
+     * inexacte depuis P4e-1 (sous QEMU, la fenêtre CR0.WP du passage vide
+     * tout le TLB et masque l'oubli). Preuves actuelles : code machine
+     * (check_elf.sh, ordre passage < invlpg < pmm_unref) et harnais
+     * d'intégration sans vidage implicite (tests/tools/tlb_integration.sh). */
+    cpu_invlpg((const void *)(uintptr_t)va);    /* vmm_unmap : avant pmm_unref */
     if (counted) {
         samos_err_t e = pmm_unref(frame);
         KASSERT(e == SAMOS_OK);                /* garanti par la vérification préalable */
@@ -942,7 +956,7 @@ samos_err_t paging_init(uint32_t idmap_top)
  *     (EPERM). Les identités ne sont pas comptées : aucune référence PMM ne
  *     change.
  */
-samos_err_t paging_seal_identity(uint32_t start, uint32_t end)
+SAMOS_NOINLINE samos_err_t paging_seal_identity(uint32_t start, uint32_t end)
 {
     if (!paging_enabled() || ((start | end) & 0xFFFu) != 0 || start >= end || end > g_idmap_top) {
         return SAMOS_EINVAL;
@@ -972,7 +986,7 @@ samos_err_t paging_seal_identity(uint32_t start, uint32_t end)
         if (ge != SAMOS_OK) {
             return ge;
         }
-        cpu_invlpg((const void *)(uintptr_t)va);
+        cpu_invlpg((const void *)(uintptr_t)va);    /* seal_identity : W retiré, invalidation requise */
     }
     return SAMOS_OK;
 }

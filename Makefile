@@ -136,7 +136,8 @@ TEST_SRCS := kernel/tests/ktest.c \
              kernel/tests/test_ptseal.c \
              kernel/tests/test_pmmtrust.c \
              kernel/tests/test_pdeint.c \
-             kernel/tests/test_tablelife.c
+             kernel/tests/test_tablelife.c \
+             kernel/tests/test_tlb.c
 
 objs = $(patsubst %.asm,$(BUILD)/$(1)/%.o,$(ASM_SRCS)) $(patsubst %.c,$(BUILD)/$(1)/%.o,$(2))
 PROD_OBJS := $(call objs,prod,$(C_SRCS))
@@ -204,6 +205,7 @@ test-tools: $(KERNEL) $(TEST_KERNEL)
 	tests/tools/canary_check.sh $(KERNEL) $(TEST_KERNEL)
 	tests/tools/frame_limit_check.sh $(CC) $(CFLAGS) $(PROD_DEFS)
 	tests/tools/pt_write_lint.sh
+	tests/tools/tlb_integration.sh
 
 test-host:
 	tests/host/run.sh

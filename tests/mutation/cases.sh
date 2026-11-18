@@ -446,3 +446,46 @@ mutant_mode tl_enomem_check_removed kernel/arch/i386/paging.c \
     '        (void)0;' \
     test=tablelife 37 \
     'KERNEL PANIC: page-table creation: sealing refused (error -1)'
+
+# M53-M58 — K0.7-P4f-B4 : invalidations du TLB (D2). Sous QEMU, la fenêtre
+# CR0.WP du passage vide le TLB : les autotests normaux ne voient aucun INVLPG
+# oublié. Détections : harnais d'intégration sans vidage implicite
+# (tlb_integration.sh), contrôle du code machine (check_elf.sh), et
+# expérience isolée (test=tlbexp).
+mutant_tool unmap_invlpg_removed kernel/arch/i386/paging.c \
+    'cpu_invlpg((const void *)(uintptr_t)va);    /* vmm_unmap : avant pmm_unref */' \
+    '(void)0;' \
+    'tests/tools/tlb_integration.sh' \
+    '[FAIL] unmap_translation_removed at' \
+    '[FAIL] tlb_integration: phase A en echec'
+mutant_tool unmap_invlpg_removed_machine_code kernel/arch/i386/paging.c \
+    'cpu_invlpg((const void *)(uintptr_t)va);    /* vmm_unmap : avant pmm_unref */' \
+    '(void)0;' \
+    'tools/check_elf.sh build/samos.elf --production' \
+    'vmm_unmap:sans-invlpg'
+# INVLPG présent mais sur une AUTRE adresse : une instruction sans rapport ne
+# doit pas satisfaire le contrôle.
+mutant_tool unmap_invlpg_wrong_address kernel/arch/i386/paging.c \
+    'cpu_invlpg((const void *)(uintptr_t)va);    /* vmm_unmap : avant pmm_unref */' \
+    'cpu_invlpg((const void *)(uintptr_t)(va + 0x1000u));' \
+    'tools/check_elf.sh build/samos.elf --production' \
+    'vmm_unmap:operande'
+# map_page : invalidation OPTIONNELLE (P 0 -> 1, SDM §4.10.4.3) ; aucun test
+# de comportement ne peut la détecter, même sans vidage implicite (constaté) :
+# seul le code machine la vérifie.
+mutant_tool map_invlpg_removed kernel/arch/i386/paging.c \
+    'cpu_invlpg((const void *)(uintptr_t)va);    /* map_page : défensive (P 0 -> 1) */' \
+    '(void)0;' \
+    'tools/check_elf.sh build/samos.elf --production' \
+    'map_page:sans-invlpg'
+mutant_tool seal_identity_invlpg_removed kernel/arch/i386/paging.c \
+    'cpu_invlpg((const void *)(uintptr_t)va);    /* seal_identity : W retiré, invalidation requise */' \
+    '(void)0;' \
+    'tools/check_elf.sh build/samos.elf --production' \
+    'paging_seal_identity:sans-invlpg'
+# L'expérience isolée elle-même détecte l'absence d'invalidation.
+MUT_CMDLINE=test=tlbexp mutant tlbexp_invlpg_removed kernel/tests/test_tlb.c \
+    'cpu_invlpg((const void *)(uintptr_t)va);                       /* étape 1 : invalidation */' \
+    '(void)0;' \
+    35 \
+    'new_frame_after_invlpg'

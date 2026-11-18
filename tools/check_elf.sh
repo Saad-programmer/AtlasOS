@@ -195,7 +195,7 @@ done
 # Symboles qui ne doivent exister QUE dans l'image de test : autotests, modes de
 # faute volontaire, sortie QEMU. Leur présence dans l'image de production
 # signifierait qu'un mode destructif y est accessible.
-TEST_ONLY_SYMS="ktest_run_all ktest_fatal_mode qemu_exit ktest_check ktest_s2_prefill ptgate_write_entry ptgate_set_pte paging_gate_test_write paging_gate_test_set_active ktest_suite_pmm_trust ktest_suite_pde_integrity paging_test_inject_pde_refusal ktest_suite_table_lifecycle"
+TEST_ONLY_SYMS="ktest_run_all ktest_fatal_mode qemu_exit ktest_check ktest_s2_prefill ptgate_write_entry ptgate_set_pte paging_gate_test_write paging_gate_test_set_active ktest_suite_pmm_trust ktest_suite_pde_integrity paging_test_inject_pde_refusal ktest_suite_table_lifecycle ktest_suite_tlb_experiment ktest_suite_tlb_vmm"
 # K0.7-P4c, P4e-1, P4e-2 : écritures de CR0 autorisées, par LOCALISATION et
 # par FONCTION (pas seulement par nombre). Argument : prod | test.
 #   paging_init   : 1 écriture, précédée de « or $0x80010000 » (PG|WP) ;
@@ -247,21 +247,62 @@ cr0_report() {
                 }
             }'
 }
-# K0.7-P4e-2 — seal_table_frame (deux images) : l'écriture par le passage est
-# SUIVIE d'un INVLPG. Sous QEMU, tout changement de CR0.WP vide le TLB : un
-# INVLPG oublié resterait invisible aux autotests, mais pas sur un processeur
-# réel (MOV vers CR0 n'invalide le TLB que si PG passe de 1 à 0, SDM vol. 3A
-# §4.10.4.1). Le contrôle porte donc sur le code machine.
-sealrep=$(objdump -d --no-show-raw-insn "$ELF" | awk '
-    /^[0-9a-f]+ <[^>]+>:$/ { infn = ($2 == "<seal_table_frame>:"); if (infn) seen = 1; next }
-    infn && /call +[0-9a-f]+ <pt_gate_write>/ { gate = 1 }
-    infn && gate && /invlpg/ { inv = 1 }
-    END { if (!seen) print "absente"; else if (!gate) print "sans-appel-pt_gate_write"; else if (!inv) print "sans-invlpg" }')
-if [ -z "$sealrep" ]; then
-    pass "seal_table_frame : INVLPG apres l'ecriture par pt_gate_write"
-else
-    bad "seal_table_frame:$sealrep"
-fi
+# K0.7-P4e-2, P4f-B4 — INVLPG des chemins du VMM (deux images). Sous QEMU,
+# tout changement de CR0.WP vide le TLB : un INVLPG oublié reste invisible aux
+# autotests, mais pas sur un processeur réel (MOV vers CR0 n'invalide le TLB
+# que si PG passe de 1 à 0, SDM vol. 3A §4.10.4.1). Pour chaque fonction
+# (toutes SAMOS_NOINLINE), sur le code machine, dans l'ordre du listing :
+#   - EXACTEMENT un « invlpg (%R) » (pas d'invalidation étrangère qui
+#     suffirait à satisfaire la règle) ;
+#   - situé APRÈS le dernier « call <pt_gate_write> » qui le précède ;
+#   - OPÉRANDE : l'adresse invalidée est celle passée au passage, dont
+#     l'argument va est dans %edx : soit « mov %R,%edx » avant l'appel et %R
+#     non réécrit ensuite, soit %R rechargé depuis la même case mémoire que
+#     %edx, sans écriture de cette case entre-temps ;
+#   - pour vmm_unmap : AVANT « call <pmm_unref> » (aucune traduction vers un
+#     cadre déjà rendu au PMM).
+# Analyse de motifs sur l'ordre du listing, pas une preuve de tous les
+# chemins d'exécution ; elle complète le harnais d'intégration
+# (tests/tools/tlb_integration.sh) et le relevé manuel du rapport P4f-B4.
+invlpg_rule() {   # invlpg_rule FONCTION [APPEL_QUI_DOIT_SUIVRE]
+    objdump -d --no-show-raw-insn "$ELF" | awk -v f="<$1>:" -v after="$2" '
+        /^[0-9a-f]+ <[^>]+>:$/ { infn = ($2 == f); if (infn) seen = 1; next }
+        infn && NF == 0 { infn = 0 }
+        infn { sub(/^ *[0-9a-f]+:\t/, ""); ins[++n] = $0 }
+        END {
+            if (!seen) { print "absente"; exit }
+            k = 0; for (x = 1; x <= n; x++) if (ins[x] ~ /^invlpg /) { k++; at = x }
+            if (k == 0) { print "sans-invlpg"; exit }
+            if (k != 1) { print "invlpg:" k; exit }
+            c = 0; for (x = at - 1; x >= 1; x--) if (ins[x] ~ /call +[0-9a-f]+ <pt_gate_write>/) { c = x; break }
+            if (!c) { print "sans-appel-pt_gate_write"; exit }
+            r = ins[at]; sub(/^invlpg +\(/, "", r); sub(/\).*$/, "", r)
+            src = ""; for (x = c - 1; x >= 1; x--) if (ins[x] ~ /,%edx$/) { src = ins[x]; break }
+            sub(/^mov +/, "", src); sub(/,%edx$/, "", src)
+            ok = 0
+            if (src == r) {
+                ok = 1; for (x = c + 1; x < at; x++) if (ins[x] ~ (","r"$")) ok = 0
+            } else if (src != "" && src !~ /^%/ && src !~ /^\$/) {
+                ld = ""; for (x = at - 1; x > c; x--) if (ins[x] ~ (","r"$")) { ld = ins[x]; break }
+                sub(/^mov +/, "", ld); sub((","r"$"), "", ld)
+                if (ld == src) { ok = 1; for (x = c + 1; x < at; x++) if (index(ins[x], ","src) && ins[x] !~ /^(cmp|test)/) ok = 0 }
+            }
+            if (!ok) { print "operande"; exit }
+            if (after != "") {
+                d = 0; for (x = at + 1; x <= n; x++) if (ins[x] ~ ("call +[0-9a-f]+ <"after">")) { d = x; break }
+                if (!d) print "invlpg-apres-" after
+            }
+        }'
+}
+for spec in "seal_table_frame" "paging_seal_identity" "vmm_unmap pmm_unref" "map_page"; do
+    set -- $spec
+    rep=$(invlpg_rule "$1" "${2:-}")
+    if [ -z "$rep" ]; then
+        pass "$1 : un INVLPG, apres pt_gate_write, sur l'adresse ecrite${2:+, avant $2}"
+    else
+        bad "$1:$rep"
+    fi
+done
 syms=$(nm "$ELF" | awk '{print $3}')
 case "$MODE" in
     --production)

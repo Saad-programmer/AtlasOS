@@ -860,7 +860,7 @@ Résultat observé : **61 lignes `[PASS]`, aucune `[FAIL]`**, statut 0.
 | CR0.PG + WP, CR3, CR3 de la tâche #DF | conforme | **PASS** |
 | Traductions : `.text`/`.rodata` R, `.data`/VGA RW, page nulle et garde absentes, superviseur | conforme | **PASS** |
 | Sondes : 9 accès légitimes ou interdits, avec CR2 et code d'erreur exacts | conforme | **PASS** |
-| `vmm_map/unmap` : alias physique, EEXIST, EINVAL, INVLPG effectif, projection R | conforme | **PASS** |
+| `vmm_map/unmap` : alias physique, EEXIST, EINVAL, INVLPG effectif, projection R | conforme | **PASS** (note K0.7-P4f-B4 : valable à cette date ; depuis P4e-1, l'observation « INVLPG effectif » est masquée sous QEMU par la fenêtre CR0.WP) |
 | Total des autotests noyau | statut 33 | **PASS** (223 vérifications) |
 | `pf_null`, `pf_write_text`, `pf_write_rodata`, `pf_unmapped` | diagnostic exact, statut 37 | **PASS** |
 | `stack_overflow` : #DF par porte de tâche, diagnostic, pas de triple fault | conforme | **PASS** |
@@ -1609,7 +1609,7 @@ tests/tools/repro_selftest.sh
 - **Isolement :** symboles du prototype interdits en production ; nouvelle règle de `check_elf.sh` : **une seule écriture de CR0 en production**, dans `paging_init` ; la même règle appliquée à l'image de test signale le prototype.
 - **Tests :**
   - suite P4c (40 vérifications) : cibles `KERNEL`, `ALLOCATED`, `RESERVED`, hors limites, non alignées, `PTE_USER`, gardes et page nulle refusées ; imbrication `EBUSY` ; erreur après validation, avec restauration ;
-  - écriture sur une table scellée pour le test : valeur relue, TLB effectif, retrait avec IF = 1 conservé, `INVLPG` effectif ;
+  - écriture sur une table scellée pour le test : valeur relue, TLB effectif, retrait avec IF = 1 conservé, `INVLPG` effectif (note K0.7-P4f-B4 : la fenêtre WP du prototype vide elle-même le TLB sous QEMU ; ces deux observations ne prouvent pas l'INVLPG) ;
   - après fermeture, une écriture directe faute.
 - **Défauts de test corrigés :**
   - comparaison qui ignorait les bits A et D posés par le CPU ;
@@ -1880,3 +1880,38 @@ tests/tools/repro_selftest.sh
   - un PMM falsifié peut provoquer un arrêt (refus fermé) ;
   - les tables restent conservées jusqu'à l'arrêt ; leur libération future exigera un chemin dédié ;
   - D2 reste ouvert.
+
+### K0.7-P4f-B4 — Preuves de cohérence du TLB et des invalidations INVLPG (correction de D2)
+
+- **Document :** `docs/review/K0.7-P4f-B4-tlb-invalidation-evidence.md`.
+- **Reproduction** (copie isolée) :
+  - avec le passage réel, retirer l'INVLPG de `vmm_unmap` ou de `map_page` laisse tous les autotests réussir (vidage du TLB par CR0.WP sous QEMU) ;
+  - sans écriture de CR0, le retrait dans `vmm_unmap` est détecté, celui de `map_page` ne l'est pas. C'est attendu : invalidation optionnelle pour P 0 → 1 (SDM §4.10.4.3).
+- **Audit :** quatre INVLPG (`map_page` optionnel ; `vmm_unmap`, `paging_seal_identity` et `seal_table_frame` requis). Une PDE n'est publiée que si elle était absente, ce qui ne demande pas d'invalidation ; les PDE présentes sont interdites (D3).
+- **Preuves :**
+  - **structurelle :** `check_elf.sh` exige, pour les quatre fonctions (désormais `SAMOS_NOINLINE`), un INVLPG unique, après `pt_gate_write`, sur l'adresse écrite, et avant `pmm_unref` pour `vmm_unmap` ;
+  - **comportementale isolée :** `test=tlbexp`, une PTE modifiée par un alias temporaire sans écriture de CR0 ; traduction périmée sans INVLPG, nouvelle après INVLPG (cadre, retrait, retrait de W) ;
+  - **intégration :** `tests/tools/tlb_integration.sh` rejoue `test=tlbvmm` dans une copie où le passage n'écrit plus CR0. Phase A réussie, phase B (INVLPG de `vmm_unmap` retiré) détectée. Le harnais est lancé par `make test-tools`.
+- **Mutations :**
+  - M53 et M54 : INVLPG de `vmm_unmap` retiré (intégration, code machine) ;
+  - M55 : INVLPG sur une autre adresse ;
+  - M56 : `map_page` ;
+  - M57 : `paging_seal_identity` ;
+  - M58 : l'expérience isolée elle-même.
+- **Affirmations corrigées :** commentaires de `paging.c` (`vmm_unmap`, `map_page`), de `test_mm.c` et de `test_ptgate.c` ; `Details.md` et les entrées K0.6 et P4c de ce fichier sont annotées.
+- **Validation :**
+
+| Commande | Résultat |
+|---|---|
+| `make clean && make test` | 175 `[PASS]`, 0 `[FAIL]`, 66 cas QEMU sur 66 |
+| `make test-mutation` | 58 mutations sur 58 |
+| `tests/mutation/selftest.sh` | 15 situations conformes |
+| `make test-repro` | réussi |
+| `make -j8` depuis zéro | réussi |
+| `info mem` | inchangé |
+
+- **Limites :**
+  - matériel réel et KVM : **NOT TESTED** ;
+  - scellements : preuve structurelle seulement dans le VMM réel (la copie du harnais a WP = 0) ;
+  - ordre « avant `pmm_unref` » : contrôlé, mais non muté ;
+  - monoprocesseur.

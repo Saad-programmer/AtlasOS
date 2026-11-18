@@ -52,6 +52,8 @@ void ktest_suite_table_lifecycle(void); /* K0.7-P4f-B3, mode isolé test=tableli
 void ktest_table_alias(void);       /* K0.7-P4f-B3, test=tablealias (doit finir en panic) */
 void ktest_table_seal_refused(void); /* K0.7-P4f-B3, test=tcseal (doit finir en panic) */
 void ktest_table_pde_refused(void); /* K0.7-P4f-B3, test=tcpde (doit finir en panic) */
+void ktest_suite_tlb_experiment(void); /* K0.7-P4f-B4, mode isolé test=tlbexp */
+void ktest_suite_tlb_vmm(void);     /* K0.7-P4f-B4, mode isolé test=tlbvmm */
 void ktest_pt_sealed_write(const char *what); /* K0.7-P4e-2, test=sealpd|sealpt|sealnewpt */
 void ktest_sealed_write(const char *what); /* K0.7-P4d, test=sealidt|sealhandlers|sealvmm */
 #define KTEST_S2_PREFILL 0x5F2A11EDu

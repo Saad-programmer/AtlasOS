@@ -173,6 +173,15 @@ void ktest_run_all(void)
             ktest_suite_table_lifecycle();
             finish();
         }
+        /* K0.7-P4f-B4 — Modes ISOLÉS : preuves de cohérence du TLB (D2). */
+        if (strcmp(mode, "tlbexp") == 0) {
+            ktest_suite_tlb_experiment();
+            finish();
+        }
+        if (strcmp(mode, "tlbvmm") == 0) {
+            ktest_suite_tlb_vmm();
+            finish();
+        }
         if (ktest_fatal_mode(mode)) {
             kprintf("[TEST] fatal mode '%s' returned: fault not raised\n", mode);
             qemu_exit(QEMU_EXIT_FAILURE);

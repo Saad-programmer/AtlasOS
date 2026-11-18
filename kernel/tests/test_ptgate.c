@@ -225,7 +225,7 @@ void ktest_suite_ptgate(void)
     KTEST_CHECK(state_intact(ifl));                          /* WP et IF restaurés */
     uint32_t pa = 0;
     KTEST_CHECK(vmm_translate(va, &pa, 0) && pa == g);
-    KTEST_CHECK(mem_probe_write((void *)(uintptr_t)va, 0x9A7E0001u) == 0);  /* TLB : projection effective */
+    KTEST_CHECK(mem_probe_write((void *)(uintptr_t)va, 0x9A7E0001u) == 0);  /* projection effective (la fenêtre WP vide le TLB sous QEMU) */
     KTEST_CHECK(*(volatile uint32_t *)(uintptr_t)g == 0x9A7E0001u);
     /* Après fermeture : X toujours R/O pour une écriture directe. */
     KTEST_CHECK(mem_probe_write((void *)(uintptr_t)(X + 4u), 0) == -1);
@@ -252,7 +252,7 @@ void ktest_suite_ptgate(void)
     irq_restore(fl);
     KTEST_CHECK(if_kept && (cpu_read_cr0() & CR0_WP));
     KTEST_CHECK(!vmm_translate(va, 0, 0));
-    KTEST_CHECK(mem_probe_read((const void *)(uintptr_t)va, &v) == -1);    /* INVLPG effectif */
+    KTEST_CHECK(mem_probe_read((const void *)(uintptr_t)va, &v) == -1);    /* retrait effectif ; ne PROUVE PAS l'INVLPG sous QEMU (fenêtre WP : vidage du TLB, K0.7-P4f-B4) */
 
     /* Nettoyage : X reste scellée (une table n'est jamais libérée), état
      * PMM/VMM cohérent. */

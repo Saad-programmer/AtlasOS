@@ -171,7 +171,11 @@ static void test_map_unmap(void)
     KTEST_CHECK(vmm_map(va, frame, PTE_WRITE) == SAMOS_EEXIST);         /* pas d'écrasement */
     KTEST_CHECK(vmm_map(va + 1, frame, 0) == SAMOS_EINVAL);             /* non aligné */
     /* L'accès précédent a chargé la traduction dans le TLB : si vmm_unmap
-     * oubliait INVLPG, la lecture suivante réussirait encore. */
+     * oubliait INVLPG, la lecture suivante réussirait encore SUR UN
+     * PROCESSEUR RÉEL. K0.7-P4f-B4 : sous QEMU, depuis P4e-1, la fenêtre
+     * CR0.WP du passage vide tout le TLB ; cette assertion ne détecte donc
+     * plus un INVLPG oublié. Preuves actuelles : tests/tools/tlb_integration.sh
+     * (sans vidage implicite) et check_elf.sh (code machine). */
     uint32_t out = 0;
     KTEST_CHECK(vmm_unmap(va, &out) == SAMOS_OK && out == frame);
     KTEST_CHECK(mem_probe_read((const void *)(uintptr_t)va, &(uint32_t){0}) == -1);
