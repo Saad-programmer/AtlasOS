@@ -495,6 +495,63 @@ static void test_e5_scenario(void)
     KTEST_CHECK(total_refs() == 0 && pmm_core_check(p) == 0);
 }
 
+/* K0.7-M2.5b — Politique de type des projections dynamiques : seul un cadre
+ * ALLOCATED est projetable. Test NON destructif (aucune écriture dans les
+ * structures visées). Refus tentés en écriture puis en lecture seule. */
+static const uint32_t g_e3_rodata_probe = 0xE3E3E3E3u;
+static uint32_t g_e3_va = 0xE8000000u;            /* zone sans table de pages */
+
+static bool e3_refused(uint32_t pa)
+{
+    bool ok = vmm_map(g_e3_va, pa, PTE_WRITE) == SAMOS_EPERM &&
+              vmm_map(g_e3_va, pa, 0) == SAMOS_EPERM &&
+              !vmm_translate(g_e3_va, 0, 0);
+    g_e3_va += PAGE_SIZE;
+    return ok;
+}
+
+static void test_e3_type_policy(void)
+{
+    const struct pmm *p = pmm_state();
+    uint32_t tables0 = paging_table_count(), free0 = p->free_count, refs0 = total_refs();
+    const volatile uint32_t *pd = (const volatile uint32_t *)(uintptr_t)paging_directory();
+    uint32_t kpage = (uint32_t)(uintptr_t)&kmain & PTE_FRAME;
+    uint32_t text_before = *(const volatile uint32_t *)(uintptr_t)&kmain;
+
+    KTEST_CHECK(e3_refused(kpage));                                               /* 1. kmain */
+    KTEST_CHECK(e3_refused((uint32_t)(uintptr_t)&g_e3_rodata_probe & PTE_FRAME)); /* 2. .rodata */
+    KTEST_CHECK(e3_refused((uint32_t)(uintptr_t)gdt_table() & PTE_FRAME));        /* 3. GDT */
+    KTEST_CHECK(e3_refused((uint32_t)(uintptr_t)p->meta & PTE_FRAME));            /* 3. table du PMM */
+    KTEST_CHECK(e3_refused(paging_directory()));                                  /* 4. répertoire */
+    KTEST_CHECK(e3_refused(pd[kpage >> 22] & PTE_FRAME));                         /* 5. table active */
+    KTEST_CHECK(e3_refused(0xB8000u));                                            /* 6. réservé (VGA) */
+    KTEST_CHECK(e3_refused(0));                                                   /* 6. cadre nul */
+    uint32_t g = pmm_alloc_frame();
+    KTEST_CHECK(g != 0 && pmm_free_frame(g) == SAMOS_OK);
+    KTEST_CHECK(e3_refused(g));                                                   /* 6. libre */
+    KTEST_CHECK(e3_refused(p->nframes << PAGE_SHIFT));                            /* 7. juste au-delà */
+    KTEST_CHECK(e3_refused(0xFFFC0000u));                                         /* 7. firmware */
+
+    /* 9. Aucun effet de bord : ni table créée, ni référence, ni cadre consommé */
+    KTEST_CHECK(paging_table_count() == tables0);
+    KTEST_CHECK(p->free_count == free0 && total_refs() == refs0);
+
+    /* 8. Fonctionnement normal pour un cadre ALLOCATED */
+    uint32_t f = pmm_alloc_frame();
+    KTEST_CHECK(vmm_map(0xD0040000u, f, PTE_WRITE) == SAMOS_OK && pmm_refs(f) == 1);
+    KTEST_CHECK(vmm_unmap(0xD0040000u, 0) == SAMOS_OK && pmm_free_frame(f) == SAMOS_OK);
+
+    /* 10. Identité et protections précédentes intactes */
+    uint32_t pa = 0, fl = 0, v = 0;
+    KTEST_CHECK(vmm_translate(kpage, &pa, &fl) && pa == kpage && !(fl & PTE_WRITE));
+    KTEST_CHECK(*(const volatile uint32_t *)(uintptr_t)&kmain == text_before);
+    KTEST_CHECK(mem_probe_write((void *)(uintptr_t)&kmain, 0) == -1);              /* toujours R */
+    KTEST_CHECK(vmm_map(0, f, PTE_WRITE) == SAMOS_EPERM);                           /* E1 */
+    KTEST_CHECK(mem_probe_read((const void *)(uintptr_t)__stack_guard_start, &v) == -1); /* E2 */
+    KTEST_CHECK(pmm_free_frame(paging_directory()) == SAMOS_EINVAL);                /* E4 */
+    KTEST_CHECK(pmm_core_check(p) == 0 && total_refs() == refs0);
+}
+
 void ktest_suite_mm(void)
 {
     ktest_suite("K0.6 mm");
@@ -510,4 +567,5 @@ void ktest_suite_mm(void)
     test_vmm_refs();
     test_vmm_unmap_refs();
     test_e5_scenario();
+    test_e3_type_policy();
 }

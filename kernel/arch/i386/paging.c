@@ -102,7 +102,13 @@ static samos_err_t map_page(uint32_t va, uint32_t pa, uint32_t flags, bool count
         KASSERT(!paging_enabled());
     }
     enum frame_type t = pmm_core_type(pmm_state(), pa >> PAGE_SHIFT);
-    if (counted && t == FRAME_FREE) {
+    /* K0.7-M2.5b — Seul un cadre ALLOCATED est projetable dynamiquement.
+     * Refusés (SAMOS_EPERM) : FREE (E5 : réallocation sous projection),
+     * KERNEL (code, constantes, GDT, IDT, TSS, table du PMM : E3),
+     * PAGETABLE (structures de pagination : E3), RESERVED et hors mémoire
+     * gérée (pmm_core_type renvoie FRAME_RESERVED au-delà de nframes).
+     * Vérifié AVANT get_table() : un refus ne crée aucune table. */
+    if (counted && t != FRAME_ALLOCATED) {
         return SAMOS_EPERM;
     }
     uint32_t *pt = get_table(va, true);

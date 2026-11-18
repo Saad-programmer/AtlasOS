@@ -1155,3 +1155,11 @@ Premier sous-jalon de M2.4 (correction de E5), limité au cœur pur. `paging.c` 
   - le type `FRAME_KERNEL` ne distingue pas code, constantes et données ; la politique proposée (seul `ALLOCATED` est projetable dynamiquement) n'a pas besoin de cette distinction.
 - **Constat supplémentaire C1 (non corrigé) :** `map_page()` accepte tous les bits bas de PTE, y compris `PTE_USER` : un correctif dédié est proposé en M2.5c.
 - Vérification : `make clean && make test` donne 101 `[PASS]`, 0 `[FAIL]`, 26 cas QEMU sur 26. **E3 reste ouvert.**
+
+### K0.7-M2.5b — Seuls les cadres ALLOCATED sont projetables dynamiquement
+
+- `paging.c` : dans `map_page()` compté (`vmm_map()`), `t == FRAME_FREE` devient `t != FRAME_ALLOCATED` → `SAMOS_EPERM`. `KERNEL`, `PAGETABLE`, `RESERVED` et les adresses non gérées sont désormais refusés, en plus de `FREE`. Le contrôle précède `get_table()` : un refus ne crée aucune table. Le chemin d'identité de `paging_init()` n'est pas restreint ; aucune API de contournement.
+- **Test** `test_e3_type_policy` : refus (avec et sans `PTE_WRITE`) pour `kmain`, `.rodata`, GDT, table du PMM, CR3, table de pages active, VGA, cadre 0, cadre libéré, deux adresses non gérées ; puis aucune table créée, `free_count` et références inchangés, cadre `ALLOCATED` toujours projetable, identité de `kmain` intacte et en lecture seule, E1/E2/E4 intacts, `pmm_core_check` à 0. Autotests : 367 → 390 vérifications, 0 échec.
+- **Contre-épreuve** (ancienne condition `t == FRAME_FREE`, copie isolée) : statut 35, 12 échecs ciblés, aucun triple fault.
+- **Validation :** `make clean && make test` donne 101 `[PASS]`, 0 `[FAIL]`, 26 cas QEMU sur 26 ; compilation parallèle propre (`make -j8`) réussie.
+- **Limites :** les tables de pages restent inscriptibles par l'identité (P4) ; les bits de PTE ne sont pas filtrés (C1, M2.5c) ; **E3 n'est pas déclaré corrigé avant M2.5d.**
