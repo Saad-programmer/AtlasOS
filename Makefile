@@ -33,13 +33,18 @@ TARGET    := i686-unknown-none-elf
 #   -nostdlibinc        : pas d'en-têtes système de l'hôte ; seuls les en-têtes
 #                         freestanding de Clang (stdint.h, stddef.h...) restent visibles
 #   -fno-pic -fno-pie   : code à adresse fixe (lié à 1 MiB)
-#   -fno-stack-protector: pas de canari de pile (nécessiterait un runtime __stack_chk_*)
+#   -fno-stack-protector: pas de canari de pile, sauf test_canary.o (K0.7-R1b, voir plus
+#                         bas) ; le support __stack_chk_* existe (entry.asm, stack_protector.c)
 #   -fcf-protection=none: pas d'instructions CET (endbr32)
 #   -mgeneral-regs-only : aucun registre x87/MMX/SSE dans le noyau
 #   -mstack-alignment=16: maintenir la pile alignée sur 16 octets (ABI i386
 #                         System V) ; sans cette option la cible i686-elf de
 #                         Clang ne garantit que 4 octets (vérifié par désassemblage)
 #   -fno-omit-frame-pointer : chaîne EBP conservée (traces de pile en panic)
+#   -Wframe-larger-than=3072 (K0.7-R1b) : refuse tout cadre de pile > 3 KiB.
+#                         Clang ignore -fstack-clash-protection pour cette cible :
+#                         un cadre >= 4 KiB pourrait sauter la page de garde.
+#                         Borne de COMPILATION seulement (pas de sondage de pile).
 #   -ffile-prefix-map    : chemins relatifs dans DWARF et __FILE__ ; l'image ne
 #                          dépend plus du répertoire de compilation (build reproductible)
 CFLAGS := --target=$(TARGET) -march=i686 -std=c11 \
@@ -50,6 +55,7 @@ CFLAGS := --target=$(TARGET) -march=i686 -std=c11 \
           -fno-common -O2 -g \
           -Wall -Wextra -Werror -Wshadow -Wstrict-prototypes -Wmissing-prototypes \
           -Wpointer-arith -Wundef -Wvla -Wimplicit-fallthrough -Wcast-qual -Wformat=2 \
+          -Wframe-larger-than=3072 \
           -Ikernel/include -Ikernel/arch/$(ARCH)/include \
           -MMD -MP \
           -ffile-prefix-map=$(CURDIR)=.
@@ -93,6 +99,7 @@ C_SRCS := kernel/arch/$(ARCH)/gdt.c \
           kernel/core/layout.c \
           kernel/core/log.c \
           kernel/core/panic.c \
+          kernel/core/stack_protector.c \
           kernel/drivers/kbd_decode.c \
           kernel/drivers/pit.c \
           kernel/drivers/ps2kbd.c \
@@ -116,7 +123,8 @@ TEST_SRCS := kernel/tests/ktest.c \
              kernel/tests/test_cpu.c \
              kernel/tests/test_faults.c \
              kernel/tests/test_irq.c \
-             kernel/tests/test_mm.c
+             kernel/tests/test_mm.c \
+             kernel/tests/test_canary.c
 
 objs = $(patsubst %.asm,$(BUILD)/$(1)/%.o,$(ASM_SRCS)) $(patsubst %.c,$(BUILD)/$(1)/%.o,$(2))
 PROD_OBJS := $(call objs,prod,$(C_SRCS))
@@ -142,6 +150,10 @@ $(BUILD)/prod/%.o: %.c
 $(BUILD)/test/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(TEST_DEFS) -c $< -o $@
+
+# K0.7-R1b — Instrumentation minimale : un SEUL fichier, dans l'image de test.
+# Placée après -fno-stack-protector (CFLAGS), elle l'emporte (dernière option).
+$(BUILD)/test/kernel/tests/test_canary.o: CFLAGS += -fstack-protector-strong
 
 # Deux règles distinctes : une règle à motifs à PLUSIEURS cibles signifie,
 # pour GNU Make, qu'une seule exécution produit toutes les cibles ; après
@@ -178,6 +190,8 @@ check-elf: $(KERNEL) $(TEST_KERNEL)
 test-tools: $(KERNEL) $(TEST_KERNEL)
 	tests/tools/check_elf_negative.sh $(TEST_KERNEL)
 	tests/tools/harness_selftest.sh $(KERNEL) $(TEST_KERNEL)
+	tests/tools/canary_check.sh $(KERNEL) $(TEST_KERNEL)
+	tests/tools/frame_limit_check.sh $(CC) $(CFLAGS) $(PROD_DEFS)
 
 test-host:
 	tests/host/run.sh

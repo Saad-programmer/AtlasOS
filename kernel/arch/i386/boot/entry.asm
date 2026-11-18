@@ -79,6 +79,32 @@ boot_stack_bottom:
 boot_stack_top:
 
 ; ---------------------------------------------------------------------------
+; K0.7-R1b — Canari global des fonctions instrumentées (-fstack-protector-*).
+; Clang 18 (cible i686-unknown-none-elf) lit ce mot de 32 bits, nommé
+; __stack_chk_guard, dans le prologue et l'épilogue de chaque fonction
+; protégée, puis appelle __stack_chk_fail en cas d'écart (Details/R1 §3.1).
+;
+; Placement : .rodata, donc segment PT_LOAD « R » (linker.ld), page-aligné et
+; disjoint de .data/.bss. Une fois CR0.PG et CR0.WP actifs (paging_init), la
+; page est en lecture seule, y compris pour le ring 0 : aucune écriture
+; parasite ne peut plus modifier le canari.
+; Écriture unique : _start la fait (étape 4b) quand la pagination est encore
+; INACTIVE (Multiboot §3.2 : CR0.PG = 0 à l'entrée ; vérifié ci-dessous),
+; donc avant toute application des droits de page.
+; Pas dans .bss : la remise à zéro de .bss (étape 3) l'effacerait.
+; Valeur par défaut (non nulle, octet faible nul) : ne sert que si le
+; mélange donnait 0 ; doit rester égale à STACK_GUARD_DEFAULT
+; (samos/stack_protector.h).
+; ---------------------------------------------------------------------------
+STACK_GUARD_DEFAULT equ 0xE3A9C500
+STACK_GUARD_SALT    equ 0x9E3779B9          ; constante de mélange (partie fractionnaire du nombre d'or)
+
+section .rodata progbits alloc noexec nowrite align=4
+global __stack_chk_guard
+__stack_chk_guard:
+    dd STACK_GUARD_DEFAULT
+
+; ---------------------------------------------------------------------------
 ; Code d'entrée
 ; ---------------------------------------------------------------------------
 section .text
@@ -130,6 +156,28 @@ _start:
     shr ecx, 2
     mov eax, STACK_PAINT
     rep stosd
+
+    ; 4b) K0.7-R1b — Initialisation du canari, AVANT tout code C : aucune
+    ;     fonction instrumentée n'est encore active, donc aucune n'a pu
+    ;     copier une valeur que l'on remplacerait (R1 §3.2).
+    ;     Garde-fou : la pagination doit être inactive (CR0.PG, bit 31 = 0),
+    ;     sinon l'écriture dans .rodata pourrait être refusée ou, pire,
+    ;     prouver que les droits ne sont pas appliqués.
+    ;     Registres : RDTSC écrit EDX:EAX ; ECX est libre ; EBX (multiboot_info)
+    ;     et ESI (magic) sont préservés pour l'étape 5.
+    mov eax, cr0
+    test eax, 0x80000000
+    jnz .halt
+    rdtsc                           ; EDX:EAX <- compteur de cycles (i586+)
+    mov ecx, edx
+    rol ecx, 13                     ; mêler les bits hauts aux bits bas
+    xor eax, ecx
+    xor eax, STACK_GUARD_SALT
+    and eax, 0xFFFFFF00             ; octet faible nul : canari « terminateur »
+    jnz .guard_ok                   ; jamais 0 : un canari nul serait trivial
+    mov eax, STACK_GUARD_DEFAULT
+.guard_ok:
+    mov [__stack_chk_guard], eax
 
     ; 5) Préparer l'appel cdecl : kmain(uint32_t magic, uint32_t mbi_phys)
     ;    Les arguments sont empilés de droite à gauche.

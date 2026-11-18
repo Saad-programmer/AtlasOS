@@ -94,6 +94,8 @@ bool ktest_fatal_mode(const char *mode)
         (void)*(volatile uint32_t *)(uintptr_t)0xE0000000u;
     } else if (strcmp(mode, "stack") == 0) {
         (void)recurse_forever(0);
+    } else if (strcmp(mode, "canary") == 0) {
+        ktest_canary_smash();                  /* K0.7-R1b : doit finir en panic */
     } else if (strcmp(mode, "nested") == 0) {
         (void)interrupt_register(EXC_BP, faulting_bp_handler);
         __asm__ __volatile__("int3");

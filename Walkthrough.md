@@ -1292,3 +1292,33 @@ tests/tools/repro_selftest.sh
   - `make clean && make test` donne 101 `[PASS]`, 0 `[FAIL]`, 26 cas QEMU sur 26 ;
   - `make test-mutation` donne 3 mutations sur 3 détectées ;
   - `make test-repro` donne 2 images reproductibles.
+
+### K0.7-R1b — Infrastructure minimale des canaris de pile
+
+- **Canari :** `__stack_chk_guard` est défini en NASM dans `.rodata`. `_start` l'écrit à l'étape 4b, après avoir vérifié que CR0.PG vaut 0. La valeur est `RDTSC` mélangé, octet faible nul, jamais nulle. Il devient lecture seule à l'activation de la pagination (CR0.WP).
+- **Échec :** `__stack_chk_fail` (`kernel/core/stack_protector.c`) appelle `panic` avec l'adresse de la fonction fautive. `panic_at`, `stack_collect` et `emergency_puts` sont exclus de l'instrumentation (`SAMOS_NO_STACK_PROTECTOR`).
+- **Instrumentation minimale :** `-fstack-protector-strong` uniquement pour `kernel/tests/test_canary.c`, dans l'image de test. `-Wframe-larger-than=3072` pour tout le noyau.
+- **Nouveaux tests :**
+  - suite « K0.7 stack canary » (13 vérifications) ;
+  - cas QEMU `canary_smash` (corruption de la seule copie locale, puis panique, statut 37) ;
+  - `canary_check.sh` : artefacts ELF (canari dans une page sans segment W, instrumentation de `canary_frame_probe`, aucun appel dans l'image de production) ;
+  - `frame_limit_check.sh` : un cadre de 5020 octets refusé, un cadre d'environ 2000 octets accepté ;
+  - mutations `canary_not_instrumented` et `canary_not_seeded`.
+- **Défauts de test corrigés pendant le jalon :**
+  - deux copies du canari trouvées : l'appelant gardait la valeur dans un registre sauvegardé dans le cadre ;
+  - cadre de « 5000 octets » accepté : le puits défini dans le même fichier a été intégré, et le tableau réduit à un octet.
+  - Détail dans la conception, section 12.
+- **Mesures externes** (moniteur QEMU, production) :
+  - valeur d'image `0xE3A9C500` ; à l'exécution `0x94786D00`, puis `0x979CDA00` ;
+  - page `0x106000` en `----A----` (ni W ni U).
+- **Validation :**
+
+| Commande | Résultat |
+|---|---|
+| `make clean && make test` | code 0, 113 `[PASS]`, 0 `[FAIL]`, 27 cas QEMU sur 27 |
+| autotests | 466 vérifications, 0 échec |
+| `make test-mutation` | 5 mutations sur 5 détectées |
+| `make test-repro` | 2 images reproductibles (débogage seulement) |
+| `make -j8` depuis zéro | réussi |
+
+- **Limites :** le noyau n'est pas encore instrumenté (R1c) ; l'entropie vient du TSC seul ; les risques K2 à K6 ne sont pas traités ici (pages de garde : sous-jalon séparé, D1 autorisé dans son principe).

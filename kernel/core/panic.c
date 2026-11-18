@@ -42,6 +42,7 @@ static void test_exit_if_enabled(void)
 
 /* Sortie d'urgence, sans formatage ni pilote VGA : debugcon (si présent) et
  * octets bruts sur le port série. Utilisée en cas de panique récursive. */
+SAMOS_NO_STACK_PROTECTOR   /* K0.7-R1 : chemin de panique, jamais instrumenté */
 static void emergency_puts(const char *s)
 {
     qemu_dbg_puts(s);
@@ -56,6 +57,7 @@ static void emergency_puts(const char *s)
  *     [EBP + 0] = EBP de l'appelant (cadre précédent)
  * _start met EBP à 0 avant d'appeler kmain : la chaîne se termine par 0.
  */
+SAMOS_NO_STACK_PROTECTOR
 size_t stack_collect(uintptr_t ebp, uintptr_t *out, size_t max)
 {
     uintptr_t lo = (uintptr_t)boot_stack_bottom;
@@ -77,6 +79,7 @@ size_t stack_collect(uintptr_t ebp, uintptr_t *out, size_t max)
     return n;
 }
 
+SAMOS_NO_STACK_PROTECTOR   /* contient frames[] : serait instrumentée par -strong */
 void panic_at(const char *file, int line, const char *fmt, ...)
 {
     cpu_cli();

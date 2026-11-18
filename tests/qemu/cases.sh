@@ -151,6 +151,17 @@ run_case stack_overflow "test=stack" 37 \
     "serial:kernel stack overflow (guard page below the boot stack)" \
     "serial:KERNEL PANIC: double fault"
 
+# K0.7-R1b — Canari de pile : la copie locale du canari (et elle seule) est
+# modifiée dans une fonction instrumentée ; son épilogue doit appeler
+# __stack_chk_fail, donc panic. Le message « NOT detected » signalerait un
+# retour normal (statut 35 : échec du cas).
+run_case canary_smash "test=canary" 37 \
+    "serial:[TEST] corrupting the local canary copy of canary_frame_probe" \
+    "serial:KERNEL PANIC: stack smashing detected: canary corrupted in the function containing 0x" \
+    "serial:at kernel/core/stack_protector.c:" \
+    "!canary corruption NOT detected" \
+    "!RECURSIVE PANIC"
+
 # Tailles de RAM : petite, moyenne, au-delà de la limite d'identité (1 GiB),
 # et 4 GiB (région au-dessus de 4 GiB dans la carte, ignorée).
 QEMU_MEM=16M TIMEOUT=4 run_case mem_16M "" 124 \

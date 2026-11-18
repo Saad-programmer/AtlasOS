@@ -38,3 +38,20 @@ mutant flags_filter kernel/arch/i386/paging.c \
     35 \
     'e3_attempt(0xD0060000u, f, PTE_USER, SAMOS_EINVAL, "alloue")' \
     'e3_attempt(0xD0060000u, f, PTE_USER | PTE_WRITE, SAMOS_EINVAL, "alloue")'
+
+# M4 — K0.7-R1b : le fichier de test n'est plus instrumenté (l'option par
+# fichier est neutralisée). La recherche de la copie locale du canari ne
+# trouve plus rien.
+mutant canary_not_instrumented Makefile \
+    '$(BUILD)/test/kernel/tests/test_canary.o: CFLAGS += -fstack-protector-strong' \
+    '$(BUILD)/test/kernel/tests/test_canary.o: CFLAGS += -fno-stack-protector' \
+    35 \
+    'canary_frame_probe(false) == 1'
+
+# M5 — K0.7-R1b : _start n'initialise plus le canari ; il garde la valeur de
+# l'image (prévisible).
+mutant canary_not_seeded kernel/arch/i386/boot/entry.asm \
+    'mov [__stack_chk_guard], eax' \
+    'nop' \
+    35 \
+    'g_guard_ref != STACK_GUARD_DEFAULT'
