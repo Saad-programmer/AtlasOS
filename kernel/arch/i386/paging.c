@@ -42,6 +42,7 @@ enum pt_kind { PT_KIND_PDE, PT_KIND_PTE };
 static samos_err_t pt_gate_write(enum pt_kind kind, uint32_t va, uint32_t value);
 static SAMOS_NOINLINE samos_err_t seal_table_frame(uint32_t table);
 static bool frame_has_foreign_alias(uint32_t frame);
+static bool frame_is_paging_structure(uint32_t frame);
 
 /* Table de pages couvrant va, ou 0 si le PDE est absent. Lecture seule : les
  * tables publiées sont en lecture seule dans l'identité depuis K0.7-P4e-2. */
@@ -84,6 +85,13 @@ static samos_err_t table_create(uint32_t va, uint32_t **out)
      * redistribué (D1, V2). Le cadre reste PAGETABLE, non publié et RW
      * (traitement des échecs internes : D4, non corrigé ici). */
     if (paging_enabled() && frame_has_foreign_alias(pt)) {
+        return SAMOS_EPERM;
+    }
+    /* K0.7-P4f-B2 (D3) — Le cadre ne doit pas être déjà une structure active
+     * (PMM falsifié distribuant une table publiée). En pratique la remise à
+     * zéro par le PMM aurait déjà fauté (identité scellée) : ce contrôle
+     * couvre l'appelant ; le passage le refait. */
+    if (frame_is_paging_structure(pt)) {
         return SAMOS_EPERM;
     }
     if (paging_enabled()) {
@@ -235,6 +243,21 @@ static bool frame_in_kernel_image(uint32_t frame)
            frame < (uint32_t)(uintptr_t)__kernel_end;
 }
 
+/* K0.7-P4f-B2 — Identité d'un cadre présente, exacte et SANS W (scellée).
+ * Critère d'adresse et de drapeaux, sans le PMM. */
+static bool table_identity_sealed(uint32_t frame)
+{
+    if (frame >= g_idmap_top) {
+        return false;
+    }
+    uint32_t pde = g_pd[PD_INDEX(frame)];
+    if (!(pde & PTE_PRESENT)) {
+        return false;
+    }
+    uint32_t pte = ((const volatile uint32_t *)(uintptr_t)(pde & PTE_FRAME))[PT_INDEX(frame)];
+    return (pte & PTE_PRESENT) && (pte & PTE_FRAME) == frame && !(pte & PTE_WRITE);
+}
+
 /* Cadre qui ne doit JAMAIS être projeté ailleurs que dans son identité. */
 static bool frame_alias_forbidden(uint32_t frame)
 {
@@ -291,6 +314,30 @@ static samos_err_t pt_gate_check(enum pt_kind kind, uint32_t va, uint32_t value,
         uint32_t t = value & PTE_FRAME;
         if ((value & 0xFFFu) != (PTE_PRESENT | PTE_WRITE) || t == pd ||
             (t >> PAGE_SHIFT) >= p->nframes || pmm_core_type(p, t >> PAGE_SHIFT) != FRAME_PAGETABLE) {
+            return SAMOS_EPERM;
+        }
+        /* K0.7-P4f-B2 (D3) — Intégrité du répertoire, contrôles SANS le PMM.
+         * Une PDE ne connaît qu'une transition : absente -> présente.
+         *   - PDE déjà présente : jamais remplacée, jamais effacée, pas même
+         *     par une valeur identique (EEXIST) ; aucun appelant n'en a besoin
+         *     (paging_init et table_create n'écrivent que des PDE absentes) ;
+         *   - cible déjà structure de pagination (répertoire ou cible d'une
+         *     autre PDE) : refus (EPERM), jamais deux PDE vers une table ;
+         *   - sous pagination, la cible doit être SCELLÉE (identité sans W)
+         *     et sans alias hors identité : une table n'est jamais publiée
+         *     inscriptible. Avant PG (paging_init), l'identité n'existe pas
+         *     encore et aucun alias n'est possible : le scellement suit en
+         *     bloc (seal_paging_structures).
+         * Conséquence : l'ensemble des cibles de PDE ne fait que croître, sans
+         * doublon ni retrait ; frame_is_paging_structure (P4f-B1) reste vrai
+         * pour toute table une fois publiée. */
+        if (g_pd[PD_INDEX(va)] & PTE_PRESENT) {
+            return SAMOS_EEXIST;
+        }
+        if (frame_is_paging_structure(t)) {
+            return SAMOS_EPERM;
+        }
+        if (paging_enabled() && (frame_has_foreign_alias(t) || !table_identity_sealed(t))) {
             return SAMOS_EPERM;
         }
         *entry = &g_pd[PD_INDEX(va)];
@@ -500,6 +547,22 @@ bool paging_audit(struct paging_audit *a)
         }
     }
     a->unpublished = typed > published ? typed - published : 0;
+    /* K0.7-P4f-B2 — PDE en double (deux PDE vers une même table, ou PDE vers
+     * le répertoire), sans le PMM. O(n²) sur les PDE présentes. */
+    for (uint32_t i = 0; i < 1024u; i++) {
+        uint32_t pde = g_pd[i];
+        if (!(pde & PTE_PRESENT)) {
+            continue;
+        }
+        uint32_t t = pde & PTE_FRAME;
+        bool dup = t == pd;
+        for (uint32_t k = 0; k < i && !dup; k++) {
+            dup = (g_pd[k] & PTE_PRESENT) && (g_pd[k] & PTE_FRAME) == t;
+        }
+        if (dup) {
+            a->dup_pdes++;
+        }
+    }
     /* K0.7-P4f-B1 — Contrôles SANS le PMM : alias hors identité d'un cadre
      * de pagination publié ou de l'image ; identité inscriptible d'un cadre
      * de pagination publié. */
@@ -523,7 +586,7 @@ bool paging_audit(struct paging_audit *a)
         }
     }
     return a->writable == 0 && a->aliases == 0 && a->bad_pdes == 0 && a->unpublished == 0 &&
-           typed == published && a->foreign_aliases == 0 && a->struct_writable == 0;
+           typed == published && a->foreign_aliases == 0 && a->struct_writable == 0 && a->dup_pdes == 0;
 }
 
 #if CONFIG_KTEST

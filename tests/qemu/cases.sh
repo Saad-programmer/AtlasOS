@@ -307,6 +307,34 @@ run_case pmmtrust "test=pmmtrust" 33 \
     "serial:[TEST] ALL TESTS PASSED" \
     "![FAIL]" "!KERNEL PANIC"
 
+# K0.7-P4f-B2 — Mode ISOLÉ : intégrité du répertoire (D3). Substitution,
+# duplication, table non scellée, table déjà aliasée, falsification du PMM :
+# tout est refusé sans effet ; la transition absente -> table neuve scellée
+# reste possible ; l'audit compte une PDE en double écrite hors du passage.
+run_case pdeint "test=pdeint" 33 \
+    "serial:[TEST] suite K0.7 P4f-B2 page-directory integrity (isolated) done:" \
+    "serial:[TEST] D3 audit after a duplicate PDE written outside pt_gate_write: dup_pdes=1" \
+    "serial:[TEST] ALL TESTS PASSED" \
+    "![FAIL]" "!KERNEL PANIC"
+# K0.7-P4f-B2 — Table publiée marquée FREE par falsification : la remise à
+# zéro par le PMM faute sur l'identité scellée, avant toute publication.
+run_case pdesteal "test=pdesteal" 37 \
+    "serial:[TEST] pdesteal: published table 0x" \
+    "serial:*** CPU exception 14: Page Fault (#PF), error code 0x00000003" \
+    "serial:write to a sealed page table or page directory" \
+    "!active table reused NOT trapped" \
+    "!preconditions not met" \
+    "!RECURSIVE PANIC" \
+    "!DOUBLE FAULT"
+total=$((total + 1))
+want=$(tr -d '\r' < "$OUT/pdesteal.serial.log" 2>/dev/null | sed -n 's/.*pdesteal: published table \(0x[0-9a-f]*\) marked FREE.*/\1/p' | head -1)
+got=$(tr -d '\r' < "$OUT/pdesteal.serial.log" 2>/dev/null | sed -n 's/.*page fault: .*address CR2=\(0x[0-9a-f]*\).*/\1/p' | head -1)
+if [ -n "$want" ] && [ "$got" = "$want" ]; then
+    echo "[PASS] pdesteal_cr2 (CR2=$got = table falsifiée)"; passed=$((passed + 1))
+else
+    echo "[FAIL] pdesteal_cr2 (CR2=${got:-absent}, attendu ${want:-absent})"; fail=1
+fi
+
 # K0.7-R1d — Sentinelles de S2 : un mot sentinelle (le mot 2) est altéré, puis
 # une vraie #DF est provoquée. La tâche #DF doit le signaler (masque 0x4) et
 # paniquer avec un message identifiable ; aucune panique récursive.

@@ -162,6 +162,11 @@ void ktest_run_all(void)
             ktest_suite_pmm_trust();
             finish();
         }
+        /* K0.7-P4f-B2 — Mode ISOLÉ : intégrité du répertoire (D3). */
+        if (strcmp(mode, "pdeint") == 0) {
+            ktest_suite_pde_integrity();
+            finish();
+        }
         if (ktest_fatal_mode(mode)) {
             kprintf("[TEST] fatal mode '%s' returned: fault not raised\n", mode);
             qemu_exit(QEMU_EXIT_FAILURE);

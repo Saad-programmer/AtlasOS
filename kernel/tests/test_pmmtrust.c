@@ -26,6 +26,10 @@
 #include <samos/log.h>
 #include <samos/pmm.h>
 
+/* Prototype P4c (test_ptgate.c, image de test) : écriture d'une entrée par
+ * sa propre fenêtre WP, SANS les contrôles de pt_gate_write. */
+samos_err_t ptgate_write_entry(uint32_t table_phys, uint32_t index, uint32_t value);
+
 static const volatile uint32_t *pdir(void)
 {
     return (const volatile uint32_t *)(uintptr_t)paging_directory();
@@ -172,16 +176,23 @@ void ktest_suite_pmm_trust(void)
                    !(pdir()[nv >> 22] & PTE_PRESENT);
     KTEST_CHECK(v2_prep);
     if (v2_prep) {
-        uint32_t tables = paging_table_count(), freec = p->free_count;
+        uint32_t tables = paging_table_count(), freec = p->free_count, vw0 = 0, vr0 = 0, vw1 = 0, vr1 = 0;
         meta_rw()[x >> 12] = frame_desc_make(FRAME_FREE, 0);
         pw->free_count++;                       /* compteur RW, falsifié de même */
+        paging_gate_stats(&vw0, &vr0);
         samos_err_t ev2 = vmm_map(nv, y, PTE_WRITE);
+        paging_gate_stats(&vw1, &vr1);
         bool stolen = pmm_core_type(p, x >> 12) == FRAME_PAGETABLE;    /* le PMM a bien donné x */
         bool v2_refused = ev2 == SAMOS_EPERM && !(pdir()[nv >> 22] & PTE_PRESENT) &&
                           paging_table_count() == tables && pmm_refs(y) == 0;
         kprintf("[TEST] D1 V2 aliased frame x=0x%08x handed out as table: %d, vmm_map=%d\n", x, (int)stolen, (int)ev2);
         KTEST_CHECK(stolen);
         KTEST_CHECK(v2_refused);
+        /* Refus par table_create AVANT toute écriture privilégiée (ni
+         * scellement, ni PDE) : depuis P4f-B2, le passage refuserait aussi la
+         * publication, mais seulement après le scellement de x. */
+        bool v2_refused_before_any_window = ev2 == SAMOS_EPERM && vw1 == vw0;
+        KTEST_CHECK(v2_refused_before_any_window);
         if ((pdir()[nv >> 22] & PTE_PRESENT) && (pdir()[nv >> 22] & PTE_FRAME) == x) {
             /* Mutation : x a été PUBLIÉE comme table. Elle le reste (une table
              * n'est jamais libérée) : retirer la projection et l'alias, sans
@@ -200,17 +211,33 @@ void ktest_suite_pmm_trust(void)
     KTEST_CHECK(audit_clean());
     KTEST_CHECK((cpu_read_cr0() & CR0_WP) && (cpu_read_eflags() & EFLAGS_IF) == ifl);
 
-    /* Nettoyage, puis contre-épreuve de l'audit (en DERNIER : irréversible).
-     * Le passage accepte encore un PDE qui désigne une table déjà publiée
-     * (défaut D3, non corrigé ici) : la région 0xF8000000 devient un alias
-     * de la table 0. L'audit indépendant du PMM doit le signaler. */
+    /* Nettoyage, puis contre-épreuve de l'audit.
+     * K0.7-P4f-B2 : jusqu'à P4f-B1, l'alias était obtenu par le passage
+     * lui-même (une PDE vers une table déjà publiée, défaut D3) ; le passage
+     * le refuse désormais. L'alias interdit est maintenant écrit PAR UN AUTRE
+     * CHEMIN, le prototype de test P4c (ptgate_write_entry : sa propre fenêtre
+     * WP, sans les contrôles de pt_gate_write) : une PTE de la table de
+     * 0xD0000000 désigne la table 0. L'audit, qui n'utilise pas le PMM, doit
+     * le compter ; l'alias est ensuite retiré (réversible, contrairement à
+     * l'ancienne version) et l'audit redevient propre. */
     KTEST_CHECK(vmm_unmap(0xD0000000u, 0) == SAMOS_OK && vmm_unmap(0xC9000000u, 0) == SAMOS_OK &&
                 pmm_free_frame(g) == SAMOS_OK && pmm_free_frame(h) == SAMOS_OK);
     KTEST_CHECK(pmm_core_check(p) == 0 && audit_clean());
-    samos_err_t ed3 = paging_gate_test_write(0, 0xF8000000u, pt0 | PTE_PRESENT | PTE_WRITE);
-    struct paging_audit a;
-    bool ok = paging_audit(&a);
-    bool audit_sees_foreign_alias = ed3 == SAMOS_OK && !ok && a.foreign_aliases > 0;
-    kprintf("[TEST] D1 audit after D3-style alias: foreign_aliases=%u aliases=%u\n", a.foreign_aliases, a.aliases);
-    KTEST_CHECK(audit_sees_foreign_alias);
+    const uint32_t av = 0xD0009000u;
+    uint32_t td = pdir()[av >> 22] & PTE_FRAME, idx = (av >> 12) & 0x3FFu;
+    bool apre = (pdir()[av >> 22] & PTE_PRESENT) && entry_pte(av) == 0;
+    KTEST_CHECK(apre);
+    if (apre) {
+        samos_err_t ew = ptgate_write_entry(td, idx, pt0 | PTE_PRESENT | PTE_WRITE);
+        struct paging_audit a;
+        bool ok = paging_audit(&a);
+        bool audit_sees_foreign_alias = ew == SAMOS_OK && !ok && a.foreign_aliases > 0;
+        kprintf("[TEST] D1 audit after an alias written outside pt_gate_write: foreign_aliases=%u\n",
+                a.foreign_aliases);
+        (void)ptgate_write_entry(td, idx, 0);
+        cpu_invlpg((const void *)(uintptr_t)av);
+        KTEST_CHECK(audit_sees_foreign_alias);
+        bool audit_clean_after_removal = entry_pte(av) == 0 && audit_clean();
+        KTEST_CHECK(audit_clean_after_removal);
+    }
 }

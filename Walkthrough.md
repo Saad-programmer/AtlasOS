@@ -1797,3 +1797,44 @@ tests/tools/repro_selftest.sh
   - références falsifiées (E5 sous corruption, données) ;
   - déni de service par retypage ;
   - D2, D4, GDT/TSS, NMI.
+
+### K0.7-P4f-B2 — Intégrité du répertoire de pages (correction de D3)
+
+- **Document :** `docs/review/K0.7-P4f-B2-pde-integrity.md`.
+- **Reproduction** (copie isolée, avant correction) :
+  - le passage acceptait d'écraser une PDE présente : la région A lisait le cadre de B, et `vmm_unmap(A)` retirait la projection de B ;
+  - une référence était perdue (cadre jamais libérable) ;
+  - deux PDE pouvaient désigner une même table ;
+  - aucune restauration n'était possible sans nouvelle substitution ;
+  - une table détachée échappait au critère de P4f-B1, ce qui donnait, après falsification du PMM, un alias W puis la republication d'une table inscriptible ;
+  - l'audit ne nommait ni la perte ni le doublon.
+- **Correction** (`paging.c`) : une PDE ne connaît plus qu'une transition, **absente → présente**. Le passage lui-même refuse :
+  - une PDE présente, même de valeur identique (EEXIST) ;
+  - une cible déjà structure : doublon ou répertoire (EPERM) ;
+  - sous pagination, une cible non scellée ou déjà aliasée (EPERM).
+
+  Les contrôles se font **sans le PMM**. `table_create` refuse en plus un cadre déjà structure. L'audit compte `dup_pdes`, et `kmain` panique au démarrage si ce compteur n'est pas nul.
+- **Tests :**
+  - mode isolé `test=pdeint` (`kernel/tests/test_pdeint.c`, 39 vérifications) : substitution, doublon, table non scellée, table déjà aliasée, falsification du PMM, transition autorisée, contre-épreuve de l'audit ;
+  - mode destructif `test=pdesteal` : une table publiée marquée FREE fait fauter la remise à zéro sur l'identité scellée (CR2 exact) ;
+  - cas QEMU `pdeint`, `pdesteal`, `pdesteal_cr2`.
+- **Contre-épreuve P4f-B1 remplacée :** l'alias interdit n'est plus obtenu par D3, mais écrit hors du passage par le prototype P4c, puis retiré (réversible).
+- **Mutations :**
+  - M41 à M46 détectées ;
+  - M30 recalée : désormais observée dans `test=pdeint` par `vmm_tables_created` ;
+  - M39 recalée : nommée par `v2_refused_before_any_window`.
+- **Validation :**
+
+| Commande | Résultat |
+|---|---|
+| `make clean && make test` | 160 `[PASS]`, 0 `[FAIL]`, 59 cas QEMU sur 59 |
+| `make test-mutation` | 46 mutations sur 46 |
+| `tests/mutation/selftest.sh` | 13 situations conformes |
+| `make test-repro` | réussi |
+| `make -j8` depuis zéro | réussi |
+| `info mem` | inchangé |
+
+- **Limites :**
+  - les tables ne peuvent plus être retirées : chemin dédié à concevoir si K1 l'exige ;
+  - le compteur `unpublished` reste fondé sur le PMM ;
+  - D2 et D4 ouverts ; GDT/TSS et NMI inchangés.

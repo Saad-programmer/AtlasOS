@@ -158,8 +158,9 @@ void kmain(uint32_t magic, uint32_t mbi_phys)
     struct paging_audit pa;
     if (!paging_audit(&pa)) {
         panic("page-table audit failed: %u writable, %u aliases, %u bad PDEs, %u unpublished, "
-              "%u foreign aliases, %u writable structures",
-              pa.writable, pa.aliases, pa.bad_pdes, pa.unpublished, pa.foreign_aliases, pa.struct_writable);
+              "%u foreign aliases, %u writable structures, %u duplicate PDEs",
+              pa.writable, pa.aliases, pa.bad_pdes, pa.unpublished, pa.foreign_aliases, pa.struct_writable,
+              pa.dup_pdes);
     }
     kprintf("SAMOS: page directory and %u page tables sealed read-only (0 writable, 0 aliases)\n",
             pa.tables);

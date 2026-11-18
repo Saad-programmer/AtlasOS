@@ -195,7 +195,7 @@ done
 # Symboles qui ne doivent exister QUE dans l'image de test : autotests, modes de
 # faute volontaire, sortie QEMU. Leur présence dans l'image de production
 # signifierait qu'un mode destructif y est accessible.
-TEST_ONLY_SYMS="ktest_run_all ktest_fatal_mode qemu_exit ktest_check ktest_s2_prefill ptgate_write_entry ptgate_set_pte paging_gate_test_write paging_gate_test_set_active ktest_suite_pmm_trust"
+TEST_ONLY_SYMS="ktest_run_all ktest_fatal_mode qemu_exit ktest_check ktest_s2_prefill ptgate_write_entry ptgate_set_pte paging_gate_test_write paging_gate_test_set_active ktest_suite_pmm_trust ktest_suite_pde_integrity"
 # K0.7-P4c, P4e-1, P4e-2 : écritures de CR0 autorisées, par LOCALISATION et
 # par FONCTION (pas seulement par nombre). Argument : prod | test.
 #   paging_init   : 1 écriture, précédée de « or $0x80010000 » (PG|WP) ;

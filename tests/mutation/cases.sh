@@ -269,12 +269,16 @@ mutant seal_t0_removed kernel/arch/i386/paging.c \
     35 \
     't0_ro' \
     'pt0_write_faults'
-mutant seal_new_table_removed kernel/arch/i386/paging.c \
+# Depuis K0.7-P4f-B2, le passage refuse aussi de publier une table non
+# scellée : sans le scellement de table_create, plus aucune table n'est
+# créée après le démarrage (refus fermé). Les autotests normaux s'en
+# trouveraient interrompus par une cascade d'échecs ; la mutation est donc
+# observée dans le mode isolé test=pdeint, qui le nomme.
+MUT_CMDLINE=test=pdeint mutant seal_new_table_removed kernel/arch/i386/paging.c \
     'samos_err_t se = seal_table_frame(pt);' \
     'samos_err_t se = SAMOS_OK;' \
     35 \
-    'new_table_ro' \
-    'new_table_write_faults'
+    'vmm_tables_created'
 # INVLPG oublié après le scellement : la PTE est correcte (sans W), mais un
 # processeur réel garderait la traduction inscriptible chargée dans le TLB
 # par la remise à zéro. Sous QEMU, la fenêtre du passage (changement de
@@ -334,9 +338,50 @@ MUT_CMDLINE=test=pmmtrust mutant pmmtrust_prior_alias_ignored kernel/arch/i386/p
     'if (paging_enabled() && frame_has_foreign_alias(pt)) {' \
     'if (false && frame_has_foreign_alias(pt)) {' \
     35 \
-    'v2_refused'
+    'v2_refused_before_any_window'
 MUT_CMDLINE=test=pmmtrust mutant pmmtrust_audit_blind kernel/arch/i386/paging.c \
     'if (frame != va && frame_alias_forbidden(frame)) {' \
     'if (false && frame_alias_forbidden(frame)) {' \
     35 \
     'audit_sees_foreign_alias'
+
+# M41-M46 — K0.7-P4f-B2 : intégrité du répertoire (D3). Mode ISOLÉ
+# test=pdeint ; toute PDE acceptée à tort est annulée par le prototype P4c.
+MUT_CMDLINE=test=pdeint mutant pde_substitution_allowed kernel/arch/i386/paging.c \
+    'if (g_pd[PD_INDEX(va)] & PTE_PRESENT) {' \
+    'if (false) {' \
+    35 \
+    'substitution_refused' \
+    'identical_write_refused'
+# (Une PDE vers le répertoire reste refusée par le contrôle « t == pd »
+# antérieur : directory_target_refused n'est pas une détection de M42.)
+MUT_CMDLINE=test=pdeint mutant pde_duplicate_allowed kernel/arch/i386/paging.c \
+    'if (frame_is_paging_structure(t)) {' \
+    'if (false && frame_is_paging_structure(t)) {' \
+    35 \
+    'duplicate_refused'
+MUT_CMDLINE=test=pdeint mutant pde_prior_alias_ignored kernel/arch/i386/paging.c \
+    'if (paging_enabled() && (frame_has_foreign_alias(t) || !table_identity_sealed(t))) {' \
+    'if (paging_enabled() && ((false && frame_has_foreign_alias(t)) || !table_identity_sealed(t))) {' \
+    35 \
+    'aliased_table_refused'
+MUT_CMDLINE=test=pdeint mutant pde_unsealed_allowed kernel/arch/i386/paging.c \
+    'if (paging_enabled() && (frame_has_foreign_alias(t) || !table_identity_sealed(t))) {' \
+    'if (paging_enabled() && (frame_has_foreign_alias(t) || (false && !table_identity_sealed(t)))) {' \
+    35 \
+    'unsealed_table_refused' \
+    'falsified_target_refused'
+# Validation du passage contournée pour les PDE : pt_gate_write n'appelle
+# plus pt_gate_check pour une PDE (l'entrée est écrite sans aucun contrôle).
+MUT_CMDLINE=test=pdeint mutant pde_gate_validation_bypassed kernel/arch/i386/paging.c \
+    'samos_err_t e = pt_gate_check(kind, va, value, &entry);' \
+    'samos_err_t e = (kind == PT_KIND_PDE) ? (entry = &g_pd[PD_INDEX(va)], SAMOS_OK) : pt_gate_check(kind, va, value, &entry);' \
+    35 \
+    'substitution_refused' \
+    'duplicate_refused' \
+    'pde_clear_refused'
+MUT_CMDLINE=test=pdeint mutant pde_audit_blind kernel/arch/i386/paging.c \
+    'dup = (g_pd[k] & PTE_PRESENT) && (g_pd[k] & PTE_FRAME) == t;' \
+    'dup = false;' \
+    35 \
+    'audit_sees_duplicate_pde'

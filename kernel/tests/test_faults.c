@@ -102,6 +102,8 @@ bool ktest_fatal_mode(const char *mode)
     } else if (strcmp(mode, "sealpd") == 0 || strcmp(mode, "sealpt") == 0 ||
                strcmp(mode, "sealnewpt") == 0) {
         ktest_pt_sealed_write(mode);           /* K0.7-P4e-2 : doit finir en panic */
+    } else if (strcmp(mode, "pdesteal") == 0) {
+        ktest_pde_steal();                     /* K0.7-P4f-B2 : doit finir en panic */
     } else if (strcmp(mode, "recursive_panic") == 0) {
         /* K0.7-R1h (F4) — Panique PENDANT une panique : le formatage du
          * message de la première lit une chaîne à une adresse non projetée

@@ -46,6 +46,8 @@ void ktest_suite_sealed(void);      /* K0.7-P4d (après scellement) */
 void ktest_suite_vmm_gate(void);    /* K0.7-P4e-1 */
 void ktest_suite_pt_seal(void);     /* K0.7-P4e-2 */
 void ktest_suite_pmm_trust(void);   /* K0.7-P4f-B1, mode isolé test=pmmtrust */
+void ktest_suite_pde_integrity(void); /* K0.7-P4f-B2, mode isolé test=pdeint */
+void ktest_pde_steal(void);         /* K0.7-P4f-B2, test=pdesteal (doit finir en panic) */
 void ktest_pt_sealed_write(const char *what); /* K0.7-P4e-2, test=sealpd|sealpt|sealnewpt */
 void ktest_sealed_write(const char *what); /* K0.7-P4d, test=sealidt|sealhandlers|sealvmm */
 #define KTEST_S2_PREFILL 0x5F2A11EDu
