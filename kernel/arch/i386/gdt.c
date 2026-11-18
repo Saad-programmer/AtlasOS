@@ -30,7 +30,10 @@
 static struct gdt_entry g_gdt[GDT_ENTRIES] SAMOS_ALIGNED(8);
 static struct tss g_tss_main SAMOS_ALIGNED(16);
 static struct tss g_tss_df SAMOS_ALIGNED(16);
-static uint8_t g_df_stack[DF_STACK_SIZE] SAMOS_ALIGNED(16);
+/* K0.7-R1f-1 — S2 est définie en NASM (entry.asm, section .dfstack) et placée
+ * par linker.ld dans .stacks, alignée sur 4 KiB, entre sa page de garde et la
+ * garde basse de S1 (taille vérifiée par une assertion de l'éditeur de liens). */
+#define g_df_stack ((uint8_t *)(uintptr_t)df_stack_area)
 SAMOS_STATIC_ASSERT(DF_SENTINEL_WORDS * 4u <= 64u, "zone sentinelle petite devant S2");
 
 static void df_stack_sentinels_init(void);   /* K0.7-R1d, défini après gdt_init */
@@ -90,17 +93,22 @@ void gdt_init(void)
     tss_load(GDT_TSS_MAIN_SEL);
 }
 
-/* Placées APRÈS gdt_init : définies avant, elles faisaient passer g_df_stack
- * en tête de .bss, sous la GDT et les TSS (constaté en R1d). L'ordre des
- * objets statiques n'est garanti ni par le C ni par l'éditeur de liens :
- * seule une section dédiée le fixerait (sous-jalon des pages de garde). */
-/* K0.7-R1d — Pose des sentinelles au bas de S2 (voir gdt.h). Appelée par
- * gdt_init AVANT que la tâche #DF existe (son TSS et son descripteur sont
- * créés juste après, la porte de tâche de l'IDT encore plus tard) : S2 ne
- * peut pas encore servir. Écritures limitées à g_df_stack[0..15]. */
+/* Historique R1d : définies avant gdt_init, ces fonctions faisaient passer
+ * l'ancien tableau g_df_stack en tête de .bss. Depuis R1f-1, S2 est dans la
+ * section .stacks (linker.ld) et sa place ne dépend plus de cet ordre. */
+/* K0.7-R1d, R1f-1 — Remise à zéro de S2 puis pose des sentinelles à son bas
+ * (voir gdt.h). Appelée par gdt_init AVANT que la tâche #DF existe (son TSS et
+ * son descripteur sont créés juste après, la porte de tâche de l'IDT encore
+ * plus tard) : S2 ne peut pas encore servir. Écritures limitées à
+ * [df_stack_area, df_stack_area + 4096). */
 static void df_stack_sentinels_init(void)
 {
     volatile uint32_t *w = (volatile uint32_t *)(uintptr_t)g_df_stack;
+    /* K0.7-R1f-1 : S2 n'est plus dans .bss, donc plus remise à zéro par
+     * _start ; contenu déterministe avant toute utilisation. */
+    for (uint32_t i = 0; i < DF_STACK_SIZE / 4u; i++) {
+        w[i] = 0;
+    }
     for (uint32_t i = 0; i < DF_SENTINEL_WORDS; i++) {
         w[i] = DF_SENTINEL_VALUE(i);
     }

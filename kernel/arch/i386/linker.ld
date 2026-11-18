@@ -78,19 +78,42 @@ SECTIONS
         __bss_end = .;
     } :data
 
-    /* K0.2 — Zone de garde puis pile de démarrage, dans le segment data.
-     * NOLOAD : type NOBITS (aucun octet dans le fichier).
-     *   [__stack_guard_start, __stack_guard_end) : 4 KiB jamais utilisés
-     *   volontairement. Peinte au démarrage, vérifiée par logiciel ; en K0.6
-     *   cette page sera laissée NON PRÉSENTE dans les tables de pages, de
-     *   sorte qu'un débordement de pile déclenche une faute de page.
-     *   [boot_stack_bottom, boot_stack_top) : pile de 16 KiB (entry.asm). */
-    .bootstack ALIGN(PAGE_SIZE) (NOLOAD) :
+    /* K0.7-R1f-1 — Piles et pages de garde, dans UNE section NOBITS dont
+     * l'ordre interne est fixé ici (il ne dépend plus de l'ordre des objets
+     * de .bss, non garanti : constat R1d). De bas en haut, pages de 4 KiB :
+     *   [__df_guard_start, __df_guard_end)   garde basse de S2 (R1f-3 : non
+     *                                        présente ; R1f-1 : réservée, projetée)
+     *   [__df_stack_start, __df_stack_end)   S2, pile de la tâche #DF
+     *                                        (df_stack_area, entry.asm)
+     *   [__stack_guard_start, __stack_guard_end) garde basse de S1, NON
+     *                                        présente depuis K0.6 ; garde aussi
+     *                                        le sommet de S2
+     *   [boot_stack_bottom, boot_stack_top)  S1, 16 KiB (entry.asm)
+     *   [__stack_top_guard_start, __stack_top_guard_end) garde haute de S1
+     *                                        (R1f-2 : non présente ; R1f-1 :
+     *                                        réservée, projetée)
+     * Le premier cadre géré par le PMM (répertoire de pages) suit
+     * __kernel_end = __stack_top_guard_end.
+     * NOLOAD : aucun octet dans le fichier ; ni .bss (remise à zéro par
+     * _start) ni le chargeur ne garantissent le contenu : S1 est peinte par
+     * _start, S2 est remise à zéro par gdt_init. */
+    .stacks ALIGN(PAGE_SIZE) (NOLOAD) :
     {
+        __stacks_start = .;
+        __df_guard_start = .;
+        . += PAGE_SIZE;
+        __df_guard_end = .;
+        __df_stack_start = .;
+        KEEP(*(.dfstack))
+        __df_stack_end = .;
         __stack_guard_start = .;
         . += PAGE_SIZE;
         __stack_guard_end = .;
         KEEP(*(.bootstack))
+        __stack_top_guard_start = .;
+        . += PAGE_SIZE;
+        __stack_top_guard_end = .;
+        __stacks_end = .;
     } :data
 
     . = ALIGN(PAGE_SIZE);
@@ -112,6 +135,25 @@ ASSERT((__bss_start % 4) == 0, ".bss non alignee sur 4")
 ASSERT((__bss_end % 4) == 0, "fin de .bss non alignee sur 4")
 ASSERT(boot_stack_bottom == __stack_guard_end, "la pile doit suivre immediatement la zone de garde")
 ASSERT((boot_stack_top % 16) == 0, "sommet de pile non aligne sur 16")
+/* K0.7-R1f-1 — Section .stacks : tailles, alignements, contiguïté. Chaque
+ * égalité de bornes interdit à la fois un trou et un recouvrement. */
+ASSERT(__stacks_start >= __bss_end, ".stacks recouvre .bss")
+ASSERT((__stacks_start % PAGE_SIZE) == 0, ".stacks non alignee sur 4 KiB")
+ASSERT(__df_guard_start == __stacks_start, "garde S2 : debut de .stacks")
+ASSERT(__df_guard_end - __df_guard_start == PAGE_SIZE, "garde S2 : 4 KiB")
+ASSERT(__df_stack_start == __df_guard_end, "S2 suit sa garde")
+ASSERT(df_stack_area == __df_stack_start, "df_stack_area = debut de S2")
+ASSERT(__df_stack_end - __df_stack_start == 4096, "S2 : 4096 octets")
+ASSERT((__df_stack_start % PAGE_SIZE) == 0, "S2 alignee sur 4 KiB")
+ASSERT(__stack_guard_start == __df_stack_end, "garde basse S1 : juste au-dessus de S2")
+ASSERT(__stack_guard_end - __stack_guard_start == PAGE_SIZE, "garde basse S1 : 4 KiB")
+ASSERT(boot_stack_bottom == __stack_guard_end, "S1 suit sa garde basse")
+ASSERT(boot_stack_top - boot_stack_bottom == 16384, "S1 : 16 KiB")
+ASSERT((boot_stack_bottom % PAGE_SIZE) == 0, "S1 alignee sur 4 KiB")
+ASSERT(__stack_top_guard_start == boot_stack_top, "garde haute S1 : au sommet de S1")
+ASSERT(__stack_top_guard_end - __stack_top_guard_start == PAGE_SIZE, "garde haute S1 : 4 KiB")
+ASSERT(__stacks_end == __stack_top_guard_end, "fin de .stacks")
+ASSERT(__kernel_end == __stacks_end, ".stacks termine l'image")
 /* K0.6 identifiera l'image du noyau dans la carte mémoire ; on borne sa
  * taille pour garder des hypothèses simples (révisable). */
 ASSERT(__kernel_end <= 0x00400000, "le noyau depasse 4 MiB : reviser la disposition")

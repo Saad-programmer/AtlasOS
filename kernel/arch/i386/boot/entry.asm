@@ -65,6 +65,20 @@ multiboot_header:
     dd MB_HEADER_CHECKSUM
 
 ; ---------------------------------------------------------------------------
+; K0.7-R1f-1 — S2, pile de la tâche de double faute (4096 octets, NOBITS).
+; Auparavant tableau C de .bss (gdt.c), dont la position dépendait de l'ordre
+; des objets : linker.ld la place maintenant dans .stacks, entre sa garde et
+; la garde basse de S1. Elle n'est PAS remise à zéro par _start (hors de .bss) :
+; gdt_init le fait avant de poser les sentinelles. Un tableau C placé par
+; attribut dans une section nommée aurait été émis en PROGBITS (+4 KiB dans le
+; fichier, vérifié en R1e) : la définir ici garantit NOBITS.
+; ---------------------------------------------------------------------------
+section .dfstack nobits alloc noexec write align=4096
+global df_stack_area
+df_stack_area:
+    resb 4096
+
+; ---------------------------------------------------------------------------
 ; Pile de démarrage (K0.2 : section dédiée .bootstack, NOBITS).
 ; Le script de liaison place sous cette section une zone de garde de 4 KiB
 ; (__stack_guard_start .. __stack_guard_end). La pile x86 croît vers les

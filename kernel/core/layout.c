@@ -12,15 +12,19 @@
 
 /* Les adresses des symboles du linker ne sont pas des constantes de
  * compilation en C : le tableau est rempli à l'exécution. */
-static struct kernel_region g_regions[5];
+static struct kernel_region g_regions[8];
 
 static size_t layout_fill(void)
 {
     g_regions[0] = (struct kernel_region){ ".text",   (uintptr_t)__text_start,   (uintptr_t)__rodata_start,      LAYOUT_R | LAYOUT_X };
     g_regions[1] = (struct kernel_region){ ".rodata", (uintptr_t)__rodata_start, (uintptr_t)__data_start,        LAYOUT_R };
-    g_regions[2] = (struct kernel_region){ ".data+.bss", (uintptr_t)__data_start, (uintptr_t)__stack_guard_start, LAYOUT_R | LAYOUT_W };
-    g_regions[3] = (struct kernel_region){ "stack-guard", (uintptr_t)__stack_guard_start, (uintptr_t)__stack_guard_end, LAYOUT_GUARD };
-    g_regions[4] = (struct kernel_region){ "boot-stack", (uintptr_t)boot_stack_bottom, (uintptr_t)__kernel_end,   LAYOUT_R | LAYOUT_W };
+    g_regions[2] = (struct kernel_region){ ".data+.bss", (uintptr_t)__data_start, (uintptr_t)__stacks_start,     LAYOUT_R | LAYOUT_W };
+    /* K0.7-R1f-1 — Section .stacks (linker.ld), de bas en haut. */
+    g_regions[3] = (struct kernel_region){ "df-guard", (uintptr_t)__df_guard_start, (uintptr_t)__df_guard_end,   LAYOUT_R | LAYOUT_W | LAYOUT_RESERVED };
+    g_regions[4] = (struct kernel_region){ "df-stack", (uintptr_t)__df_stack_start, (uintptr_t)__df_stack_end,   LAYOUT_R | LAYOUT_W };
+    g_regions[5] = (struct kernel_region){ "stack-guard", (uintptr_t)__stack_guard_start, (uintptr_t)__stack_guard_end, LAYOUT_GUARD };
+    g_regions[6] = (struct kernel_region){ "boot-stack", (uintptr_t)boot_stack_bottom, (uintptr_t)boot_stack_top, LAYOUT_R | LAYOUT_W };
+    g_regions[7] = (struct kernel_region){ "top-guard", (uintptr_t)__stack_top_guard_start, (uintptr_t)__stack_top_guard_end, LAYOUT_R | LAYOUT_W | LAYOUT_RESERVED };
     return sizeof(g_regions) / sizeof(g_regions[0]);
 }
 
@@ -53,6 +57,9 @@ static const char *perms_str(uint32_t p)
 {
     if (p & LAYOUT_GUARD) {
         return "---G";
+    }
+    if (p & LAYOUT_RESERVED) {
+        return "rw-R";              /* réservée à une garde, encore projetée */
     }
     static const char *const tbl[8] = { "--- ", "r-- ", "-w- ", "rw- ", "--x ", "r-x ", "-wx ", "rwx " };
     return tbl[p & 7u];

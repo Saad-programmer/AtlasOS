@@ -23,13 +23,16 @@ static void test_regions(void)
 {
     const struct kernel_region *r;
     size_t n = kernel_layout(&r);
-    KTEST_CHECK(n == 5);
+    KTEST_CHECK(n == 8);                                                  /* K0.7-R1f-1 */
     KTEST_CHECK(kernel_layout_valid());
     KTEST_CHECK((r[0].perms & LAYOUT_X) && !(r[0].perms & LAYOUT_W));   /* .text R-X */
     KTEST_CHECK(r[1].perms == LAYOUT_R);                                 /* .rodata R-- */
     KTEST_CHECK((r[2].perms & LAYOUT_W) && !(r[2].perms & LAYOUT_X));    /* données RW- */
-    KTEST_CHECK(r[3].perms == LAYOUT_GUARD);
-    KTEST_CHECK(r[3].end - r[3].start == 4096);
+    KTEST_CHECK(r[5].perms == LAYOUT_GUARD);                             /* garde basse S1 */
+    KTEST_CHECK(r[5].end - r[5].start == 4096);
+    KTEST_CHECK((r[3].perms & LAYOUT_RESERVED) && r[3].end - r[3].start == 4096);   /* garde S2 */
+    KTEST_CHECK((r[7].perms & LAYOUT_RESERVED) && r[7].end - r[7].start == 4096);   /* garde haute */
+    KTEST_CHECK(r[4].end - r[4].start == 4096 && r[6].end - r[6].start == 16384);
     /* Aucune région ne doit être à la fois W et X. */
     bool wx = false;
     for (size_t i = 0; i < n; i++) {
@@ -43,7 +46,9 @@ static void test_regions(void)
 static void test_stack_placement(void)
 {
     KTEST_CHECK(__stack_guard_end == boot_stack_bottom);       /* garde juste sous la pile */
-    KTEST_CHECK(boot_stack_top == __kernel_end);               /* la pile termine l'image */
+    /* K0.7-R1f-1 : la page réservée à la garde haute termine l'image. */
+    KTEST_CHECK(boot_stack_top == __stack_top_guard_start);
+    KTEST_CHECK(__stack_top_guard_end == __kernel_end);
     KTEST_CHECK(__bss_end <= __stack_guard_start);             /* la pile n'est plus dans .bss */
     /* Le point d'entrée a été placé juste après l'en-tête Multiboot (12 octets) */
     uint32_t esp = cpu_read_esp();

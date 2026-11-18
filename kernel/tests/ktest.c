@@ -99,6 +99,7 @@ void ktest_run_all(void)
     ktest_suite_mm();
     ktest_suite_canary();
     ktest_suite_df_sentinel();
+    ktest_suite_stack_layout();
 
     suite_close();
     kprintf("[TEST] suites=%u checks=%u failures=%u\n", g_suites, g_checks, g_failures);

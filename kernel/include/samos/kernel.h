@@ -31,6 +31,16 @@ extern char __bss_end[];
 /* Zone de garde et pile de démarrage (linker.ld + entry.asm, section .bootstack) */
 extern char __stack_guard_start[];
 extern char __stack_guard_end[];
+/* K0.7-R1f-1 — Section .stacks (linker.ld) : S2 et pages réservées aux gardes. */
+extern char __stacks_start[];
+extern char __stacks_end[];
+extern char __df_guard_start[];
+extern char __df_guard_end[];
+extern char __df_stack_start[];
+extern char __df_stack_end[];
+extern char __stack_top_guard_start[];
+extern char __stack_top_guard_end[];
+extern char df_stack_area[];              /* entry.asm, section .dfstack */
 extern char boot_stack_bottom[];
 extern char boot_stack_top[];
 

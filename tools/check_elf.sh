@@ -82,7 +82,7 @@ done <<<"$seg"
 # --- 5. Sections (K0.2) --------------------------------------------------------
 # Format readelf -SW : [Nr] Name Type Addr Off Size ES Flg Lk Inf Al
 secs=$(readelf -SW "$ELF" | sed 's/^ *\[ *[0-9]*\] *//' | awk 'NF >= 9 && $1 ~ /^\./ {print $1, $2, $3, $NF}')
-for want in .text .rodata .data .bss .bootstack; do
+for want in .text .rodata .data .bss .stacks; do
     line=$(awk -v n="$want" '$1==n' <<<"$secs")
     if [ -z "$line" ]; then bad "section $want absente"; continue; fi
     read -r _ _ addr al <<<"$line"
@@ -93,14 +93,48 @@ done
 forbidden=$(awk '$1 ~ /^\.(got|plt|dynamic|interp|dynsym|dynstr|rel|rela|eh_frame|note|multiboot$)/ {print $1}' <<<"$secs")
 if [ -z "$forbidden" ]; then pass "aucune section dynamique/PIC/.eh_frame/.note"; else bad "sections inattendues: $forbidden"; fi
 # Ordre croissant des adresses des sections chargées
-order=$(awk '$1 ~ /^\.(text|rodata|data|bss|bootstack)$/ {print $3}' <<<"$secs" | tr '\n' ' ')
+order=$(awk '$1 ~ /^\.(text|rodata|data|bss|stacks)$/ {print $3}' <<<"$secs" | tr '\n' ' ')
 prev=0; ok=1
 for a in $order; do [ $((0x$a)) -gt "$prev" ] || ok=0; prev=$((0x$a)); done
-[ "$ok" -eq 1 ] && pass "ordre .text < .rodata < .data < .bss < .bootstack" || bad "ordre des sections incorrect"
-# .bss et .bootstack doivent être NOBITS (aucun octet dans le fichier)
-for nb in .bss .bootstack; do
+[ "$ok" -eq 1 ] && pass "ordre .text < .rodata < .data < .bss < .stacks" || bad "ordre des sections incorrect"
+# .bss et .stacks doivent être NOBITS (aucun octet dans le fichier)
+for nb in .bss .stacks; do
     awk -v n="$nb" '$1==n && $2=="NOBITS" {f=1} END {exit !f}' <<<"$secs" && pass "$nb NOBITS" || bad "$nb n'est pas NOBITS"
 done
+
+# --- 5b. Disposition des piles (K0.7-R1f-1) ------------------------------------
+# Section .stacks (linker.ld), de bas en haut : garde S2 (4 KiB, réservée),
+# S2 (4 KiB), garde basse S1 (4 KiB, non présente), S1 (16 KiB), garde haute
+# S1 (4 KiB, réservée) ; __kernel_end juste après. Vérifié sur les symboles de
+# l'image (indépendamment des assertions du linker), puis : aucun AUTRE symbole
+# ne doit désigner une adresse dans une page de garde ou réservée.
+symv() { nm "$ELF" | awk -v s="$1" '$3 == s { print "0x" $1; exit }'; }
+lay_ok=1
+expect_chain="__stacks_start=__df_guard_start __df_guard_end=__df_stack_start __df_stack_start=df_stack_area __df_stack_end=__stack_guard_start __stack_guard_end=boot_stack_bottom boot_stack_top=__stack_top_guard_start __stack_top_guard_end=__stacks_end __stacks_end=__kernel_end"
+for pair in $expect_chain; do
+    a="$(symv "${pair%%=*}")"; b="$(symv "${pair##*=}")"
+    if [ -z "$a" ] || [ -z "$b" ] || [ $((a)) -ne $((b)) ]; then lay_ok=0; bad "piles: ${pair%%=*} ($a) != ${pair##*=} ($b)"; fi
+done
+size_of() { echo $(( $(symv "$2") - $(symv "$1") )); }
+for spec in "__df_guard_start __df_guard_end 4096" "__df_stack_start __df_stack_end 4096" \
+            "__stack_guard_start __stack_guard_end 4096" "boot_stack_bottom boot_stack_top 16384" \
+            "__stack_top_guard_start __stack_top_guard_end 4096"; do
+    set -- $spec
+    [ "$(size_of "$1" "$2")" -eq "$3" ] || { lay_ok=0; bad "piles: [$1, $2) = $(size_of "$1" "$2") octets, attendu $3"; }
+    [ $(( $(symv "$1") % 4096 )) -eq 0 ] || { lay_ok=0; bad "piles: $1 non aligne sur 4 KiB"; }
+done
+[ "$lay_ok" -eq 1 ] && pass "piles: .stacks = garde S2 | S2 4 KiB | garde S1 | S1 16 KiB | garde haute, alignees 4 KiB, contigues"
+intruders=""
+for rng in "__df_guard_start __df_guard_end" "__stack_guard_start __stack_guard_end" "__stack_top_guard_start __stack_top_guard_end"; do
+    set -- $rng; lo=$(( $(symv "$1") )); hi=$(( $(symv "$2") ))
+    # Symboles dont l'adresse tombe dans [lo, hi), hors bornes de la disposition.
+    intruders="$intruders$(nm "$ELF" | awk -v lo="$lo" -v hi="$hi" '
+        $3 !~ /^(__df_guard_|__df_stack_|__stack_guard_|__stack_top_guard_|__stacks_|df_stack_area|boot_stack_|__kernel_end)/ {
+            a = 0; h = tolower($1); for (i = 1; i <= length(h); i++) a = a * 16 + index("0123456789abcdef", substr(h, i, 1)) - 1
+            if (a >= lo && a < hi) printf " %s", $3 }')"
+done
+[ -z "$intruders" ] && pass "piles: aucun objet dans les pages de garde ou reservees" \
+                    || bad "piles: objets dans une page de garde ou reservee :$intruders"
 
 # --- 6. Récursion involontaire de memset/memcpy ---------------------------------
 for fn in memset memcpy memmove; do

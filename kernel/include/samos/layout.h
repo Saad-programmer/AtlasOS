@@ -23,6 +23,10 @@
 #define LAYOUT_W     (1u << 1)
 #define LAYOUT_X     (1u << 2)
 #define LAYOUT_GUARD (1u << 3)   /* ne doit jamais être accédée */
+/* K0.7-R1f-1 — Page réservée à une future garde : aucun objet n'y est placé,
+ * aucun code n'y accède, mais elle est ENCORE projetée (rw). Elle deviendra
+ * LAYOUT_GUARD (non présente) en R1f-2 (garde haute de S1) et R1f-3 (S2). */
+#define LAYOUT_RESERVED (1u << 4)
 
 struct kernel_region {
     const char *name;

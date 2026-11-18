@@ -83,3 +83,12 @@ mutant df_sentinel_not_initialized kernel/arch/i386/gdt.c \
     35 \
     'values_ok' \
     'df_stack_sentinel_damage() == 0'
+
+# M9 — K0.7-R1f-1 : un symbole est placé dans la page réservée à la garde
+# haute de S1. check_elf.sh doit le nommer (les assertions du linker, qui ne
+# portent que sur les bornes, ne le voient pas).
+mutant_tool stack_layout_intruder kernel/arch/i386/linker.ld \
+    '__stack_top_guard_start = .;' \
+    '__stack_top_guard_start = .; layout_intruder = . + 16;' \
+    'tools/check_elf.sh build/samos.elf --production' \
+    'piles: objets dans une page de garde ou reservee : layout_intruder'

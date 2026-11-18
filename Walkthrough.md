@@ -1406,3 +1406,36 @@ tests/tools/repro_selftest.sh
   - `make clean && make test` donne 118 `[PASS]`, 0 `[FAIL]`, 28 cas QEMU sur 28 ;
   - `make test-mutation` donne 8 mutations sur 8 ;
   - `make test-repro` donne 2 images reproductibles.
+
+### K0.7-R1f-1 — Disposition explicite des piles S1 et S2 (gardes encore projetées)
+
+- **Changement :**
+  - section NOBITS `.stacks` dans `linker.ld`, de bas en haut : page réservée à la garde S2, S2 (4 KiB, maintenant définie en NASM `.dfstack` et sortie de `.bss`), garde basse de S1 (inchangée, absente), S1 (16 KiB), page réservée à la garde haute ;
+  - 17 nouvelles assertions de l'éditeur de liens ;
+  - `gdt.c` utilise `df_stack_area` et remet S2 à zéro avant les sentinelles.
+  - `paging.c` n'est **pas** modifié : les deux pages réservées restent projetées (R1f-2 et R1f-3).
+- **Production, avant puis après :**
+  - S2 : `0x109110` (dans `.bss`, sur la page de la GDT et des TSS), puis `0x18c000` ;
+  - S1 : `0x18d000`-`0x191000`, puis `0x18e000`-`0x192000` ;
+  - pages réservées : `0x18b000` et `0x192000` ;
+  - CR3 : `0x191000`, puis `0x193000`.
+  - Image de test : `.stacks` de `0x198000` à `0x1a0000`, CR3 `0x1a0000`.
+  - Fichier de production +4 octets ; mémoire réservée +8 KiB (`memsz` `0x89000` → `0x8b000`).
+- **Vérifications :**
+  - suite « K0.7 stack layout » (26 vérifications : bornes, alignements, cohérence des symboles et du TSS, droits effectifs, types PMM, refus de libération et de projection, structures critiques hors des pages réservées, CR3 = `__kernel_end`) ;
+  - `check_elf.sh` étendu (chaîne des bornes, tailles, aucun objet dans une page de garde ou réservée) ;
+  - mutation `stack_layout_intruder` détectée.
+- **Défaut de vérification corrigé :** le premier contrôle des intrus signalait la borne `__df_stack_end` ; le motif d'exclusion est corrigé, et la mutation prouve que le contrôle reste efficace.
+- **Validation :**
+
+| Commande | Résultat |
+|---|---|
+| `make clean && make test` | code 0, 122 `[PASS]`, 0 `[FAIL]`, 28 cas QEMU sur 28 |
+| cas QEMU couverts | double faute, débordement, canari, sentinelles, exceptions imbriquées, fautes de page, RAM de 16 MiB à 4 GiB |
+| autotests | 508 vérifications |
+| `make test-mutation` | 9 mutations sur 9 détectées |
+| auto-test du moteur | 12 situations conformes |
+| `make test-repro` | 2 images reproductibles |
+| `make -j8` depuis zéro | réussi |
+
+- **Risque résiduel :** les pages réservées ne protègent encore rien ; un débordement de S2 atteindrait la fin de `.bss` (table du PMM) sans faute, jusqu'à R1f-3.

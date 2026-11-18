@@ -19,11 +19,13 @@
  */
 #include <arch/cpu.h>
 #include <arch/gdt.h>
+#include <arch/idt.h>
 #include <arch/paging.h>
 #include <samos/kernel.h>
 #include <samos/layout.h>
 #include <samos/ktest.h>
 #include <samos/log.h>
+#include <samos/pmm.h>
 #include <samos/stack_protector.h>
 
 /*
@@ -154,4 +156,75 @@ void ktest_suite_df_sentinel(void)
 
     /* S1 inchangée : page de garde toujours non projetée. */
     KTEST_CHECK(boot_stack_guard_intact());
+}
+
+/*
+ * K0.7-R1f-1 — Disposition explicite des piles (section .stacks, linker.ld).
+ * Les deux pages réservées aux futures gardes sont ENCORE projetées dans ce
+ * jalon ; seule la garde basse de S1 est non présente (depuis K0.6).
+ */
+static bool overlaps(uintptr_t a, uintptr_t alen, uintptr_t b, uintptr_t blen)
+{
+    return a < b + blen && b < a + alen;
+}
+
+void ktest_suite_stack_layout(void)
+{
+    ktest_suite("K0.7 stack layout");
+    const uintptr_t pg = 4096u;
+    uintptr_t dg = (uintptr_t)__df_guard_start, s2 = (uintptr_t)__df_stack_start;
+    uintptr_t g1 = (uintptr_t)__stack_guard_start, s1 = (uintptr_t)boot_stack_bottom;
+    uintptr_t tg = (uintptr_t)__stack_top_guard_start;
+
+    /* Bornes, tailles et contiguïté (doublent les assertions du linker). */
+    KTEST_CHECK((uintptr_t)__stacks_start == dg && (dg & (pg - 1u)) == 0);
+    KTEST_CHECK((uintptr_t)__df_guard_end == s2 && s2 - dg == pg);
+    KTEST_CHECK((uintptr_t)__df_stack_end == g1 && g1 - s2 == 4096u);
+    KTEST_CHECK((uintptr_t)__stack_guard_end == s1 && s1 - g1 == pg);
+    KTEST_CHECK((uintptr_t)boot_stack_top == tg && tg - s1 == 16384u);
+    KTEST_CHECK((uintptr_t)__stack_top_guard_end == tg + pg);
+    KTEST_CHECK((uintptr_t)__stacks_end == tg + pg && (uintptr_t)__kernel_end == tg + pg);
+    KTEST_CHECK((s2 & (pg - 1u)) == 0 && (s1 & (pg - 1u)) == 0);
+
+    /* Cohérence symboles / adresses utilisées par le code. */
+    KTEST_CHECK((uintptr_t)df_stack_area == s2);
+    KTEST_CHECK(df_stack_bottom() == s2 && df_stack_top() == g1);
+    KTEST_CHECK((uintptr_t)df_stack_sentinels() == s2);
+    KTEST_CHECK(tss_double_fault()->esp == (uint32_t)g1);          /* sommet de S2 */
+    KTEST_CHECK(tss_main()->esp0 == (uint32_t)tg);                 /* sommet de S1 */
+    uint32_t esp = cpu_read_esp();
+    KTEST_CHECK(esp > (uint32_t)s1 && esp < (uint32_t)tg);         /* on s'exécute sur S1 */
+    KTEST_CHECK(df_stack_sentinel_damage() == 0);
+
+    /* Droits effectifs (R1f-1) : réservées encore projetées, garde S1 absente. */
+    uint32_t pa = 0, fl = 0;
+    KTEST_CHECK(vmm_translate(dg, &pa, &fl) && pa == dg && (fl & PTE_WRITE));
+    KTEST_CHECK(vmm_translate(tg, &pa, &fl) && pa == tg && (fl & PTE_WRITE));
+    KTEST_CHECK(!vmm_translate(g1, 0, 0));
+    KTEST_CHECK(vmm_translate(s2, 0, 0) && vmm_translate(s1, 0, 0));
+
+    /* PMM : cadres de l'image, jamais distribués ni projetables dynamiquement. */
+    const struct pmm *p = pmm_state();
+    KTEST_CHECK(pmm_core_type(p, dg >> 12) == FRAME_KERNEL && pmm_core_type(p, tg >> 12) == FRAME_KERNEL);
+    KTEST_CHECK(pmm_core_type(p, s2 >> 12) == FRAME_KERNEL && pmm_core_type(p, g1 >> 12) == FRAME_KERNEL);
+    KTEST_CHECK(pmm_free_frame((uint32_t)dg) == SAMOS_EINVAL && pmm_free_frame((uint32_t)tg) == SAMOS_EINVAL);
+    KTEST_CHECK(vmm_map(0xD0070000u, (uint32_t)dg, PTE_WRITE) == SAMOS_EPERM);
+    KTEST_CHECK(vmm_map(0xD0070000u, (uint32_t)tg, PTE_WRITE) == SAMOS_EPERM);
+
+    /* Aucune structure critique dans une page réservée ; répertoire de pages
+     * juste après l'image (premier cadre géré). */
+    uintptr_t crit[][2] = {
+        { (uintptr_t)gdt_table(), GDT_ENTRIES * sizeof(struct gdt_entry) },
+        { (uintptr_t)tss_main(), sizeof(struct tss) },
+        { (uintptr_t)tss_double_fault(), sizeof(struct tss) },
+        { (uintptr_t)idt_table(), 256u * sizeof(struct idt_entry) },
+        { (uintptr_t)p->meta, p->nframes * sizeof(frame_desc_t) },
+        { (uintptr_t)paging_directory(), pg },
+    };
+    bool clear = true;
+    for (unsigned i = 0; i < sizeof(crit) / sizeof(crit[0]); i++) {
+        clear = clear && !overlaps(crit[i][0], crit[i][1], dg, pg) && !overlaps(crit[i][0], crit[i][1], tg, pg);
+    }
+    KTEST_CHECK(clear);
+    KTEST_CHECK(paging_directory() == (uint32_t)(uintptr_t)__kernel_end);
 }

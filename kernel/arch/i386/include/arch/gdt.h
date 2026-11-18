@@ -72,10 +72,11 @@ void gdt_set_double_fault_cr3(uint32_t cr3);
 
 /*
  * K0.7-R1d — Sentinelles de la pile de double faute (S2).
- * S2 = g_df_stack[4096] (.bss, alignée sur 16), utilisée UNIQUEMENT par la
- * tâche matérielle #DF ; elle croît vers le bas depuis g_df_stack + 4096. Les
- * DF_SENTINEL_WORDS premiers mots (les 16 octets les plus bas, juste
- * au-dessus de g_tss_df) contiennent des valeurs connues : si l'un d'eux
+ * S2 = df_stack_area[4096] (entry.asm, section .stacks de linker.ld, alignée
+ * sur 4 KiB depuis R1f-1), utilisée UNIQUEMENT par la tâche matérielle #DF ;
+ * elle croît vers le bas depuis df_stack_area + 4096. Les DF_SENTINEL_WORDS
+ * premiers mots (les 16 octets les plus bas, juste au-dessus de la page
+ * réservée à sa garde) contiennent des valeurs connues : si l'un d'eux
  * change, S2 a débordé (ou une écriture parasite l'a atteinte).
  * Détection seulement, au moment de la vérification : pas d'empêchement,
  * pas de remplacement d'une page de garde.
