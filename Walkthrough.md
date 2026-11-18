@@ -1378,3 +1378,31 @@ tests/tools/repro_selftest.sh
 | `make -j8` depuis zéro | réussi |
 
 - **Limites :** détection au moment des vérifications seulement ; ni empêchement, ni remplacement d'une page de garde ; un vrai débordement de S2 écraserait les TSS avant d'être constaté.
+
+### K0.7-R1e — Conception des pages de garde de S1 et S2, sans changement dans le dépôt
+
+- **Document :** `docs/design/K0.7-R1e-guard-pages.md`.
+- **Cartographie relevée** (`nm`, `readelf`, moniteur QEMU) :
+  - le sommet de S1 touche le **répertoire de pages**, dans les deux images (CR3 = `0x191000` en production, `0x19c000` en test) ;
+  - S2 partage sa première page avec la GDT et les deux TSS, et sa dernière avec l'IDT ;
+  - aucune garde n'est possible sans déplacement.
+- **Proposition :**
+  - section NOBITS `.stacks` dans `linker.ld`, contenant garde S2, S2 (sortie de `.bss`, définie en NASM `.dfstack`), garde basse de S1 (qui garde aussi le sommet de S2), S1, garde haute de S1 ;
+  - nouveaux symboles et assertions de l'éditeur de liens ;
+  - S2 remise à zéro explicitement dans `gdt_init`.
+- **Prototype jetable** (copie isolée, supprimée ; aucun fichier du dépôt modifié) :
+  - disposition liée et démarrée : CR3 = `0x193000`, +8 KiB réservés, fichier +96 octets ;
+  - régression : seul l'autotest `boot_stack_top == __kernel_end` échoue, comme prévu ;
+  - `df`, `stack`, `dfsentinel` et `canary` passent, sans triple fault ;
+  - une fois les gardes retirées de l'identité : trois trous dans `info mem`, sondes en faute à l'adresse exacte, `vmm_map` refusé (`EPERM`) ;
+  - **débordement volontaire de S2** : #PF à `CR2 = 0x197ffc` (premier mot sous S2), #DF, puis **triple fault** ; rien n'est écrit sous S2.
+- **Défauts de méthode pendant le prototype :** deux exécutions ont d'abord utilisé un binaire périmé, à cause d'erreurs de compilation (déclaration manquante, `-Winfinite-recursion`). Elles ont été écartées, et les mesures refaites en conditionnant l'exécution à la réussite de la compilation.
+- **Plan R1f :**
+  - R1f-1 : disposition seule, gardes encore projetées ;
+  - R1f-2 : garde haute de S1 ;
+  - R1f-3 : garde S2 ;
+  - R1f-4 : validation finale de R1.
+- **Validation de référence** (dépôt inchangé) :
+  - `make clean && make test` donne 118 `[PASS]`, 0 `[FAIL]`, 28 cas QEMU sur 28 ;
+  - `make test-mutation` donne 8 mutations sur 8 ;
+  - `make test-repro` donne 2 images reproductibles.
