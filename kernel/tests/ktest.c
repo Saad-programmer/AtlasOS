@@ -103,6 +103,7 @@ void ktest_run_all(void)
     ktest_suite_top_guard();
     ktest_suite_df_guard();
     ktest_suite_s2_init();
+    ktest_suite_critical_layout();
 
     suite_close();
     kprintf("[TEST] suites=%u checks=%u failures=%u\n", g_suites, g_checks, g_failures);

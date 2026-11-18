@@ -72,6 +72,28 @@ SECTIONS
     .bss ALIGN(PAGE_SIZE) :
     {
         __bss_start = .;
+        /* K0.7-P4b — Structures critiques séparées par mutabilité, une page
+         * (au moins) chacune, en tête de .bss : elles restent NOBITS et sont
+         * remises à zéro par _start avec le reste de .bss. Les motifs
+         * explicites précèdent *(.bss.*) : ld range une section d'entrée dans
+         * la PREMIÈRE règle qui la désigne. Aucun changement de droits ici
+         * (P4b) ; P4d scellera kro_idt, kro_handlers et kro_vmm. */
+        __kcpu_start = .;            /* GDT + 2 TSS : écrites par le CPU, restent RW */
+        *(.bss.p4_cpu)
+        . = ALIGN(PAGE_SIZE);
+        __kcpu_end = .;
+        __kro_idt_start = .;         /* IDT : candidate RO */
+        *(.bss.p4_idt)
+        . = ALIGN(PAGE_SIZE);
+        __kro_idt_end = .;
+        __kro_handlers_start = .;    /* pointeurs de gestionnaires : candidates RO */
+        *(.bss.p4_handlers)
+        . = ALIGN(PAGE_SIZE);
+        __kro_handlers_end = .;
+        __kro_vmm_start = .;         /* racines du VMM : candidates RO */
+        *(.bss.p4_vmm)
+        . = ALIGN(PAGE_SIZE);
+        __kro_vmm_end = .;
         *(.bss .bss.*)
         *(COMMON)
         . = ALIGN(4);
@@ -154,6 +176,19 @@ ASSERT(__stack_top_guard_start == boot_stack_top, "garde haute S1 : au sommet de
 ASSERT(__stack_top_guard_end - __stack_top_guard_start == PAGE_SIZE, "garde haute S1 : 4 KiB")
 ASSERT(__stacks_end == __stack_top_guard_end, "fin de .stacks")
 ASSERT(__kernel_end == __stacks_end, ".stacks termine l'image")
+/* K0.7-P4b — Pages des structures critiques : chacune commence au début de
+ * .bss ou à la fin de la précédente, est alignée et fait EXACTEMENT une page
+ * (un contenu plus grand qu'une page ferait échouer l'assertion de taille). */
+ASSERT(__kcpu_start == __bss_start, "P4b : GDT/TSS en tete de .bss")
+ASSERT((__kcpu_start % PAGE_SIZE) == 0, "P4b : page GDT/TSS alignee")
+ASSERT(__kcpu_end - __kcpu_start == PAGE_SIZE, "P4b : GDT/TSS = une page")
+ASSERT(__kro_idt_start == __kcpu_end, "P4b : page IDT contigue")
+ASSERT(__kro_idt_end - __kro_idt_start == PAGE_SIZE, "P4b : IDT = une page")
+ASSERT(__kro_handlers_start == __kro_idt_end, "P4b : page gestionnaires contigue")
+ASSERT(__kro_handlers_end - __kro_handlers_start == PAGE_SIZE, "P4b : gestionnaires = une page")
+ASSERT(__kro_vmm_start == __kro_handlers_end, "P4b : page racines VMM contigue")
+ASSERT(__kro_vmm_end - __kro_vmm_start == PAGE_SIZE, "P4b : racines VMM = une page")
+ASSERT(__kro_vmm_end <= __bss_end, "P4b : pages critiques dans .bss")
 /* K0.6 identifiera l'image du noyau dans la carte mémoire ; on borne sa
  * taille pour garder des hypothèses simples (révisable). */
 ASSERT(__kernel_end <= 0x00400000, "le noyau depasse 4 MiB : reviser la disposition")

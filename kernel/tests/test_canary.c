@@ -449,3 +449,80 @@ void ktest_suite_s2_init(void)
     KTEST_CHECK(tss_double_fault()->esp == (uint32_t)(uintptr_t)df_stack_area + 4096u);
     KTEST_CHECK(df_stack_sentinel_damage() == 0);
 }
+
+/*
+ * K0.7-P4b — Séparation physique des structures critiques (aucun changement
+ * de droits). Pages en tête de .bss (linker.ld) :
+ *   kcpu       : GDT + TSS principal + TSS #DF (écrites par le CPU : restent RW)
+ *   kro_idt    : IDT                       (candidate RO, P4d)
+ *   kro_handlers : g_handlers, g_irq_handlers (candidates RO)
+ *   kro_vmm    : g_idmap_top, g_pd          (candidates RO)
+ * Le contenu exact de chaque page (symboles) est vérifié par check_elf.sh.
+ */
+extern volatile uint32_t g_irq_depth;
+
+static bool in_page(uintptr_t a, size_t len, const char *lo, const char *hi)
+{
+    return a >= (uintptr_t)lo && a + len <= (uintptr_t)hi;
+}
+
+void ktest_suite_critical_layout(void)
+{
+    ktest_suite("K0.7 critical layout (P4b)");
+    const char *pages[4][2] = {
+        { __kcpu_start, __kcpu_end }, { __kro_idt_start, __kro_idt_end },
+        { __kro_handlers_start, __kro_handlers_end }, { __kro_vmm_start, __kro_vmm_end },
+    };
+    /* Alignement, taille exacte, contiguïté, en tête de .bss. */
+    bool geom = (uintptr_t)__kcpu_start == (uintptr_t)__bss_start;
+    for (unsigned i = 0; i < 4; i++) {
+        geom = geom && ((uintptr_t)pages[i][0] & 0xFFFu) == 0 &&
+               (uintptr_t)pages[i][1] - (uintptr_t)pages[i][0] == 4096u &&
+               (i == 0 || pages[i][0] == pages[i - 1][1]);
+    }
+    KTEST_CHECK(geom);
+
+    /* Les structures sont là où le CPU les utilise réellement. */
+    struct cpu_dtr g = { 0, 0 }, d = { 0, 0 };
+    cpu_sgdt(&g);
+    cpu_sidt(&d);
+    uint16_t tr = 0;
+    __asm__ __volatile__("str %0" : "=r"(tr));
+    KTEST_CHECK(g.base == (uint32_t)(uintptr_t)gdt_table() &&
+                in_page(g.base, (size_t)g.limit + 1u, __kcpu_start, __kcpu_end));
+    KTEST_CHECK(d.base == (uint32_t)(uintptr_t)idt_table() &&
+                in_page(d.base, (size_t)d.limit + 1u, __kro_idt_start, __kro_idt_end));
+    KTEST_CHECK(tr == GDT_TSS_MAIN_SEL);
+    KTEST_CHECK(in_page((uintptr_t)tss_main(), sizeof(struct tss), __kcpu_start, __kcpu_end));
+    KTEST_CHECK(in_page((uintptr_t)tss_double_fault(), sizeof(struct tss), __kcpu_start, __kcpu_end));
+
+    /* Les objets qui doivent rester RW ne sont dans AUCUNE page candidate RO. */
+    uintptr_t rw[][2] = {
+        { (uintptr_t)&g_irq_depth, sizeof(g_irq_depth) },
+        { (uintptr_t)pmm_state(), sizeof(struct pmm) },
+        { (uintptr_t)pmm_state()->meta, pmm_state()->nframes * sizeof(frame_desc_t) },
+        { (uintptr_t)tss_main(), sizeof(struct tss) },
+        { (uintptr_t)gdt_table(), GDT_ENTRIES * sizeof(struct gdt_entry) },
+    };
+    bool separated = true;
+    for (unsigned k = 0; k < sizeof(rw) / sizeof(rw[0]); k++) {
+        for (unsigned i = 1; i < 4; i++) {
+            separated = separated && !(rw[k][0] < (uintptr_t)pages[i][1] &&
+                                       (uintptr_t)pages[i][0] < rw[k][0] + rw[k][1]);
+        }
+    }
+    KTEST_CHECK(separated);
+
+    /* Droits INCHANGÉS en P4b : les quatre pages présentes et inscriptibles. */
+    bool rw_ok = true;
+    for (unsigned i = 0; i < 4; i++) {
+        uint32_t pa = 0, fl = 0;
+        rw_ok = rw_ok && vmm_translate((uint32_t)(uintptr_t)pages[i][0], &pa, &fl) &&
+                pa == (uint32_t)(uintptr_t)pages[i][0] && (fl & PTE_WRITE) && !(fl & PTE_USER);
+    }
+    KTEST_CHECK(rw_ok);
+    KTEST_CHECK((cpu_read_cr0() & CR0_WP) != 0);
+
+    /* Racines du VMM cohérentes après le déplacement. */
+    KTEST_CHECK(paging_directory() == (uint32_t)(uintptr_t)__kernel_end);
+}

@@ -27,7 +27,9 @@
 #define STUB_COUNT 48
 extern const uint32_t isr_stub_table[STUB_COUNT];
 
-static struct idt_entry g_idt[IDT_ENTRIES] SAMOS_ALIGNED(8);
+/* K0.7-P4b — Page dédiée (.bss.p4_idt) : candidate à la lecture seule après
+ * l'initialisation (P4d) ; le CPU ne fait que LIRE l'IDT. */
+static struct idt_entry g_idt[IDT_ENTRIES] SAMOS_ALIGNED(8) SAMOS_SECTION(".bss.p4_idt");
 
 static void idt_set_gate(uint8_t vector, uint32_t handler, uint16_t selector, uint8_t type_attr)
 {

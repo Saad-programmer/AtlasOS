@@ -6,7 +6,8 @@
 #include <arch/irq.h>
 #include <arch/pic.h>
 
-static irq_handler_t g_irq_handlers[PIC_IRQ_COUNT];
+/* K0.7-P4b — Même page que g_handlers (.bss.p4_handlers). */
+static irq_handler_t g_irq_handlers[PIC_IRQ_COUNT] SAMOS_SECTION(".bss.p4_handlers");
 static volatile uint32_t g_irq_count[PIC_IRQ_COUNT];
 static volatile uint32_t g_spurious;
 static volatile uint32_t g_unhandled;

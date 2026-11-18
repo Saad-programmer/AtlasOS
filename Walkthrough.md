@@ -1572,3 +1572,28 @@ tests/tools/repro_selftest.sh
   - toutes les PTE des tables sont dans la première table, ce qui impose un ordre des mises à jour.
 - **Recommandation :** séparation (C), scellement (A) de l'IDT, des gestionnaires et des racines du VMM, fonction de passage B1 (désactivation temporaire de CR0.WP, interruptions masquées, validation stricte de la cible) pour les tables de pages. GDT et TSS restent inscriptibles (limite imposée par la porte de tâche). P4 sera **réduit, pas éliminé**.
 - **État de référence :** `make test` donne 133 `[PASS]`, 39 cas QEMU sur 39 ; `make test-mutation` 13 sur 13 ; `make test-repro` réussi.
+
+### K0.7-P4b — Séparation physique des structures critiques (droits inchangés)
+
+- **Changement :**
+  - `SAMOS_SECTION` ;
+  - quatre sections `.bss.p4_*`, rangées par `linker.ld` en tête de `.bss`, une page chacune : `kcpu` (GDT et deux TSS, qui doivent rester RW), `kro_idt` (IDT), `kro_handlers` (`g_handlers`, `g_irq_handlers`), `kro_vmm` (`g_idmap_top`, `g_pd`, écrits une seule fois par `paging_init`) ;
+  - 10 assertions du linker ;
+  - compteurs, `g_tables` et PMM restent dans `.bss`.
+  - **Aucun changement de droits**, aucun alias, CR0.WP inchangé.
+- **Production :** `kcpu` `0x109000`, `kro_idt` `0x10a000`, `kro_handlers` `0x10b000`, `kro_vmm` `0x10c000`, compteurs à partir de `0x10d000` ; `.stacks` à `0x18e000` ; CR3 `0x196000`. Coût : +12 KiB réservés ; fichier inchangé ; démarrage à 1 792 KiB conservé.
+- **Tests :**
+  - `check_elf.sh` : contenu exact de chaque page ;
+  - suite « K0.7 critical layout (P4b) » (10 vérifications : géométrie, `sgdt`, `sidt`, `str`, séparation des objets RW, quatre pages encore `rw`, CR3) ;
+  - mutations `p4b_rw_in_vmm_page` et `p4b_rw_in_handlers_page` détectées (intrus nommés).
+- **Validation :**
+
+| Commande | Résultat |
+|---|---|
+| `make clean && make test` | 135 `[PASS]`, 0 `[FAIL]`, 39 cas QEMU sur 39 |
+| autotests | 581 vérifications |
+| `make test-mutation` | 15 mutations sur 15 |
+| auto-test du moteur | 12 situations conformes |
+| `make test-repro` | réussi |
+| `make -j8` depuis zéro | réussi |
+| `info tlb` et `info mem` | quatre pages `rw` ; `.text` et `.rodata` `r-` ; trois gardes absentes |

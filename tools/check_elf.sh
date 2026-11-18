@@ -149,6 +149,35 @@ done
 [ -z "$intruders" ] && pass "piles: aucun objet dans les pages de garde (liste exacte de bornes autorisees)" \
                     || bad "piles: objets dans une page de garde ou reservee :$intruders"
 
+# --- 5c. Pages des structures critiques (K0.7-P4b) -------------------------------
+# Chaque page fait exactement 4 KiB, alignée, et ne contient QUE les symboles
+# listés (plus ses bornes, autorisées à l'adresse de début). Une page candidate
+# à la lecture seule (kro_*) ne doit partager sa page avec AUCUN objet qui doit
+# rester inscriptible. Liste exacte, sans préfixe (leçon de R1h, F6).
+p4_ok=1
+for spec in "__kcpu_start __kcpu_end g_gdt,g_tss_main,g_tss_df __bss_start,__kcpu_start" \
+            "__kro_idt_start __kro_idt_end g_idt __kcpu_end,__kro_idt_start" \
+            "__kro_handlers_start __kro_handlers_end g_handlers,g_irq_handlers __kro_idt_end,__kro_handlers_start" \
+            "__kro_vmm_start __kro_vmm_end g_idmap_top,g_pd __kro_handlers_end,__kro_vmm_start"; do
+    set -- $spec
+    lo=$(symv "$1"); hi=$(symv "$2")
+    if [ -z "$lo" ] || [ -z "$hi" ]; then p4_ok=0; bad "P4b: bornes absentes ($1, $2)"; continue; fi
+    lo=$((lo)); hi=$((hi))
+    if [ $((hi - lo)) -ne 4096 ] || [ $((lo % 4096)) -ne 0 ]; then p4_ok=0; bad "P4b: [$1, $2) n'est pas une page alignee"; fi
+    found=$(nm "$ELF" | awk -v lo="$lo" -v hi="$hi" -v objs=",$3," -v bounds=",$4," '
+        {
+            a = 0; h = tolower($1)
+            for (i = 1; i <= length(h); i++) a = a * 16 + index("0123456789abcdef", substr(h, i, 1)) - 1
+            if (a < lo || a >= hi) next
+            if (index(objs, "," $3 ",") > 0) { seen[$3] = 1; next }
+            if (a == lo && index(bounds, "," $3 ",") > 0) next
+            printf " intrus:%s", $3
+        }
+        END { n = split(substr(objs, 2, length(objs) - 2), want, ","); for (k = 1; k <= n; k++) if (!(want[k] in seen)) printf " absent:%s", want[k] }')
+    if [ -n "$found" ]; then p4_ok=0; bad "P4b: page [$1, $2) :$found"; fi
+done
+[ "$p4_ok" -eq 1 ] && pass "P4b: pages GDT/TSS, IDT, gestionnaires, racines VMM : contenu exact, une page chacune"
+
 # --- 6. Récursion involontaire de memset/memcpy ---------------------------------
 for fn in memset memcpy memmove; do
     if objdump -d "$ELF" --no-show-raw-insn | awk -v f="$fn" '

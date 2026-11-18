@@ -27,9 +27,13 @@
 
 #define DF_STACK_SIZE 4096
 
-static struct gdt_entry g_gdt[GDT_ENTRIES] SAMOS_ALIGNED(8);
-static struct tss g_tss_main SAMOS_ALIGNED(16);
-static struct tss g_tss_df SAMOS_ALIGNED(16);
+/* K0.7-P4b — GDT et TSS : page dédiée « écrite par le CPU » (.bss.p4_cpu,
+ * linker.ld). Elles doivent rester INSCRIPTIBLES : le CPU y écrit lors de la
+ * commutation de tâche de la #DF (bit « occupé », sauvegarde d'état, lien ;
+ * P4a : triple fault si la page est en lecture seule). */
+static struct gdt_entry g_gdt[GDT_ENTRIES] SAMOS_ALIGNED(8) SAMOS_SECTION(".bss.p4_cpu");
+static struct tss g_tss_main SAMOS_ALIGNED(16) SAMOS_SECTION(".bss.p4_cpu");
+static struct tss g_tss_df SAMOS_ALIGNED(16) SAMOS_SECTION(".bss.p4_cpu");
 /* K0.7-R1f-1 — S2 est définie en NASM (entry.asm, section .dfstack) et placée
  * par linker.ld dans .stacks, alignée sur 4 KiB, entre sa page de garde et la
  * garde basse de S1 (taille vérifiée par une assertion de l'éditeur de liens). */

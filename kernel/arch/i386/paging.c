@@ -23,9 +23,12 @@ extern char mem_probe_read_insn[];
 extern char mem_probe_write_insn[];
 extern char mem_probe_fixup[];
 
-static uint32_t *g_pd;            /* répertoire de pages (physique = virtuel) */
+/* K0.7-P4b — Racines du VMM écrites UNE fois (paging_init) : page dédiée
+ * (.bss.p4_vmm), candidate à la lecture seule (P4d). g_tables, incrémenté à
+ * chaque nouvelle table, reste dans .bss. */
+static uint32_t *g_pd SAMOS_SECTION(".bss.p4_vmm");   /* répertoire de pages (physique = virtuel) */
 static uint32_t g_tables;
-static uint32_t g_idmap_top;
+static uint32_t g_idmap_top SAMOS_SECTION(".bss.p4_vmm");
 static volatile uint32_t g_probe_cr2;
 static volatile uint32_t g_probe_err;
 

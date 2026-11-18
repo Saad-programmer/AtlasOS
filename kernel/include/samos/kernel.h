@@ -41,6 +41,11 @@ extern char __df_stack_end[];
 extern char __stack_top_guard_start[];
 extern char __stack_top_guard_end[];
 extern char df_stack_area[];              /* entry.asm, section .dfstack */
+/* K0.7-P4b — Pages des structures critiques (linker.ld, tête de .bss). */
+extern char __kcpu_start[], __kcpu_end[];
+extern char __kro_idt_start[], __kro_idt_end[];
+extern char __kro_handlers_start[], __kro_handlers_end[];
+extern char __kro_vmm_start[], __kro_vmm_end[];
 extern char boot_stack_bottom[];
 extern char boot_stack_top[];
 

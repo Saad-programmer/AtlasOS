@@ -17,7 +17,10 @@
 #include <samos/log.h>
 #include <samos/panic.h>
 
-static interrupt_handler_t g_handlers[IDT_ENTRIES];
+/* K0.7-P4b — Pointeurs de fonctions : page dédiée (.bss.p4_handlers), candidate
+ * à la lecture seule (P4d). Les compteurs g_exc_depth et g_irq_depth, écrits à
+ * chaque interruption, restent dans .bss. */
+static interrupt_handler_t g_handlers[IDT_ENTRIES] SAMOS_SECTION(".bss.p4_handlers");
 
 /* Profondeur d'imbrication (K0.7). Monoprocesseur, IF = 0 dans tout
  * gestionnaire (portes d'interruption) : ces compteurs ne sont modifiés que

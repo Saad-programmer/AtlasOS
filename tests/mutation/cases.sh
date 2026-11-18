@@ -132,3 +132,21 @@ mutant_tool stack_layout_prefixed_intruder kernel/arch/i386/linker.ld \
     '__stack_top_guard_start = .; boot_stack_intruder = . + 16;' \
     'tools/check_elf.sh build/samos.elf --production' \
     'piles: objets dans une page de garde ou reservee : boot_stack_intruder'
+
+# M14 — K0.7-P4b : un compteur MUTABLE (g_tables, incrémenté à chaque nouvelle
+# table) est placé dans la page des racines du VMM, candidate à la lecture
+# seule. check_elf.sh doit nommer l'intrus (la compilation et l'édition de
+# liens réussissent : la détection est fonctionnelle).
+mutant_tool p4b_rw_in_vmm_page kernel/arch/i386/paging.c \
+    'static uint32_t g_tables;' \
+    'static uint32_t g_tables SAMOS_SECTION(".bss.p4_vmm");' \
+    'tools/check_elf.sh build/samos.elf --production' \
+    'P4b: page [__kro_vmm_start, __kro_vmm_end) : intrus:g_tables'
+
+# M15 — K0.7-P4b : le compteur d'exceptions (écrit à chaque exception) est placé
+# dans la page des gestionnaires, candidate à la lecture seule.
+mutant_tool p4b_rw_in_handlers_page kernel/arch/i386/exceptions.c \
+    'static volatile uint32_t g_exc_depth;' \
+    'static volatile uint32_t g_exc_depth SAMOS_SECTION(".bss.p4_handlers");' \
+    'tools/check_elf.sh build/samos.elf --production' \
+    'P4b: page [__kro_handlers_start, __kro_handlers_end) : intrus:g_exc_depth'
