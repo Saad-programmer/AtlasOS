@@ -1619,7 +1619,7 @@ tests/tools/repro_selftest.sh
 
 | Commande | Résultat |
 |---|---|
-| `make clean && make test` | 135 `[PASS]`, 0 `[FAIL]`, 39 cas QEMU sur 39 |
+| `make clean && make test` | 136 `[PASS]` (règle CR0 comprise), 0 `[FAIL]`, 39 cas QEMU sur 39 |
 | autotests | 621 vérifications |
 | `make test-mutation` | 18 mutations sur 18 |
 | `make test-repro` | réussi |
