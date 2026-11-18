@@ -41,7 +41,10 @@
  * projeter, arrondie à 4 KiB. */
 samos_err_t paging_init(uint32_t idmap_top);
 
-/* Projette une page. Refuse d'écraser une projection existante (EEXIST). */
+/* Projette une page. Refuse d'écraser une projection existante (EEXIST).
+ * K0.7-M2.5 : seul un cadre ALLOCATED est accepté (sinon EPERM) ; `flags`
+ * vaut 0 (lecture seule) ou PTE_WRITE (sinon EINVAL). PTE_PRESENT est posé
+ * par le VMM ; la projection est toujours superviseur. */
 samos_err_t vmm_map(uint32_t va, uint32_t pa, uint32_t flags);
 /* Supprime une projection (INVLPG) ; *pa reçoit l'ancien cadre. */
 samos_err_t vmm_unmap(uint32_t va, uint32_t *pa);

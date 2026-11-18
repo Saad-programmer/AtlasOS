@@ -80,9 +80,8 @@ static bool va_must_stay_unmapped(uint32_t va)
  *   counted = true  : projection DYNAMIQUE (vmm_map). Un cadre ALLOCATED
  *                     prend exactement une référence (pmm_ref) ; un cadre FREE
  *                     est refusé (il pourrait être réalloué en restant projeté).
- *                     Les autres types (noyau, réservé, table de pages, hors
- *                     mémoire gérée) ne sont pas comptés : leur refus relève de
- *                     E3 (M2.5).
+ *                     Depuis M2.5b, tout type autre que ALLOCATED est refusé ;
+ *                     depuis M2.5c, seuls les droits 0 et PTE_WRITE sont admis.
  *   counted = false : projection en IDENTITÉ permanente, jamais comptée.
  *                     Réservée à paging_init(), avant l'activation de la
  *                     pagination (vérifié par KASSERT) : ce chemin ne peut pas
@@ -93,6 +92,17 @@ static bool va_must_stay_unmapped(uint32_t va)
 static samos_err_t map_page(uint32_t va, uint32_t pa, uint32_t flags, bool counted)
 {
     if ((va | pa) & 0xFFFu || (flags & ~0xFFFu) != 0) {
+        return SAMOS_EINVAL;
+    }
+    /* K0.7-M2.5c — Droits d'une projection dynamique : 0 (lecture seule) ou
+     * PTE_WRITE, rien d'autre (constat C1). Refusés (SAMOS_EINVAL) : PTE_USER
+     * (accès ring 3), PTE_PRESENT (posé par le VMM seul, ci-dessous), PWT/PCD
+     * et PAT (cache), A/D (gérés par le CPU), G et les bits 9-11 (logiciels,
+     * réservés). Premier contrôle : un refus ne crée aucune table, ne prend
+     * aucune référence et n'écrit aucune PTE. Le chemin d'identité
+     * (counted = false) n'est pas concerné : paging_init() ne passe que
+     * 0 ou PTE_WRITE. */
+    if (counted && (flags & ~PTE_WRITE) != 0) {
         return SAMOS_EINVAL;
     }
     if (va_must_stay_unmapped(va)) {

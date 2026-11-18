@@ -552,6 +552,112 @@ static void test_e3_type_policy(void)
     KTEST_CHECK(pmm_core_check(p) == 0 && total_refs() == refs0);
 }
 
+/* K0.7-M2.5c — Droits acceptés par vmm_map() : 0 (lecture seule) ou PTE_WRITE.
+ * Tout autre bit est refusé (SAMOS_EINVAL) avant toute table, référence ou PTE.
+ * Les droits réellement installés sont lus dans le PDE et la PTE. */
+static const uint32_t g_bad_flags[] = {
+    PTE_USER, PTE_PRESENT, PTE_PRESENT | PTE_WRITE, PTE_USER | PTE_WRITE,
+    0x008u /* PWT */, 0x010u /* PCD */, 0x018u, 0x080u /* PAT */,
+    PTE_ACCESSED, PTE_DIRTY, 0x100u /* G */, 0x200u, 0x400u, 0x800u,
+    0x1000u, 0xFFFFFFFFu,
+};
+#define FLAGS_HW_SET (PTE_ACCESSED | PTE_DIRTY)   /* posés par le CPU à l'accès */
+
+static uint32_t pte_of(uint32_t va)
+{
+    const volatile uint32_t *pd = (const volatile uint32_t *)(uintptr_t)paging_directory();
+    uint32_t pde = pd[va >> 22];
+    if (!(pde & PTE_PRESENT)) {
+        return 0;
+    }
+    return ((const volatile uint32_t *)(uintptr_t)(pde & PTE_FRAME))[(va >> 12) & 0x3FFu];
+}
+
+static bool no_user_bit_anywhere(void)
+{
+    const volatile uint32_t *pd = (const volatile uint32_t *)(uintptr_t)paging_directory();
+    for (unsigned i = 0; i < 1024; i++) {
+        if (!(pd[i] & PTE_PRESENT)) {
+            continue;
+        }
+        if (pd[i] & PTE_USER) {
+            return false;
+        }
+        const volatile uint32_t *pt = (const volatile uint32_t *)(uintptr_t)(pd[i] & PTE_FRAME);
+        for (unsigned j = 0; j < 1024; j++) {
+            if ((pt[j] & PTE_PRESENT) && (pt[j] & PTE_USER)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+static void test_vmm_flags_policy(void)
+{
+    const struct pmm *p = pmm_state();
+    const volatile uint32_t *pd = (const volatile uint32_t *)(uintptr_t)paging_directory();
+    const uint32_t va_ro = 0xD0050000u, va_rw = 0xD0051000u;
+    uint32_t f_ro = pmm_alloc_frame(), f_rw = pmm_alloc_frame(), f_x = pmm_alloc_frame();
+    KTEST_CHECK(f_ro != 0 && f_rw != 0 && f_x != 0);
+    uint32_t v = 0;
+
+    /* 1. Lecture seule : PTE = P seul, lecture possible, écriture en faute */
+    *(volatile uint32_t *)(uintptr_t)f_ro = 0xC0C0C0C0u;
+    KTEST_CHECK(vmm_map(va_ro, f_ro, 0) == SAMOS_OK && pmm_refs(f_ro) == 1);
+    KTEST_CHECK((pte_of(va_ro) & 0xFFFu & ~FLAGS_HW_SET) == PTE_PRESENT);
+    KTEST_CHECK((pte_of(va_ro) & PTE_FRAME) == f_ro);
+    KTEST_CHECK(mem_probe_read((const void *)(uintptr_t)va_ro, &v) == 0 && v == 0xC0C0C0C0u);
+    KTEST_CHECK(mem_probe_write((void *)(uintptr_t)va_ro, 1) == -1);
+    KTEST_CHECK(*(const volatile uint32_t *)(uintptr_t)f_ro == 0xC0C0C0C0u);
+
+    /* 2. Lecture-écriture : PTE = P | W, écriture visible par l'identité */
+    KTEST_CHECK(vmm_map(va_rw, f_rw, PTE_WRITE) == SAMOS_OK && pmm_refs(f_rw) == 1);
+    KTEST_CHECK((pte_of(va_rw) & 0xFFFu & ~FLAGS_HW_SET) == (PTE_PRESENT | PTE_WRITE));
+    KTEST_CHECK(mem_probe_write((void *)(uintptr_t)va_rw, 0x5A5A5A5Au) == 0);
+    KTEST_CHECK(*(const volatile uint32_t *)(uintptr_t)f_rw == 0x5A5A5A5Au);
+
+    /* PDE superviseur : les droits effectifs sont l'intersection PDE/PTE */
+    KTEST_CHECK((pd[va_ro >> 22] & (PTE_PRESENT | PTE_WRITE | PTE_USER)) == (PTE_PRESENT | PTE_WRITE));
+    KTEST_CHECK(no_user_bit_anywhere());
+
+    /* 3-7. Droits refusés, dans une zone sans table, sans effet de bord */
+    uint32_t tables0 = paging_table_count(), free0 = p->free_count, refs0 = total_refs();
+    uint32_t pte_ro = pte_of(va_ro), pte_rw = pte_of(va_rw);
+    bool all = true;
+    for (unsigned i = 0; i < sizeof g_bad_flags / sizeof g_bad_flags[0]; i++) {
+        uint32_t va = 0xE9000000u + i * 0x400000u;    /* un répertoire différent à chaque fois */
+        samos_err_t e = vmm_map(va, f_x, g_bad_flags[i]);
+        bool ok = e == SAMOS_EINVAL && !vmm_translate(va, 0, 0) && pmm_refs(f_x) == 0;
+        if (!ok) {
+            klog(LOG_ERROR, "M2.5c: flags 0x%x -> %d, refs=%u\n",
+                 g_bad_flags[i], (int)e, (unsigned)pmm_refs(f_x));
+        }
+        all = all && ok;
+    }
+    KTEST_CHECK(all);
+    /* Sur une adresse déjà projetée : EINVAL (pas EEXIST), PTE intacte */
+    KTEST_CHECK(vmm_map(va_rw, f_x, PTE_USER | PTE_WRITE) == SAMOS_EINVAL);
+    KTEST_CHECK(vmm_map(va_ro, f_ro, PTE_USER) == SAMOS_EINVAL);
+    KTEST_CHECK(pte_of(va_ro) == pte_ro && pte_of(va_rw) == pte_rw);
+
+    /* 8-9. Ni référence, ni table, ni cadre consommés */
+    KTEST_CHECK(pmm_refs(f_x) == 0 && pmm_refs(f_ro) == 1 && pmm_refs(f_rw) == 1);
+    KTEST_CHECK(paging_table_count() == tables0);
+    KTEST_CHECK(p->free_count == free0 && total_refs() == refs0);
+
+    /* 10. E1, E2, E4, E5 intacts */
+    KTEST_CHECK(vmm_map(0, f_x, PTE_WRITE) == SAMOS_EPERM);                         /* E1 */
+    KTEST_CHECK(mem_probe_read((const void *)(uintptr_t)__stack_guard_start, &v) == -1); /* E2 */
+    KTEST_CHECK(pmm_free_frame(paging_directory()) == SAMOS_EINVAL);                /* E4 */
+    KTEST_CHECK(pmm_free_frame(f_rw) == SAMOS_EBUSY);                               /* E5 */
+
+    KTEST_CHECK(vmm_unmap(va_ro, 0) == SAMOS_OK && vmm_unmap(va_rw, 0) == SAMOS_OK);
+    KTEST_CHECK(pmm_free_frame(f_ro) == SAMOS_OK && pmm_free_frame(f_rw) == SAMOS_OK &&
+                pmm_free_frame(f_x) == SAMOS_OK);
+    KTEST_CHECK(pmm_core_check(p) == 0);
+}
+
 void ktest_suite_mm(void)
 {
     ktest_suite("K0.6 mm");
@@ -568,4 +674,5 @@ void ktest_suite_mm(void)
     test_vmm_unmap_refs();
     test_e5_scenario();
     test_e3_type_policy();
+    test_vmm_flags_policy();
 }

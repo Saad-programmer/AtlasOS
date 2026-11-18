@@ -1163,3 +1163,12 @@ Premier sous-jalon de M2.4 (correction de E5), limité au cœur pur. `paging.c` 
 - **Contre-épreuve** (ancienne condition `t == FRAME_FREE`, copie isolée) : statut 35, 12 échecs ciblés, aucun triple fault.
 - **Validation :** `make clean && make test` donne 101 `[PASS]`, 0 `[FAIL]`, 26 cas QEMU sur 26 ; compilation parallèle propre (`make -j8`) réussie.
 - **Limites :** les tables de pages restent inscriptibles par l'identité (P4) ; les bits de PTE ne sont pas filtrés (C1, M2.5c) ; **E3 n'est pas déclaré corrigé avant M2.5d.**
+
+### K0.7-M2.5c — Validation stricte des droits de vmm_map()
+
+- `paging.c` : sur le chemin compté, `(flags & ~PTE_WRITE) != 0` donne `SAMOS_EINVAL`. Seuls `0` (lecture seule) et `PTE_WRITE` sont admis. `PTE_PRESENT` est posé par le VMM seul. `PTE_USER`, PWT, PCD, PAT, A, D, G et les bits 9-11 sont refusés. Le contrôle suit immédiatement celui de l'alignement, donc avant toute table, référence ou PTE. Le chemin d'identité n'est pas modifié. Constat C1 corrigé.
+- **Vérification matérielle :** les PDE créés valent `P | W` (sans U/S) ; les droits effectifs sont l'intersection PDE/PTE (SDM vol. 3A §4.6). Le test parcourt tout le répertoire et toutes les tables : aucun bit U/S.
+- **Test** `test_vmm_flags_policy` : PTE exacte (`P`, puis `P | W`), comportement en lecture et en écriture, 16 combinaisons refusées sans traduction ni référence, `EINVAL` (et non `EEXIST`) sur une adresse déjà projetée avec PTE intacte, tables, `free_count` et références inchangés, E1, E2, E4 et E5 intacts. Autotests : 390 → 417 vérifications, 0 échec.
+- **Contre-épreuve** (`if (0)`, copie isolée) : statut 35, 7 échecs ; les 14 combinaisons de bits bas sont acceptées et prennent chacune une référence ; aucun triple fault.
+- **Validation :** `make clean && make test` donne 101 `[PASS]`, 0 `[FAIL]`, 26 cas QEMU sur 26 ; compilation parallèle propre (`make -j8`, images de production et de test) réussie.
+- **Limites :** l'identité reste `RW`, y compris les tables de pages (P4) ; pas de bit NX en i386 sans PAE ; **E3 n'est pas déclaré corrigé avant M2.5d.**
