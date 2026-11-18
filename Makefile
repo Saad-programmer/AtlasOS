@@ -33,8 +33,13 @@ TARGET    := i686-unknown-none-elf
 #   -nostdlibinc        : pas d'en-têtes système de l'hôte ; seuls les en-têtes
 #                         freestanding de Clang (stdint.h, stddef.h...) restent visibles
 #   -fno-pic -fno-pie   : code à adresse fixe (lié à 1 MiB)
-#   -fno-stack-protector: pas de canari de pile, sauf test_canary.o (K0.7-R1b, voir plus
-#                         bas) ; le support __stack_chk_* existe (entry.asm, stack_protector.c)
+#   -fstack-protector-strong (K0.7-R1c) : canari de pile dans toute fonction
+#                         ayant un tableau local, une variable locale dont
+#                         l'adresse est prise, ou un alloca ; Clang décide
+#                         fonction par fonction (vérifié par canary_check.sh).
+#                         Support : __stack_chk_guard (entry.asm, .rodata),
+#                         __stack_chk_fail (stack_protector.c). Exclusions par
+#                         l'attribut SAMOS_NO_STACK_PROTECTOR (chemin de panique).
 #   -fcf-protection=none: pas d'instructions CET (endbr32)
 #   -mgeneral-regs-only : aucun registre x87/MMX/SSE dans le noyau
 #   -mstack-alignment=16: maintenir la pile alignée sur 16 octets (ABI i386
@@ -49,7 +54,7 @@ TARGET    := i686-unknown-none-elf
 #                          dépend plus du répertoire de compilation (build reproductible)
 CFLAGS := --target=$(TARGET) -march=i686 -std=c11 \
           -ffreestanding -nostdlibinc -fno-pic -fno-pie \
-          -fno-stack-protector -fcf-protection=none \
+          -fstack-protector-strong -fcf-protection=none \
           -mgeneral-regs-only -mstack-alignment=16 \
           -fno-omit-frame-pointer -fno-asynchronous-unwind-tables -fno-unwind-tables \
           -fno-common -O2 -g \
@@ -151,9 +156,8 @@ $(BUILD)/test/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(TEST_DEFS) -c $< -o $@
 
-# K0.7-R1b — Instrumentation minimale : un SEUL fichier, dans l'image de test.
-# Placée après -fno-stack-protector (CFLAGS), elle l'emporte (dernière option).
-$(BUILD)/test/kernel/tests/test_canary.o: CFLAGS += -fstack-protector-strong
+# K0.7-R1c : l'instrumentation par fichier de R1b (test_canary.o seul) est
+# remplacée par l'option globale ci-dessus (CFLAGS).
 
 # Deux règles distinctes : une règle à motifs à PLUSIEURS cibles signifie,
 # pour GNU Make, qu'une seule exécution produit toutes les cibles ; après

@@ -142,7 +142,8 @@ if [ "$RUN_STATUS" -ne 33 ] || [ "$sane_fail" != 0 ] || abnormal_cpu "$RUN_QLOG"
 fi
 SANE_SHA="$(sha256sum < "$SANE/$IMAGE")"
 echo "[PASS] version saine : statut 33, $(tr -d '\r' < "$RUN_LOG" | grep -o 'checks=[0-9]*' | tail -1), 0 échec"
-rm -rf "$SANE"
+# L'arbre sain est conservé : les mutations d'outil (mutant_tool) y exécutent
+# leur commande de référence.
 
 # --- Mutations ---------------------------------------------------------------------
 total=0; detected=0; bad=0
@@ -203,6 +204,80 @@ mutant() {
     else
         echo "[FAIL] $name : $verdict ($why)"
         tr -d '\r' < "$RUN_LOG" | grep '^\[FAIL\]' | head -5 | sed 's/^/      /'
+        bad=1
+    fi
+    [ "${KEEP:-0}" = 1 ] || rm -rf "$dir"
+}
+
+# apply_mutation DIR FICHIER ORIG REPL -> vide si appliquée, sinon la raison.
+apply_mutation() {
+    local dir="$1" file="$2" orig="$3" repl="$4" n
+    [ -f "$dir/$file" ] || { echo "fichier absent"; return; }
+    n="$(count_literal "$dir/$file" "$orig")"
+    [ "$n" -eq 1 ] || { echo "texte original trouvé $n fois (exactement 1 requis)"; return; }
+    replace_literal "$dir/$file" "$orig" "$repl"
+    cmp -s "$SRC/$file" "$dir/$file" && { echo "fichier inchangé après substitution"; return; }
+    [ "$(count_literal "$dir/$file" "$repl")" -ge 1 ] || echo "texte muté absent après substitution"
+}
+
+# K0.7-R1c — mutant_tool NOM FICHIER 'ORIG' 'MUTÉ' 'COMMANDE' 'DIAGNOSTIC'...
+# Mutation détectée par un OUTIL d'inspection des artefacts (et non par les
+# autotests) : les deux images sont compilées (« make all »), puis COMMANDE est
+# exécutée dans l'arbre. Exigé : COMMANDE réussit (code 0) dans l'arbre sain ;
+# dans l'arbre muté, elle échoue avec le code 1 (code 2 = prérequis : INVALIDE)
+# et sa sortie contient chaque DIAGNOSTIC (texte exact). L'image de production
+# mutée doit différer de l'image saine.
+SANE_ALL=""
+mutant_tool() {
+    local name="$1" file="$2" orig="$3" repl="$4" cmd="$5"; shift 5
+    local dir="$WORK/m$total" verdict="" why="" out rc
+    total=$((total + 1))
+    echo "== mutation $name ($file, vérifiée par : $cmd)"
+    if [ -z "$SANE_ALL" ]; then
+        if make -C "$SANE" -j"$JOBS" all >"$SANE/build-all.log" 2>&1; then SANE_ALL=ok; else SANE_ALL=ko; fi
+    fi
+    if [ "$SANE_ALL" != ok ]; then
+        verdict=INVALIDE; why="compilation saine (make all) en échec ($SANE/build-all.log)"
+    elif ! (cd "$SANE" && eval "$cmd") >"$WORK/sane-tool.out" 2>&1; then
+        verdict=INVALIDE; why="la commande échoue déjà sur l'arbre sain"
+        sed 's/^/      /' "$WORK/sane-tool.out" | grep FAIL | head -3
+    fi
+    if [ -z "$verdict" ]; then
+        cp -a "$SRC" "$dir"
+        why="$(apply_mutation "$dir" "$file" "$orig" "$repl")"
+        [ -z "$why" ] || verdict=INVALIDE
+    fi
+    if [ -z "$verdict" ]; then
+        if ! make -C "$dir" -j"$JOBS" all >"$dir/build.log" 2>&1; then
+            verdict=INVALIDE; why="compilation en échec ($dir/build.log)"
+        elif cmp -s "$SANE/build/samos.elf" "$dir/build/samos.elf"; then
+            verdict=INVALIDE; why="image de production identique à la version saine"
+        else
+            out="$( (cd "$dir" && eval "$cmd") 2>&1 )"; rc=$?
+            if [ "$rc" -eq 0 ]; then
+                verdict="NON DÉTECTÉE"; why="la commande réussit avec le défaut"
+            elif [ "$rc" -ne 1 ]; then
+                verdict=INVALIDE; why="code $rc (1 attendu ; 2 = prérequis)"
+            else
+                local a missing=""
+                for a in "$@"; do
+                    printf '%s\n' "$out" | grep -qF -- "$a" || missing="$missing
+      diagnostic absent : $a"
+                done
+                if [ -n "$missing" ]; then
+                    verdict=INVALIDE; why="échec non ciblé :$missing"
+                else
+                    verdict=DÉTECTÉE; why="code 1, $# diagnostic(s) ciblé(s) présent(s)"
+                fi
+            fi
+        fi
+    fi
+    if [ "$verdict" = DÉTECTÉE ]; then
+        echo "[PASS] $name : DÉTECTÉE ($why)"
+        detected=$((detected + 1))
+    else
+        echo "[FAIL] $name : $verdict ($why)"
+        printf '%s\n' "${out:-}" | grep FAIL | head -5 | sed 's/^/      /'
         bad=1
     fi
     [ "${KEEP:-0}" = 1 ] || rm -rf "$dir"

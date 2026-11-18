@@ -39,14 +39,23 @@ mutant flags_filter kernel/arch/i386/paging.c \
     'e3_attempt(0xD0060000u, f, PTE_USER, SAMOS_EINVAL, "alloue")' \
     'e3_attempt(0xD0060000u, f, PTE_USER | PTE_WRITE, SAMOS_EINVAL, "alloue")'
 
-# M4 — K0.7-R1b : le fichier de test n'est plus instrumenté (l'option par
-# fichier est neutralisée). La recherche de la copie locale du canari ne
-# trouve plus rien.
+# M4 — K0.7-R1c : l'option globale -fstack-protector-strong est retirée.
+# Détection 1, autotests : canary_frame_probe n'a plus de copie du canari.
 mutant canary_not_instrumented Makefile \
-    '$(BUILD)/test/kernel/tests/test_canary.o: CFLAGS += -fstack-protector-strong' \
-    '$(BUILD)/test/kernel/tests/test_canary.o: CFLAGS += -fno-stack-protector' \
+    '-fstack-protector-strong -fcf-protection=none' \
+    '-fno-stack-protector -fcf-protection=none' \
     35 \
     'canary_frame_probe(false) == 1'
+
+# M6 — K0.7-R1c : même défaut, détecté dans l'IMAGE DE PRODUCTION par
+# l'inspection du code machine (fonctions réellement instrumentées). Le
+# symbole __stack_chk_fail existe toujours : sa présence ne prouve rien.
+mutant_tool canary_global_flag Makefile \
+    '-fstack-protector-strong -fcf-protection=none' \
+    '-fno-stack-protector -fcf-protection=none' \
+    'tests/tools/canary_check.sh build/samos.elf build/samos-test.elf' \
+    'samos.elf : fonctions requises NON instrumentées : kvprintf kvsnprintf out_number memmap_parse' \
+    'samos-test.elf : canary_frame_probe NON instrumentée'
 
 # M5 — K0.7-R1b : _start n'initialise plus le canari ; il garde la valeur de
 # l'image (prévisible).

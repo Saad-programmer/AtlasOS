@@ -1322,3 +1322,31 @@ tests/tools/repro_selftest.sh
 | `make -j8` depuis zéro | réussi |
 
 - **Limites :** le noyau n'est pas encore instrumenté (R1c) ; l'entropie vient du TSC seul ; les risques K2 à K6 ne sont pas traités ici (pages de garde : sous-jalon séparé, D1 autorisé dans son principe).
+
+### K0.7-R1c — Activation globale des canaris de fonctions
+
+- **Changement :** `-fstack-protector-strong` dans `CFLAGS` pour les deux images, à la place de `-fno-stack-protector`. L'option par fichier de R1b est retirée. Pas de changement NASM ni du script de liens.
+- **Mesures :**
+  - production : 11 fonctions instrumentées sur 208, 11 sites d'appel, `.text` 21 153 → 21 569 octets (+416) ;
+  - test : 24 sur 238, `.text` +736 ;
+  - `.rodata`, `.data` et `.bss` inchangés ;
+  - profondeur maximale de S1 au démarrage : 836 → 852 octets.
+- **Vérification sur le code machine** (`canary_check.sh`, réécrit) :
+  - une fonction est comptée instrumentée si elle lit deux fois le canari et appelle `__stack_chk_fail` ;
+  - fonctions requises (`kvprintf`, `kvsnprintf`, `out_number`, `memmap_parse`) ;
+  - exclusions (`__stack_chk_fail`, `panic_at`, `stack_collect`, `emergency_puts`) et **toute la fermeture d'appels** du chemin de secours ;
+  - cohérence des sites d'appel, dans les deux images.
+- **Fonctions à tableau non instrumentées :** recensées via DWARF ; toutes expliquées (exclusion, `_Noreturn`, tableau réduit par l'optimiseur, tableau `static`, fonction intégrée). Détail dans la conception, section 13.4.
+- **Contre-épreuves :** `canary_not_instrumented` (autotests) et `canary_global_flag` (nouveau type `mutant_tool` : détection par `canary_check.sh` sur l'image de **production**, diagnostics nommés). Auto-test du moteur : 12 situations conformes, dont `tool_undetected`.
+- **Défaut préexistant corrigé :** `selftest_512M` dépassait de façon aléatoire son délai de 10 s ; la durée est de 10 à 11 s aussi avec l'image de R1b. `TIMEOUT=30`, justifié dans `cases.sh`.
+- **Validation :**
+
+| Commande | Résultat |
+|---|---|
+| `make clean && make test` | code 0, 117 `[PASS]`, 0 `[FAIL]`, 27 cas QEMU sur 27 |
+| cas QEMU couverts | démarrage de production et de test, série, clavier, exceptions, fautes de page, débordement de pile, double faute, exceptions imbriquées, `canary_smash`, RAM de 16 MiB à 4 GiB |
+| autotests | 466 vérifications, 0 échec (E1 à E5, PMM et VMM compris) |
+| `make test-mutation` | 6 mutations sur 6 détectées |
+| `make test-repro` | 2 images reproductibles (débogage seulement) |
+| `make -j8` depuis zéro | réussi |
+| `-Wframe-larger-than=3072` et `-fstack-protector-strong` | présents sur les 61 lignes de compilation C (les deux images) |

@@ -13,6 +13,7 @@
 #   7. mutation qui casse la compilation -> 1, « compilation en échec »
 #   8. mutation qui provoque une panique -> 1, « statut QEMU 37 »
 #   9. assertion attendue non signalée   -> 1, « assertion absente »
+#   9b. mutation d'outil sans effet sur l'outil (mutant_tool) -> 1, « NON DÉTECTÉE »
 #  10. interruption (SIGTERM)            -> 130, répertoire temporaire supprimé
 #      (SIGINT ne peut pas servir ici : un shell non interactif lance ses
 #      commandes en arrière-plan avec SIGINT ignoré, et un signal ignoré à
@@ -74,6 +75,10 @@ cat > "$T/wrong_assert.sh" <<'EOF'
 mutant wrong kernel/arch/i386/paging.c 'if (counted && (flags & ~PTE_WRITE) != 0) {' 'if (0) {' 35 'assertion qui n existe pas'
 EOF
 expect wrong_assert 1 "assertion absente"
+cat > "$T/tool_undetected.sh" <<'EOF2'
+mutant_tool tool_log kernel/mm/mm.c '"pmm: descriptor table consistent\n"' '"pmm: descriptor table CONSISTENT\n"' 'tests/tools/canary_check.sh build/samos.elf build/samos-test.elf' 'x'
+EOF2
+expect tool_undetected 1 "NON DÉTECTÉE"
 echo "$GOOD" > "$T/good.sh"
 expect good 0 "1 detectees"
 

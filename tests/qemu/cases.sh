@@ -180,7 +180,12 @@ QEMU_MEM=4G TIMEOUT=6 run_case mem_4G "" 124 \
     "SAMOS: K0.6 boot complete" "!KERNEL PANIC"
 
 # Régression : les autotests passent aussi avec 512 MiB.
-QEMU_MEM=512M run_case selftest_512M "test" 33 "[TEST] ALL TESTS PASSED" "![FAIL]"
+# TIMEOUT=30 (K0.7-R1c) : à 512 MiB, la durée mesurée des autotests est de
+# 10 à 11 s, AUSSI avec l'image de R1b (antérieure à l'instrumentation
+# globale) ; le délai par défaut de 10 s faisait échouer ce cas de façon
+# aléatoire. À 128 MiB : 4,6 s. Cause précise de la durée non mesurée
+# (la durée croît avec la RAM : parcours des cadres et des tables).
+QEMU_MEM=512M TIMEOUT=30 run_case selftest_512M "test" 33 "[TEST] ALL TESTS PASSED" "![FAIL]"
 
 # K0.7 — Faute imbriquée : #UD dans un gestionnaire de #BP. La garde d'imbrication
 # arrête le noyau dès le second niveau, avec un rapport explicite.
