@@ -1697,7 +1697,9 @@ Ce mécanisme est aussi le **prototype** de l'accès sûr du noyau à la mémoir
 >
 > Restent vrais : **pas de NX**, GDT et TSS inscriptibles, PMM monoprocesseur sans verrou. Voir `docs/design/K0.7-*.md` et `docs/review/K0.7-R1g-audit.md`.
 >
-> **Mise à jour K0.7-P4 (clôturé dans son périmètre).** L'IDT, les gestionnaires, les racines du VMM, le répertoire et les tables de pages ne sont plus inscriptibles par l'identité (§39). Le risque N3 (libération d'un cadre encore projeté avec des références falsifiées) reste **ouvert**.
+> **Mise à jour K0.7-P4 (clôturé dans son périmètre).** L'IDT, les gestionnaires, les racines du VMM, le répertoire et les tables de pages ne sont plus inscriptibles par l'identité (§39). Le risque N3 (libération d'un cadre encore projeté avec des références falsifiées) restait **ouvert** à cette date.
+>
+> **Mise à jour K1.0-N3 (2026-11-19).** N3 est corrigé dans le modèle actuel (un seul espace d'adressage, monoprocesseur), §40. K0.7 n'est pas clôturé dans son ensemble (`docs/review/K0.7-final-closure-audit.md`).
 
 ---
 
@@ -1809,7 +1811,7 @@ Non. Les tests prouvent des invariants précis dans des scénarios connus, sous 
 
 ## 40. Cohérence entre références physiques et projections virtuelles (K1.0-N3)
 
-> **Statut :** implémenté sur `claude/k1.0-n3-implement`, **en attente de validation** du développeur. Garanties limitées au modèle actuel : un seul espace d'adressage, monoprocesseur. Rapport : `docs/review/K1.0-N3-implementation.md`.
+> **Statut :** implémenté, contre-vérifié (K1.0-N3-VERIFY, K1.0-N3-TEST-CLOSE) et **intégré dans `main`** le 2026-11-19 (`daaa7a8`), sur décision du développeur. Garanties limitées au modèle actuel : un seul espace d'adressage, monoprocesseur. Rapport : `docs/review/K1.0-N3-implementation.md`.
 
 ### 40.1 Le problème : une métadonnée n'est pas une preuve
 

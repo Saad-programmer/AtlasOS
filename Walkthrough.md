@@ -903,7 +903,7 @@ qemu-system-i386 -m 128M -kernel build/samos.elf -append test=stack -serial stdi
 
 ## Phase K0.7 — Durcissement, vérification indépendante et préparation de la publication
 
-Phase autorisée par le développeur après la revue de K0. Elle ne comporte **aucune** fonctionnalité de K1 et aucun travail de portage 64 bits. Le compte rendu complet se trouve dans `docs/review/K0.7-review.md`. Les étapes ci-dessous sont consignées dans l'ordre réel d'exécution.
+Phase autorisée par le développeur après la revue de K0. Elle ne comporte **aucune** fonctionnalité de K1 et aucun travail de portage 64 bits. Le compte rendu complet se trouve dans `docs/review/K0.7-review.md`. *(Note du 2026-11-19 : ce fichier n'a jamais été créé ; voir `docs/review/K0.7-final-closure-audit.md` §1.)* Les étapes ci-dessous sont consignées dans l'ordre réel d'exécution.
 
 ### K0.7.0 — Nouvel audit et preuves des défauts mémoire
 
@@ -2074,3 +2074,39 @@ tests/tools/repro_selftest.sh
 | moniteur QEMU, production | `CR0=80010011`, cartographie inchangée |
 
 - **Statut :** recommandation A (intégration possible), **en attente de l'autorisation explicite** du développeur. K1.0 n'est pas déclaré terminé avant cette décision ; K0.7 n'est pas clôturé.
+
+### K1.0-N3-INTEGRATE — Intégration de la correction N3 dans `main` (2026-11-19)
+
+- **Autorisation :** décision A du développeur après K1.0-N3-TEST-CLOSE.
+- **Contrôles préalables :**
+  - `main` = `a7a6e2c`, ancêtre de `claude/k1.0-n3-test-close` = `daaa7a8` ;
+  - diff réel examiné : production conforme à la correction approuvée ; depuis `04c08f7`, seulement un commentaire ; ni N4 ni x86-64 ;
+  - 85 mutations ; scénarios X9, X10 et X4 présents.
+- **Validation sur le candidat :** 193 `[PASS]`, 84 cas QEMU sur 84, 85 mutations sur 85, auto-test du moteur 15 sur 15, reproductibilité, `-j8`, `check_elf.sh` (31 / 29), aucun symbole de test dans l'image de production, permissions conformes.
+- **Sauvegarde :** `backup/k1.0-pre-n3-integrate` → `a7a6e2c` (poussée). `backup/k0.7-pre-final-audit` est intacte.
+- **Intégration :** `git merge --ff-only`, puis `git push origin main:main` (`a7a6e2c..daaa7a8`). `origin/main` = `daaa7a8f5406bc974c9b03575cf778baddf8ea05`, vérifié. Ni force-push, ni rebase, ni suppression de branche.
+
+### K0.7-FINAL-CLOSE — Audit de clôture globale de K0.7 (documentation seulement)
+
+- **Branche :** `claude/k0.7-final-close`, depuis `main` = `daaa7a8`. Aucune modification du code ni des tests.
+- **Document :** `docs/review/K0.7-final-closure-audit.md`.
+- **Méthode :** objectifs reconstitués à partir de la revue K0 (§10.1), des défauts E1 à E5 (K0.7.0), de l'audit M2 (§9) et de l'intitulé de la phase.
+- **Constats :**
+  - `docs/review/K0.7-review.md` n'a jamais existé ;
+  - cinq objectifs écrits ne sont ni réalisés ni reportés : mémoire basse en lecture seule, couche HAL, seuil de `test_memmap` et autotest à 16 MiB, intégration continue, compte rendu ;
+  - mesure de la pile #DF partielle.
+- **Expérience :** `test` à 16 MiB → statut 35, un échec à `test_mm.c:37` (N2 de l'audit M2, confirmé).
+- **Documentation mise en cohérence :** README, Details, rapports P4 et K1.0-N3, K1-readiness, renvoi du Walkthrough.
+- **Validation (arbre identique à `main`) :**
+
+| Commande | Résultat |
+|---|---|
+| `make clean && make test` | 193 `[PASS]`, 0 `[FAIL]` ; 84 cas QEMU sur 84 |
+| `make test-mutation` | 85 détectées sur 85 |
+| `tests/mutation/selftest.sh` | 15 situations conformes |
+| `make test-repro` | reproductibles |
+| `make clean && make -j8` | réussi |
+| `check_elf.sh` production / test | 31 / 29 `[PASS]`, 0 `[FAIL]` |
+| moniteur QEMU, production | `CR0=80010011` ; mémoire basse `-rw` ; code, pages scellées et tables `-r-` |
+
+- **Décision proposée :** **C**, périmètre à clarifier. K0.7 **n'est pas clôturé** ; en attente de la décision du développeur.
