@@ -1807,6 +1807,73 @@ Les décisions critiques n'utilisent pas `g_meta`, mais le répertoire RO et des
 **Q3. Les tests passent sous QEMU : le noyau est-il sûr ?**
 Non. Les tests prouvent des invariants précis dans des scénarios connus, sous QEMU, sur un seul processeur. Restent notamment : la GDT/TSS inscriptibles, la NMI pendant la fenêtre, N3, le matériel réel et le SMP (`K0.7-P4-closure.md` §7).
 
+## 40. Cohérence entre références physiques et projections virtuelles (K1.0-N3)
+
+> **Statut :** implémenté sur `claude/k1.0-n3-implement`, **en attente de validation** du développeur. Garanties limitées au modèle actuel : un seul espace d'adressage, monoprocesseur. Rapport : `docs/review/K1.0-N3-implementation.md`.
+
+### 40.1 Le problème : une métadonnée n'est pas une preuve
+
+Un allocateur de cadres doit répondre à deux questions : « puis-je libérer ce cadre ? » et « puis-je le donner à quelqu'un d'autre ? ». Jusqu'en K0.7, la réponse venait du **descripteur** du cadre (`g_meta`) : son compteur `refs`, tenu par `vmm_map`/`vmm_unmap`, et son type (FREE, ALLOCATED…). Ce descripteur est une **donnée inscriptible** du noyau. Une seule écriture parasite (bogue, corruption mémoire) suffit donc à faire libérer un cadre **encore projeté**. Le next-fit finit par le redistribuer, et l'ancienne projection lit et écrit alors les données du nouveau propriétaire (expérience R1 : réutilisation au bout de 32 266 opérations légitimes).
+
+C'est le problème classique de la **cohérence entre comptabilité et réalité**. Un compteur de références n'est sûr que si toutes ses mises à jour le sont. Linux tient par exemple un `_mapcount` par page, distinct du compteur de références, et le *reverse mapping* (rmap) permet de retrouver toutes les PTE d'une page avant de la libérer ou de la déplacer.
+
+### 40.2 Principe retenu : interroger la réalité
+
+La « réalité » d'une projection, c'est la **PTE** que la MMU lira. Après P4, les tables de pages sont la structure la mieux protégée du noyau :
+- scellées en lecture seule dans l'identité (P4e-2) ;
+- écrites par un seul passage contrôlé, dans une fenêtre CR0.WP (P4e-1) ;
+- PDE à écriture unique, donc un ensemble de tables qui ne fait que croître (D3).
+
+L'**oracle** `dyn_mapping_count(f)` compte les PTE présentes à `va ≥ idmap_top` qui désignent `f`. Il ne lit **jamais** `g_meta`. Le PMM l'appelle directement :
+
+```
+pmm_free_frame(f) :  si oracle(f) > 0        -> EBUSY, aucune écriture      (N3-I1)
+alloc_zeroed(f)   :  si oracle(f) > 0        -> panique AVANT memset         (N3-I2)
+vmm_unmap(va)     :  D <- oracle(f) ; efface PTE ; INVLPG ;
+                     si type(f) = ALLOCATED et refs(f) >= D : refs <- refs - 1
+                     sinon : anomalie comptée, aucune écriture           (N3-I4)
+```
+
+**Pourquoi c'est sûr malgré la falsification.** La décision de libérer ou de distribuer ne dépend plus que de l'état des tables, qu'une écriture dans `g_meta` ne modifie pas. On remplace ainsi une hypothèse faible (« `g_meta` est intègre ») par une hypothèse déjà établie et testée par P4 (« les tables publiées sont intègres »).
+
+**Identité et projections dynamiques.** L'identité permanente projette **toute** la RAM gérée (`frame = va`, imposé par le passage) : chaque cadre y figure. La compter rendrait tout cadre « projeté ». L'oracle l'exclut **PTE par PTE** (`va ≥ idmap_top`) et non PDE par PDE. En effet, quand `idmap_top` n'est pas multiple de 4 MiB (128 MiB → `0x07fe0000`), la PDE 31 porte une table **partagée** : 992 PTE d'identité et 32 emplacements dynamiques.
+
+### 40.3 Le retrait sans réparation (U2 sous condition de sûreté)
+
+Avec plusieurs projections d'un même cadre, `refs` devrait valoir `D`, le nombre réel de projections. Si `refs < D` (déficit, falsifié), décrémenter retirerait sa référence à une projection **restante** : c'est l'expérience R3, où un ancien propriétaire consomme la référence du nouveau. La règle `unref ⇔ refs ≥ D` garantit, en notant `refs'` le compteur après le retrait :
+
+$$refs' \ge \min(refs,\; D - 1)$$
+
+- si `refs ≥ D`, alors `refs' = refs - 1 ≥ D - 1`, et chaque projection restante est couverte ;
+- sinon `refs' = refs` : le déficit ne s'aggrave pas.
+
+La PTE est **toujours** effacée, puisque retirer un droit d'accès ne peut pas créer de fuite. Aucune « réparation » de `g_meta` n'est tentée : il faudrait connaître le vrai type et les références prises pour d'autres raisons, et aucune source fiable ne les donne. C'est le principe du **refus fermé** (*fail-closed*) : dans le doute, ne rien écrire.
+
+### 40.4 Arrêter avant d'écrire
+
+Dans `alloc_zeroed`, le cadre a déjà quitté l'état FREE (`pmm_core_alloc_as`). Rendre une erreur obligerait à le remettre FREE, et il serait redistribué au prochain appel. Comme pour N1, le seul refus sûr est un **arrêt déterministe avant la remise à zéro**, avec l'empreinte FNV-1a de la page. Le banc vérifie que cette empreinte est égale à celle mesurée avant l'allocation (modes `n3type`, `n3table`), et GDB montre la page intacte au moment de la panique. Avant K1.0, dans le cas d'une table (R6), le contrôle D1 de `table_create` arrêtait bien le noyau, mais **après** que `memset` avait effacé les données de l'ancien propriétaire.
+
+### 40.5 Coût
+
+L'oracle lit 1 024 PTE par table présente au-delà de `idmap_top` : son coût est O(T) par appel. Sous TCG, avec 1 000 couples `alloc` + `free`, on mesure ×2,7 sans table dynamique (la table de la frontière est toujours lue), ×6,7 avec 8 tables et ×22,7 avec 32. Une structure scellée de comptes par cadre (approche B) donnerait O(1), au prix d'une nouvelle structure de confiance et d'une refonte du passage (deux écritures par fenêtre WP). C'est une décision d'architecture, renvoyée à K1.4.
+
+### 40.6 Limites
+
+- **Un seul répertoire :** avec plusieurs espaces d'adressage (K1.4), l'oracle devra les parcourir tous.
+- **Disponibilité :** un excès falsifié rend un cadre non libérable (fuite signalée par l'audit, `ref_surplus`).
+- **Propriété :** `vmm_map` peut toujours projeter n'importe quel cadre ALLOCATED.
+- **Retrait sous table falsifiée :** si le type de la table ou du répertoire est falsifié, le passage refuse aussi le retrait (refus fermé de P4).
+
+### 40.7 Questions de jury
+
+**Pourquoi ne pas simplement protéger `g_meta` en lecture seule ?** Il est écrit à chaque allocation et à chaque libération. Le sceller exigerait une fenêtre CR0.WP par opération du PMM, ce qui étendrait à tout le PMM la surface du passage. L'oracle obtient la même garantie pour la question « est-il projeté ? », sans nouvel écrivain privilégié.
+
+**L'oracle n'est-il pas lui-même une dépendance du PMM envers le VMM, donc un cycle ?** C'est une dépendance **en lecture seule**, par appel direct : l'oracle n'alloue rien et n'appelle pas le PMM. Il n'y a donc ni récursion ni cycle à l'exécution. Un pointeur de fonction aurait été plus « découplé », mais un pointeur stocké en mémoire inscriptible est une cible de détournement.
+
+**Que se passe-t-il si les tables elles-mêmes sont corrompues ?** La garantie tombe. C'est l'hypothèse de confiance de P4 : tables scellées, un seul écrivain, audit au démarrage. N3 ne l'affaiblit pas, il s'appuie dessus.
+
+**Pourquoi `refs` existe-t-il encore ?** Il reste la seconde barrière pour les références prises **sans** projection (épinglage), que l'oracle ne voit pas, et il permet un refus rapide dans le cas normal. L'audit signale ses incohérences (`ref_mismatch`, `ref_surplus`).
+
 ## Références
 
 1. Free Software Foundation, *Multiboot Specification*, version 0.6.96, §3.1 (en-tête), §3.2 (état machine), §3.3 (structure d'information).

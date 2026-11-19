@@ -32,7 +32,7 @@ Relevé dans le code (`kernel/`, environ 8 900 lignes de C et d'assembleur), pas
 
 | Jalon | Contenu | Dépend de |
 |---|---|---|
-| **K1.0 — Correction de N3** | contrôle indépendant des projections avant libération et réattribution (§4, approche 1) ; mutations, mode destructif, rapport | décision du développeur |
+| **K1.0 — Correction de N3** | contrôle indépendant des projections avant libération et réattribution (§4, approche 1) ; mutations, mode destructif, rapport. **Implémenté sur `claude/k1.0-n3-implement`, en attente de validation** (`docs/review/K1.0-N3-implementation.md`) | décision du développeur |
 | K1.1 — Décisions d'architecture | document seul : cible x86-64, schéma *higher-half*, démarrage (Multiboot 2 ou autre), devenir de la fenêtre CR0.WP (alternatives en x86-64 : projections temporaires par processeur, NX) | K1.0 |
 | K1.2 — `kmalloc` | allocateur d'objets du noyau sur le PMM, sans projections dynamiques (identité seulement) | K1.0 |
 | K1.3 — Migration x86-64 | mode long, tables à quatre niveaux, IST pour #DF/NMI/#MC, NX ; reprise des protections de P4 en x86-64, par un **audit dédié** | K1.1 |

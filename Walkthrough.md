@@ -2000,3 +2000,49 @@ tests/tools/repro_selftest.sh
 
 - **Reproduction :** `git checkout claude/k0.7-p4-close && make clean && make test && make test-mutation`.
 - **Suite :** attendre la validation du développeur avant toute fusion dans `main`. K1 n'est pas commencé ; premier jalon proposé : K1.0 — Correction de N3.
+
+## Jalon K1.0-N3-IMPLEMENT — Protection des cadres encore projetés (en attente de validation)
+
+- **Objectif :** corriger N3 (approche A, U2 sous condition de sûreté ; décisions du développeur), dans le modèle actuel : monoprocesseur, un seul espace d'adressage. Jalon préparatoire isolé : ni migration x86-64, ni clôture de K0.7.
+- **Point de départ :** `main` = `a7a6e2c` (P4 intégré), conception `dbaf6d7` (`docs/design/K1.0-N3-remediation-design.md`). Branche : `claude/k1.0-n3-implement`.
+- **Fichiers :**
+  - `kernel/arch/i386/paging.c` : oracle `dyn_mapping_count` et son interface `vmm_frame_dynamically_mapped`/`vmm_dynamic_mappings` ; `frame_has_foreign_alias` réécrit sur l'oracle ; `vmm_unmap` U2 (retrait toujours effectif, `pmm_unref` seulement si ALLOCATED et `refs ≥ D`, sinon anomalie comptée) ; audit `mapped_type_mismatch`, `ref_mismatch`, `ref_surplus` (ce dernier informatif) ; `paging_idmap_top()` ;
+  - `kernel/arch/i386/include/arch/paging.h` : déclarations et champs d'audit ;
+  - `kernel/mm/pmm.c` : refus EBUSY dans `pmm_free_frame` (N3-I1), panique avant `memset` dans `alloc_zeroed` (N3-I2), neutralisation réservée à l'image de test (`pmm_test_skip_n3_alloc_check`) ;
+  - `kernel/include/samos/pmm.h`, `kernel/mm/pmm_core.c` : compteur `mapped_frees` ;
+  - `kernel/core/kmain.c` : message de l'audit au démarrage ;
+  - `kernel/tests/test_n3.c` (nouveau) : mode isolé `n3` et modes destructifs `n3type`, `n3table` ;
+  - `kernel/tests/test_pmmtrust.c`, `test_faults.c`, `ktest.c`, `ktest.h`, `Makefile` : mode `tablealias_l2` et branchements ;
+  - `tests/qemu/cases.sh` : +7 cas, `tablealias` recalé, suppression de la ligne orpheline relevée à la clôture de P4 ;
+  - `tests/mutation/cases.sh` : +13 mutations, 3 recalées ;
+  - documentation : `docs/review/K1.0-N3-implementation.md` (nouveau), `Details.md` §40, `README.md`, `docs/design/K1-readiness.md`, `docs/review/K0.7-P4-closure.md` (note de mise à jour ; statut de N3 inchangé tant que la correction n'est pas validée).
+- **Déroulement :**
+  1. lecture des appelants du PMM, de l'ordre d'initialisation de `paging_init`, des tests qui prennent des références directement (`test_mm.c`) et des règles de `check_elf.sh` ;
+  2. oracle, puis PMM, puis `vmm_unmap`, puis audit ;
+  3. tests, puis mutations ;
+  4. expériences avant et après, puis mesures.
+- **Incidents corrigés :**
+  - `tlb_integration` en échec de compilation : le banc copie les fichiers suivis par git, et `test_n3.c` n'était pas encore indexé (`git add`) ;
+  - 4 mutations invalides : textes sur plusieurs lignes (non pris en charge par le moteur, d'où un commentaire d'ancrage sur la boucle de l'oracle), et variables devenues inutilisées sous `-Werror` ;
+  - `e5_free_referenced` (M1) recalée : l'oracle, seconde barrière, protège désormais le scénario E5 ;
+  - mutation « parcours depuis la PDE 0 » **équivalente** (non détectée, statut 33), remplacée par l'erreur de frontière `n3_identity_boundary_off_by_one` ;
+  - `n3_identity_counted_in_boundary` : statut 37 et non 35 (la seconde barrière s'arrête après l'assertion nommée) ;
+  - `selftest.sh` : un commentaire de `vmm_unmap` servant d'ancre avait été reformulé ; texte d'origine rétabli.
+- **Expériences R1 à R6** (copies jetables de `a7a6e2c` et de K1.0, même mode `n3repro`) : tableau dans le rapport, §4. Avant : réutilisation au bout de 32 266 opérations et fuite croisée ; après : libération refusée (−9), aucune réutilisation sur 70 001 opérations. R6 sous GDB : avant, cadre lu à `0x00000000` ; après, motif `0xda7a0000 … 0xda7a03ff` intact au moment de `panic_at`.
+- **Configurations de RAM :** mode `n3` à 16M, 64M, 512M, 1G et 1500M : 39 vérifications, 0 échec (à 1500M, `idmap_top` est aligné et il n'y a pas de table de frontière). Les cas QEMU `mem_*` (1728K à 4G) sont verts.
+- **Coûts** (TCG, `alloc` + `free`) : ×2,7 avec 0 table dynamique, ×2,9 avec 1, ×6,7 avec 8, ×22,7 avec 32. Cause du coût sans table dynamique : la table de la frontière est lue en entier (rapport, §6). Préfiltre N4 non intégré.
+- **Validation finale (arbre gelé, 2026-11-19) :**
+
+| Commande | Résultat |
+|---|---|
+| `make clean && make test` | 193 `[PASS]`, 0 `[FAIL]` ; `QEMU: 84 cas, 84 reussis, 0 echecs` ; `tlb_integration` phase A, `checks=10` |
+| `make test-mutation` | `MUTATION: 79 mutations, 79 detectees, 0 non detectees ou invalides` |
+| `tests/mutation/selftest.sh` | `MUTATION-SELFTEST: 15 situations, toutes conformes` |
+| `make test-repro` | `REPRO: 2 images comparees, reproductibles` |
+| `make clean && make -j8` | réussi |
+| `tools/check_elf.sh build/samos.elf --production` | 31 `[PASS]`, 0 `[FAIL]` (dont INVLPG de `vmm_unmap` avant `pmm_unref`) |
+| `tools/check_elf.sh build/samos-test.elf` | 29 `[PASS]`, 0 `[FAIL]` |
+| Moniteur QEMU, image de production, 128 MiB | `CR0=80010011` ; page 0 absente ; `0x100000-0x10a000` `-r-` ; `0x10c000-0x10f000` `-r-` (pages scellées) ; gardes `0x190000`, `0x192000`, `0x197000` absentes ; `0x198000-0x1b9000` `-r-` (répertoire et 32 tables) |
+
+- **Statut :** N3-I1, I2, I3 et I5 sont satisfaits dans le modèle actuel ; N3-I4 l'est pour les incohérences du cadre projeté, mais pas sous une table au type falsifié (refus fermé de P4). **En attente de validation** ; K1.0 n'est pas déclaré terminé.
+- **Reproduction :** `git checkout claude/k1.0-n3-implement && make clean && make test && make test-mutation`.

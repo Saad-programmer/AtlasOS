@@ -58,6 +58,7 @@ struct pmm {
     uint32_t invalid_transitions;  /* réservation refusée sur un cadre déjà distribué */
     uint32_t ref_errors;           /* K0.7-M2.4a : opérations de référence refusées */
     uint32_t busy_frees;           /* K0.7-M2.4b : libération refusée, références actives */
+    uint32_t mapped_frees;         /* K1.0-N3 : libération refusée, cadre encore projeté (relevé des PTE) */
 };
 
 /* Initialise : tout RESERVED, puis FREE pour les cadres entièrement contenus
@@ -102,6 +103,10 @@ uint32_t pmm_alloc_frame(void);
 /* K0.7-M2.3 : cadre FRAME_PAGETABLE remis à zéro, pour le VMM uniquement.
  * Jamais libérable par pmm_free_frame(). Retourne 0 si épuisé. */
 uint32_t pmm_alloc_pagetable(void);
+#if CONFIG_KTEST
+/* K1.0-N3 — image de test : neutralise le contrôle N3-I2 (test=tablealias_l2). */
+void pmm_test_skip_n3_alloc_check(bool on);
+#endif
 samos_err_t pmm_free_frame(uint32_t phys);
 /* K0.7-M2.4b : références de projections dynamiques (cadres ALLOCATED). */
 samos_err_t pmm_ref(uint32_t phys);

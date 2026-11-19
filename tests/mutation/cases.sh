@@ -16,8 +16,12 @@ mutant e5_free_referenced kernel/mm/pmm_core.c \
     'if (frame_desc_refs(p->meta[frame]) != 0) {' \
     'if (0) {' \
     35 \
-    'pmm_free_frame(f) == SAMOS_EBUSY' \
-    'pmm_free_frame(A) == SAMOS_EBUSY'
+    'pmm_free_frame(f) == SAMOS_EBUSY'
+# K1.0-N3 : la libération d'un cadre PROJETÉ est aussi refusée par le relevé
+# des PTE (N3-I1), seconde barrière indépendante de refs ; dans le scénario
+# E5 (cadre A projeté), la mutation n'est donc plus visible. Elle reste
+# détectée pour une référence prise SANS projection (test_kernel_refs), que
+# seul le compteur protège.
 
 # M2 — E3 : vmm_map accepte de nouveau tout cadre non libre (code, constantes,
 # tables de pages, structures du noyau), comme avant M2.5b.
@@ -352,10 +356,13 @@ MUT_CMDLINE=test=pmmtrust mutant pmmtrust_image_ignored kernel/arch/i386/paging.
 # contrôle de table_create, le cadre volé est SCELLÉ, puis le passage refuse
 # sa publication (alias préexistant) : l'arrêt survient plus tard et par un
 # autre diagnostic que celui de la version saine.
+# K1.0-N3 : la première couche (PMM, N3-I2) arrête désormais tablealias avant
+# table_create ; la seconde couche est éprouvée par test=tablealias_l2, qui
+# neutralise la première (image de test seulement).
 mutant_mode pmmtrust_prior_alias_ignored kernel/arch/i386/paging.c \
     'if (paging_enabled() && frame_has_foreign_alias(pt)) {' \
     'if (false && frame_has_foreign_alias(pt)) {' \
-    test=tablealias 37 \
+    test=tablealias_l2 37 \
     'KERNEL PANIC: page-table creation: PDE publication refused'
 MUT_CMDLINE=test=pmmtrust mutant pmmtrust_audit_blind kernel/arch/i386/paging.c \
     'if (frame != va && frame_alias_forbidden(frame)) {' \
@@ -428,7 +435,7 @@ mutant_mode tc_seal_fatal_to_return kernel/arch/i386/paging.c \
 mutant_mode tc_alias_fatal_to_return kernel/arch/i386/paging.c \
     'table_create_fatal("frame already mapped elsewhere", SAMOS_EPERM, va, pt);' \
     'return SAMOS_EPERM;' \
-    test=tablealias 35 \
+    test=tablealias_l2 35 \
     '[TEST] internal violation NOT fatal'
 # Publication d'une table non scellée : le scellement ne retire plus W. Le
 # passage refuse d'écrire W sur l'identité d'un cadre de pagination (règle à
@@ -547,3 +554,100 @@ MUT_CMDLINE=test=imageint mutant n5_audit_lowmem_blind kernel/arch/i386/paging.c
     'if (false && t == FRAME_FREE) {' \
     35 \
     'audit_sees_lowmem_allocatable'
+
+# M67-M79 — K1.0-N3 : cadres encore projetés face à des métadonnées PMM
+# falsifiées (docs/review/K1.0-N3-implementation.md). Chaque mutation est
+# détectée par une assertion nommée du mode isolé n3 ou par un diagnostic
+# exact d'un mode destructif ; jamais par un délai ni par un triple fault.
+# N3-I1 : contrôle avant libération supprimé. La libération falsifiée réussit
+# (assertion nommée), puis la boucle de réutilisation rend le cadre projeté :
+# la seconde barrière (N3-I2) arrête le noyau. D'où le statut 37.
+mutant_mode n3_free_check_removed kernel/mm/pmm.c \
+    '    if (vmm_frame_dynamically_mapped(phys)) {' \
+    '    if (false && vmm_frame_dynamically_mapped(phys)) {' \
+    test=n3 37 \
+    '[FAIL] n3_i1_forged_refs_free_refused at'
+# N3-I2 : contrôle avant remise à zéro supprimé. Données : le cadre projeté
+# est distribué (« NOT trapped »). Table : la seconde couche D1 l'arrête, par
+# SON diagnostic, absent de la version saine.
+mutant_mode n3_alloc_check_removed_data kernel/mm/pmm.c \
+    'if (N3_ALLOC_CHECK_ENABLED() && vmm_frame_dynamically_mapped(phys)) {' \
+    'if (false && vmm_frame_dynamically_mapped(phys)) {' \
+    test=n3type 35 \
+    '[TEST] mapped frame handed out NOT trapped'
+mutant_mode n3_alloc_check_removed_table kernel/mm/pmm.c \
+    'if (N3_ALLOC_CHECK_ENABLED() && vmm_frame_dynamically_mapped(phys)) {' \
+    'if (false && vmm_frame_dynamically_mapped(phys)) {' \
+    test=n3table 37 \
+    'KERNEL PANIC: page-table creation: frame already mapped elsewhere'
+# Remise à zéro prématurée (avant le contrôle) : le refus survient encore,
+# mais l'empreinte du diagnostic est celle d'une page nulle.
+mutant_mode n3_premature_zeroing kernel/mm/pmm.c \
+    '    if (N3_ALLOC_CHECK_ENABLED() && vmm_frame_dynamically_mapped(phys)) {' \
+    '    memset((void *)(uintptr_t)phys, 0, PAGE_SIZE); if (N3_ALLOC_CHECK_ENABLED() && vmm_frame_dynamically_mapped(phys)) {' \
+    test=n3type 37 \
+    'refused before zeroing, page checksum 0x76efddc5'
+# N3-I3 : parcours des PTE contourné (aucune occurrence comptée).
+MUT_CMDLINE=test=n3 mutant n3_scan_bypassed kernel/arch/i386/paging.c \
+    '                n++;' \
+    '                (void)0;' \
+    35 \
+    'n3_i3_boundary_mapping_counted' \
+    'n3_i3_independent_of_pmm'
+# N3-I3 : la table de la frontière (identité et projections dynamiques dans
+# la même PDE) est sautée.
+MUT_CMDLINE=test=n3 mutant n3_scan_skips_boundary_table kernel/arch/i386/paging.c \
+    'for (uint32_t i = PD_INDEX(g_idmap_top); i < 1024u; i++) {    /* N3 : depuis la PDE de la frontière */' \
+    'for (uint32_t i = PD_INDEX(g_idmap_top) + 1u; i < 1024u; i++) {' \
+    35 \
+    'n3_i3_boundary_mapping_counted'
+# N3-I3 : identité de la table de la frontière comptée comme projection
+# dynamique (test PTE par PTE supprimé). L'assertion nommée échoue ; la suite
+# du mode rencontre ensuite un cadre d'identité « projeté » et la seconde
+# barrière arrête le noyau (statut 37).
+# (Un parcours commençant à la PDE 0 serait une mutation ÉQUIVALENTE : le test
+# PTE par PTE exclut déjà l'identité ; elle n'est donc pas retenue.)
+mutant_mode n3_identity_counted_in_boundary kernel/arch/i386/paging.c \
+    'if (va >= g_idmap_top && (pte & PTE_PRESENT) && (pte & PTE_FRAME) == frame) {' \
+    'if ((va | 1u) != 0 && (pte & PTE_PRESENT) && (pte & PTE_FRAME) == frame) {' \
+    test=n3 37 \
+    '[FAIL] n3_i3_boundary_identity_not_counted at'
+# N3-I3 : frontière décalée d'une page (> au lieu de >=) : la première page
+# dynamique (va == idmap_top, même PDE que l'identité) n'est plus vue.
+MUT_CMDLINE=test=n3 mutant n3_identity_boundary_off_by_one kernel/arch/i386/paging.c \
+    'if (va >= g_idmap_top && (pte & PTE_PRESENT) && (pte & PTE_FRAME) == frame) {' \
+    'if (va > g_idmap_top && (pte & PTE_PRESENT) && (pte & PTE_FRAME) == frame) {' \
+    35 \
+    'n3_i3_boundary_mapping_counted'
+# N3-I4 : le retrait rend une référence malgré un déficit : la référence de
+# la projection restante est consommée.
+MUT_CMDLINE=test=n3 mutant n3_unmap_consumes_other_ref kernel/arch/i386/paging.c \
+    'pmm_refs(frame) >= real && real != 0;' \
+    'pmm_refs(frame) + 0u * real != 0;' \
+    35 \
+    'n3_i4_other_ref_kept'
+# N3-I4 : retour à l'ancien comportement (refus si incohérent) : la
+# projection incohérente ne peut plus être retirée.
+MUT_CMDLINE=test=n3 mutant n3_unmap_refuses_inconsistent kernel/arch/i386/paging.c \
+    '    samos_err_t ge = pt_gate_write(PT_KIND_PTE, va, 0);' \
+    '    if (!release_ref) { return SAMOS_EINVAL; } samos_err_t ge = pt_gate_write(PT_KIND_PTE, va, 0);' \
+    35 \
+    'n3_i4_inconsistent_mapping_removed'
+# Anomalie de retrait non comptée.
+MUT_CMDLINE=test=n3 mutant n3_unmap_anomaly_uncounted kernel/arch/i386/paging.c \
+    '        g_unmap_ref_anomalies++;               /* N3-I4 : projection retirée, g_meta intacte */' \
+    '        (void)0;' \
+    35 \
+    'n3_i4_no_meta_write'
+# N3-I5 : compteurs d'audit supprimés.
+MUT_CMDLINE=test=n3 mutant n3_audit_ref_mismatch_blind kernel/arch/i386/paging.c \
+    '                a->ref_mismatch++;' \
+    '                (void)0;' \
+    35 \
+    'n3_i5_ref_deficit_seen'
+MUT_CMDLINE=test=n3 mutant n3_audit_type_mismatch_blind kernel/arch/i386/paging.c \
+    '                a->mapped_type_mismatch++;' \
+    '                (void)0;' \
+    35 \
+    'n3_i5_type_free_seen' \
+    'n3_i5_r4_type_seen'

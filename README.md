@@ -58,7 +58,7 @@ La phase K0 (K0.1 à K0.6) est terminée ; sa revue se trouve dans [`docs/review
 | IDT, gestionnaires, racines du VMM (P4d) ; répertoire et tables de pages (P4e-2) | en lecture seule dans l'identité ; écritures de PDE/PTE par le passage contrôlé `pt_gate_write` (fenêtre CR0.WP) |
 | D1 (alias par falsification du PMM), D3 (substitution de PDE), D4 (échecs de création des tables), D2 (preuves d'INVLPG masquées sous QEMU) | corrigés (P4f-B1 à B4) |
 | N1 (page de l'image publiée comme table), N2 (PDE vers `.text` ou l'IDT), N5 (audit aveugle) | corrigés (P4f-D), contre-vérifiés (P4f-E) |
-| **N3** (libération d'un cadre de données encore projeté, avec des références falsifiées) | **OUVERT** : accepté temporairement pour P4, **bloquant avant K1** (projections dynamiques en production, espaces d'adressage séparés) |
+| **N3** (libération d'un cadre de données encore projeté, avec des références falsifiées) | **correction implémentée** (K1.0-N3, branche `claude/k1.0-n3-implement`, **en attente de validation**) : relevé indépendant des PTE avant libération et remise à zéro, retrait sûr, audit ; garanties limitées à un espace d'adressage unique et monoprocesseur ([`docs/review/K1.0-N3-implementation.md`](docs/review/K1.0-N3-implementation.md)) |
 | GDT/TSS inscriptibles ; NMI ou #MC pendant la fenêtre WP ; monoprocesseur ; matériel réel non testé | **risques acceptés, non corrigés** (registre : `K0.7-P4-closure.md` §7) |
 
 **Une clôture de jalon ne signifie pas que le noyau est sécurisé.** SAMOS n'est ni un système d'exploitation complet ni un système sécurisé : c'est un noyau d'étude, testé sous QEMU.
@@ -263,7 +263,7 @@ Seuls des outils de développement standard sont utilisés : compilateur, assemb
 - Le journal n'est pas réentrant : les futurs gestionnaires d'IRQ ne devront pas journaliser.
 - **Pas de bit NX** (pagination 32 bits sans PAE) : les données du noyau sont exécutables ; W^X n'est réalisé que pour le code.
 - Projection en identité : seule la RAM sous 1 GiB est gérée ; toute la RAM est inscriptible par le noyau, sauf `.text`/`.rodata`, les structures scellées en P4d, le répertoire et les tables de pages (écrits seulement par la fenêtre CR0.WP du passage) ; la GDT/TSS et la table du PMM restent inscriptibles ; pas encore d'espaces d'adressage séparés ni de noyau *higher-half*.
-- **N3 (ouvert) :** des références PMM falsifiées permettent de libérer puis de redistribuer un cadre de données encore projeté (fuite et corruption croisée). Aucun code de production n'utilise aujourd'hui `vmm_map`, mais c'est **bloquant avant K1**.
+- **N3 :** correction implémentée en K1.0 (en attente de validation) : un cadre encore projeté hors identité n'est plus libéré ni redistribué, même si ses références ou son type PMM sont falsifiés. Limites : un seul espace d'adressage (à étendre avant K1.4), fuite de disponibilité possible si les références sont falsifiées vers le haut, coût linéaire en nombre de tables dynamiques (×2,7 à ×23 sous TCG sur `pmm_alloc_frame`/`pmm_free_frame`).
 - Les contrôles de P4 parcourent le répertoire : `vmm_map`/`vmm_unmap` sont nettement plus coûteux qu'en K0.6 (mesure sous QEMU seulement).
 - K0.7 : les canaris de pile ne protègent que les fonctions que Clang instrumente (11 en production), et seulement à leur retour ; les pages de garde des piles ne couvrent que 4 KiB ; un débordement de la pile de double faute se termine par un triple fault (voir `docs/review/K0.7-R1g-audit.md`).
 - Pas d'allocateur d'objets (`kmalloc`) ; l'allocateur physique n'a pas de verrou (monoprocesseur, appelé hors interruption).
@@ -272,7 +272,7 @@ Seuls des outils de développement standard sont utilisés : compilateur, assemb
 
 ## 17. Feuille de route
 
-`K0.1 ✅ → … → K0.6 ✅ → K0.7 🔶 (R1 ✅, P4 ✅ dans son périmètre) → (autorisation) K1.0 : correction de N3 → K1 : décisions d'architecture, kmalloc, x86-64 / higher-half, espaces d'adressage, ring 3 → processus/ordonnanceur → appels système → IPC → VFS → pilotes → A0 (IA) → V0 (voix) → I0 (agent)` — détail : [`docs/design/K1-readiness.md`](docs/design/K1-readiness.md)
+`K0.1 ✅ → … → K0.6 ✅ → K0.7 🔶 (R1 ✅, P4 ✅ dans son périmètre) → K1.0 : correction de N3 (implémentée, en attente de validation) → K1 : décisions d'architecture, kmalloc, x86-64 / higher-half, espaces d'adressage, ring 3 → processus/ordonnanceur → appels système → IPC → VFS → pilotes → A0 (IA) → V0 (voix) → I0 (agent)` — détail : [`docs/design/K1-readiness.md`](docs/design/K1-readiness.md)
 
 ## 18. Documentation
 

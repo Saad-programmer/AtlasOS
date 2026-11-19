@@ -39,7 +39,6 @@ IMG=prod TIMEOUT=3 run_case prod_refuses_test "test=wtext" 124 \
     "serial:test mode requested but not available in the production image" \
     "serial:SAMOS: K0.6 boot complete" \
     "!KERNEL PANIC" "![TEST]"
-    "serial:SAMOS: K0.6 boot complete"
 
 # Autotests noyau, toutes suites.
 run_case selftest "test" 33 \
@@ -345,7 +344,7 @@ run_case tablelife "test=tablelife" 33 \
 # Violations d'invariant APRÈS l'allocation : arrêt déterministe, diagnostic
 # explicite, jamais de retour au VMM, ni triple fault ni panique récursive.
 for tc in "tcseal:sealing refused (error -9)" "tcpde:PDE publication refused (error -10)" \
-          "tablealias:frame already mapped elsewhere (error -10)"; do
+          "tablealias_l2:frame already mapped elsewhere (error -10)"; do
     run_case "${tc%%:*}" "test=${tc%%:*}" 37 \
         "serial:KERNEL PANIC: page-table creation: ${tc#*:}" \
         "serial:kernel invariant violated, frame not returned" \
@@ -354,15 +353,63 @@ for tc in "tcseal:sealing refused (error -9)" "tcpde:PDE publication refused (er
         "!RECURSIVE PANIC" \
         "!DOUBLE FAULT"
 done
-# tablealias : le cadre du diagnostic est exactement le cadre aliasé.
-total=$((total + 1))
-want=$(tr -d '\r' < "$OUT/tablealias.serial.log" 2>/dev/null | sed -n 's/.*tablealias: frame \(0x[0-9a-f]*\) mapped.*/\1/p' | head -1)
-got=$(tr -d '\r' < "$OUT/tablealias.serial.log" 2>/dev/null | sed -n 's/.*frame already mapped elsewhere.*: frame \(0x[0-9a-f]*\) type.*/\1/p' | head -1)
-if [ -n "$want" ] && [ "$got" = "$want" ]; then
-    echo "[PASS] tablealias_frame (cadre $got)"; passed=$((passed + 1))
-else
-    echo "[FAIL] tablealias_frame (diagnostic ${got:-absent}, attendu ${want:-absent})"; fail=1
-fi
+# K1.0-N3 — tablealias (V2 de D1) : le PMM arrête désormais lui-même la
+# distribution du cadre projeté comme table, AVANT la remise à zéro (N3-I2) ;
+# la seconde couche (table_create) n'est plus atteinte. tablealias_l2 :
+# même scénario, première couche neutralisée (image de test), la seconde
+# couche doit arrêter le noyau comme avant K1.0 (cas de la boucle ci-dessus).
+run_case tablealias "test=tablealias" 37 \
+    "serial:KERNEL PANIC: pmm: descriptor table corrupted: frame 0x" \
+    "serial:still mapped outside identity (1 dynamic mappings) handed out as type 4; refused before zeroing" \
+    "!frame already mapped elsewhere" \
+    "!internal violation NOT fatal" \
+    "!preconditions not met" \
+    "!RECURSIVE PANIC" \
+    "!DOUBLE FAULT"
+# Le cadre du diagnostic est exactement le cadre aliasé, dans les deux couches.
+for m in "tablealias:still mapped outside identity" "tablealias_l2:frame already mapped elsewhere"; do
+    IFS=: read -r name diag <<<"$m"
+    total=$((total + 1))
+    want=$(tr -d '\r' < "$OUT/$name.serial.log" 2>/dev/null | sed -n 's/.*tablealias: frame \(0x[0-9a-f]*\) mapped.*/\1/p' | head -1)
+    if [ "$name" = tablealias ]; then
+        got=$(tr -d '\r' < "$OUT/$name.serial.log" 2>/dev/null | sed -n 's/.*descriptor table corrupted: frame \(0x[0-9a-f]*\) still mapped.*/\1/p' | head -1)
+    else
+        got=$(tr -d '\r' < "$OUT/$name.serial.log" 2>/dev/null | sed -n 's/.*frame already mapped elsewhere.*: frame \(0x[0-9a-f]*\) type.*/\1/p' | head -1)
+    fi
+    if [ -n "$want" ] && [ "$got" = "$want" ]; then
+        echo "[PASS] ${name}_frame (cadre $got, $diag)"; passed=$((passed + 1))
+    else
+        echo "[FAIL] ${name}_frame (diagnostic ${got:-absent}, attendu ${want:-absent})"; fail=1
+    fi
+done
+
+# K1.0-N3 — Mode ISOLÉ n3 : invariants N3-I1 à I5 (assertions nommées n3_i*).
+run_case n3 "test=n3" 33 \
+    "serial:[TEST] suite K1.0 N3 mapped frames vs PMM metadata (isolated) done:" \
+    "serial:[TEST] N3 audit R1: ref_mismatch=1 mapped_type_mismatch=0" \
+    "serial:[TEST] N3 R1: free=-9, 70000 alloc/free cycles, frame reused: 0" \
+    "serial:[TEST] ALL TESTS PASSED" "![FAIL]" "!KERNEL PANIC"
+# K1.0-N3 (N3-I2) — Un cadre projeté, marqué FREE, est refusé par le PMM
+# AVANT la remise à zéro : données (R2) et table (R6). Empreinte identique
+# avant l'allocation et dans le diagnostic (le motif 0xDA7A... est intact).
+for n3 in "n3type:3" "n3table:4"; do
+    IFS=: read -r m ty <<<"$n3"
+    run_case "$m" "test=$m" 37 \
+        "serial:KERNEL PANIC: pmm: descriptor table corrupted: frame 0x" \
+        "serial:still mapped outside identity (1 dynamic mappings) handed out as type $ty; refused before zeroing" \
+        "!mapped frame handed out NOT trapped" \
+        "!frame already mapped elsewhere" \
+        "!preconditions not met" \
+        "!RECURSIVE PANIC" "!DOUBLE FAULT"
+    total=$((total + 1))
+    before=$(tr -d '\r' < "$OUT/$m.serial.log" 2>/dev/null | sed -n 's/.*marked FREE (PMM lies: 1), page checksum \(0x[0-9a-f]*\),.*/\1/p' | head -1)
+    after=$(tr -d '\r' < "$OUT/$m.serial.log" 2>/dev/null | sed -n 's/.*refused before zeroing, page checksum \(0x[0-9a-f]*\).*/\1/p' | head -1)
+    if [ -n "$before" ] && [ "$before" = "$after" ] && [ "$after" != 0x76efddc5 ]; then
+        echo "[PASS] ${m}_page_intact (avant $before, refus $after)"; passed=$((passed + 1))
+    else
+        echo "[FAIL] ${m}_page_intact (avant ${before:-absent}, refus ${after:-absent})"; fail=1
+    fi
+done
 
 # K0.7-P4f-B4 — Cohérence du TLB (D2). tlbexp : expérience isolée, PTE
 # modifiée par un alias temporaire SANS écriture de CR0 : traduction périmée

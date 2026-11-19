@@ -121,6 +121,20 @@ static uint32_t page_checksum(uint32_t phys)
     return h;
 }
 
+/* K1.0-N3 — Image de TEST seulement : neutralisation du contrôle N3-I2 de
+ * alloc_zeroed, pour éprouver la SECONDE couche (contrôle D1 de table_create,
+ * mode test=tablealias_l2). Absente de l'image de production (constante). */
+#if CONFIG_KTEST
+static bool g_test_skip_n3_alloc_check;
+void pmm_test_skip_n3_alloc_check(bool on)
+{
+    g_test_skip_n3_alloc_check = on;
+}
+#define N3_ALLOC_CHECK_ENABLED() (!g_test_skip_n3_alloc_check)
+#else
+#define N3_ALLOC_CHECK_ENABLED() (true)
+#endif
+
 /* K0.7-M2.3 : allocation typée commune ; le type est fixé AVANT que le cadre
  * ne quitte le PMM, il n'existe donc aucun instant où une table de pages
  * serait vue comme un cadre ALLOCATED libérable. */
@@ -145,6 +159,21 @@ static uint32_t alloc_zeroed(enum frame_type type)
      * propriétaire (fuite d'information) ou de vieilles entrées de table de
      * pages (projection fantôme). Accès par l'identité : la mémoire gérée est
      * bornée à la zone projetée en identité (paging.c). */
+    /* K1.0-N3 (N3-I2) — Jamais distribué ni remis à zéro tant qu'une
+     * projection DYNAMIQUE le désigne : réponse tirée des PTE publiées
+     * (vmm_frame_dynamically_mapped), indépendante du type et de `refs`. Un
+     * cadre projeté n'arrive ici que si g_meta ment (type FREE falsifié, ou
+     * libération obtenue par un `refs` falsifié avant K1.0) : violation
+     * d'invariant. Arrêt AVANT memset (les données de l'ancien propriétaire
+     * restent intactes, empreinte affichée) ; le cadre a déjà quitté FREE dans
+     * pmm_core_alloc_as, et le remettre FREE le ferait redistribuer aussitôt.
+     * Couvre les deux chemins de distribution : données (pmm_alloc_frame) et
+     * tables (pmm_alloc_pagetable, avant le contrôle D1 de table_create). */
+    if (N3_ALLOC_CHECK_ENABLED() && vmm_frame_dynamically_mapped(phys)) {
+        panic("pmm: descriptor table corrupted: frame %p still mapped outside identity (%u dynamic mappings) "
+              "handed out as type %d; refused before zeroing, page checksum 0x%08x",
+              (void *)(uintptr_t)phys, vmm_dynamic_mappings(phys), (int)type, page_checksum(phys));
+    }
     memset((void *)(uintptr_t)phys, 0, PAGE_SIZE);
     return phys;
 }
@@ -166,6 +195,15 @@ samos_err_t pmm_free_frame(uint32_t phys)
     if ((phys & (PAGE_SIZE - 1u)) != 0) {
         g_pmm.invalid_frees++;
         return SAMOS_EINVAL;                 /* adresse non alignée : erreur de l'appelant */
+    }
+    /* K1.0-N3 (N3-I1) — Refus d'un cadre encore projeté hors identité, AVANT
+     * toute lecture de son descripteur : la décision ne dépend ni du type ni
+     * de `refs` (falsifiables). Erreur ordinaire, SANS EFFET (aucune écriture
+     * dans g_meta, free_count ou hint) ; compteur distinct de busy_frees : un
+     * refus ici alors que refs vaudrait 0 révèle une incohérence. */
+    if (vmm_frame_dynamically_mapped(phys)) {
+        g_pmm.mapped_frees++;
+        return SAMOS_EBUSY;
     }
     return pmm_core_free(&g_pmm, phys >> PAGE_SHIFT);
 }

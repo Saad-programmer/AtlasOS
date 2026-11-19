@@ -44,6 +44,7 @@ static SAMOS_NOINLINE samos_err_t seal_table_frame(uint32_t table);
 static bool frame_has_foreign_alias(uint32_t frame);
 static bool frame_is_paging_structure(uint32_t frame);
 static bool frame_never_table(uint32_t frame);
+static uint32_t dyn_mapping_count(uint32_t frame, uint32_t limit);
 
 /* Table de pages couvrant va, ou 0 si le PDE est absent. Lecture seule : les
  * tables publiées sont en lecture seule dans l'identité depuis K0.7-P4e-2. */
@@ -324,7 +325,36 @@ static bool frame_alias_forbidden(uint32_t frame)
  */
 static bool frame_has_foreign_alias(uint32_t frame)
 {
-    for (uint32_t i = PD_INDEX(g_idmap_top); i < 1024u; i++) {
+    return dyn_mapping_count(frame, 1u) != 0;
+}
+
+/*
+ * K1.0-N3 — Nombre de projections DYNAMIQUES d'un cadre : PTE présentes, à
+ * va >= g_idmap_top, désignant `frame`, dans les tables publiées du
+ * répertoire actif. Arrêt anticipé dès `limit` occurrences (limit = 0 : pas de
+ * limite). SOURCE DE VÉRITÉ de N3 (invariant N3-I3) :
+ *   - ne lit NI le type NI le compteur `refs` du PMM : uniquement g_pd (page
+ *     scellée P4d) et les tables publiées (scellées P4e-2, un seul écrivain :
+ *     le passage ; PDE à écriture unique, D3). Une falsification de g_meta ne
+ *     change donc pas la réponse ;
+ *   - l'identité permanente (va < g_idmap_top) est EXCLUE : elle projette
+ *     toute la RAM gérée et le passage y impose frame == va, ce n'est pas un
+ *     alias. La table de la frontière (PDE de g_idmap_top, quand g_idmap_top
+ *     n'est pas multiple de 4 MiB) contient les deux sortes : d'où le test
+ *     va >= g_idmap_top PTE par PTE, et non PDE par PDE ;
+ *   - aucune grande page : le passage n'accepte que des PDE égales à P | W ;
+ *   - g_pd == 0 (avant paging_init) : aucune table, donc aucune projection.
+ * Lecture seule, sans allocation ni appel au PMM : appelable depuis le PMM
+ * (pmm.c) sans cycle ni récursion. Coût : 1024 lectures par table présente au
+ * delà de g_idmap_top (mesures : docs/review/K1.0-N3-implementation.md).
+ */
+static uint32_t dyn_mapping_count(uint32_t frame, uint32_t limit)
+{
+    if (g_pd == 0) {
+        return 0;
+    }
+    uint32_t n = 0;
+    for (uint32_t i = PD_INDEX(g_idmap_top); i < 1024u; i++) {    /* N3 : depuis la PDE de la frontière */
         uint32_t pde = g_pd[i];
         if (!(pde & PTE_PRESENT)) {
             continue;
@@ -334,11 +364,47 @@ static bool frame_has_foreign_alias(uint32_t frame)
             uint32_t va = (i << 22) | (j << 12);
             uint32_t pte = pt[j];
             if (va >= g_idmap_top && (pte & PTE_PRESENT) && (pte & PTE_FRAME) == frame) {
-                return true;
+                n++;
+                if (n == limit) {
+                    return n;
+                }
             }
         }
     }
-    return false;
+    return n;
+}
+
+/* Position (i << 10 | j) de la PREMIÈRE projection dynamique de `frame` dans
+ * l'ordre du parcours, ou UINT32_MAX : sert à l'audit à n'examiner chaque
+ * cadre qu'une fois. */
+static uint32_t dyn_first_slot(uint32_t frame)
+{
+    for (uint32_t i = PD_INDEX(g_idmap_top); i < 1024u; i++) {
+        uint32_t pde = g_pd[i];
+        if (!(pde & PTE_PRESENT)) {
+            continue;
+        }
+        const volatile uint32_t *pt = (const volatile uint32_t *)(uintptr_t)(pde & PTE_FRAME);
+        for (uint32_t j = 0; j < 1024u; j++) {
+            uint32_t va = (i << 22) | (j << 12);
+            if (va >= g_idmap_top && (pt[j] & PTE_PRESENT) && (pt[j] & PTE_FRAME) == frame) {
+                return (i << 10) | j;
+            }
+        }
+    }
+    return UINT32_MAX;
+}
+
+/* K1.0-N3 — Interface vers le PMM (appel DIRECT, pas de pointeur de fonction
+ * inscriptible). Voir arch/paging.h. */
+bool vmm_frame_dynamically_mapped(uint32_t frame)
+{
+    return dyn_mapping_count(frame & PTE_FRAME, 1u) != 0;
+}
+
+uint32_t vmm_dynamic_mappings(uint32_t frame)
+{
+    return dyn_mapping_count(frame & PTE_FRAME, 0u);
 }
 
 static samos_err_t pt_gate_check(enum pt_kind kind, uint32_t va, uint32_t value,
@@ -667,9 +733,58 @@ bool paging_audit(struct paging_audit *a)
             }
         }
     }
+    /* K1.0-N3 (N3-I5) — Cohérence entre les références PMM et les projections
+     * RÉELLES. D(f) = nombre de projections dynamiques de f (dyn_mapping_count,
+     * relevé indépendant du PMM). Un cadre de l'image ou de pagination projeté
+     * hors identité est déjà compté dans foreign_aliases : il est exclu ici.
+     *   mapped_type_mismatch : cadres distincts avec D(f) >= 1 dont le type PMM
+     *                          n'est pas ALLOCATED (seul type projetable) ;
+     *   ref_mismatch         : cadres ALLOCATED avec refs < D(f) : une
+     *                          projection au moins n'a pas de référence ;
+     *   ref_surplus          : cadres ALLOCATED avec refs > D(f). INFORMATIF,
+     *                          ne fait pas échouer l'audit : pmm_ref est une
+     *                          interface publique, des références peuvent être
+     *                          prises pour d'autres raisons qu'une projection
+     *                          (les autotests le font). Un excès falsifié ne
+     *                          met en cause que la disponibilité (cadre jamais
+     *                          libéré), pas l'isolation.
+     * Les projections d'identité ne sont jamais comptées (va < g_idmap_top).
+     * Coût : O(P x T) pour P projections dynamiques et T tables dynamiques,
+     * plus un relevé par cadre référencé ; acceptable au démarrage et dans les
+     * autotests (aucune projection dynamique en production en K0). */
+    for (uint32_t i = PD_INDEX(g_idmap_top); i < 1024u; i++) {
+        uint32_t pde = g_pd[i];
+        if (!(pde & PTE_PRESENT)) {
+            continue;
+        }
+        const volatile uint32_t *pt = (const volatile uint32_t *)(uintptr_t)(pde & PTE_FRAME);
+        for (uint32_t j = 0; j < 1024u; j++) {
+            uint32_t pte = pt[j], va = (i << 22) | (j << 12);
+            if (va < g_idmap_top || !(pte & PTE_PRESENT)) {
+                continue;
+            }
+            uint32_t frame = pte & PTE_FRAME;
+            if (frame_alias_forbidden(frame) || dyn_first_slot(frame) != ((i << 10) | j)) {
+                continue;                       /* déjà compté, ou cadre déjà examiné */
+            }
+            uint32_t d = dyn_mapping_count(frame, 0u);
+            if ((frame >> PAGE_SHIFT) >= p->nframes || pmm_core_type(p, frame >> PAGE_SHIFT) != FRAME_ALLOCATED) {
+                a->mapped_type_mismatch++;
+            } else if (pmm_refs(frame) < d) {
+                a->ref_mismatch++;
+            }
+        }
+    }
+    for (uint32_t f = 0; f < p->nframes; f++) {
+        if (pmm_core_type(p, f) == FRAME_ALLOCATED && pmm_core_refs(p, f) != 0 &&
+            pmm_core_refs(p, f) > dyn_mapping_count(f << PAGE_SHIFT, 0u)) {
+            a->ref_surplus++;
+        }
+    }
     return a->writable == 0 && a->aliases == 0 && a->bad_pdes == 0 && a->unpublished == 0 &&
            typed == published && a->foreign_aliases == 0 && a->struct_writable == 0 && a->dup_pdes == 0 &&
-           a->forbidden_tables == 0 && a->image_type_mismatch == 0 && a->lowmem_allocatable == 0;
+           a->forbidden_tables == 0 && a->image_type_mismatch == 0 && a->lowmem_allocatable == 0 &&
+           a->mapped_type_mismatch == 0 && a->ref_mismatch == 0;
 }
 
 #if CONFIG_KTEST
@@ -807,10 +922,39 @@ samos_err_t vmm_map(uint32_t va, uint32_t pa, uint32_t flags)
  *       KERNEL, RESERVED, PAGETABLE sans transition) : « ALLOCATED maintenant »
  *       équivaut donc à « une référence a été prise au map ».
  * Ordre : vérifier que la référence existe, PUIS effacer la PTE et invalider
- * le TLB, PUIS relâcher la référence (ne peut plus échouer). En cas de refus,
- * la projection reste intacte ; aucune PTE présente ne désigne jamais un
- * cadre ALLOCATED sans référence.
+ * le TLB, PUIS relâcher la référence (ne peut plus échouer).
+ *
+ * K1.0-N3 (U2 sous condition de sûreté, décision du développeur) — L'ancienne
+ * règle (b) supposait le type PMM fiable : avec g_meta falsifiée, le retrait
+ * échouait (refs = 0 : EINVAL, projection impossible à retirer, R1b/R2) ou
+ * décidait à tort (type falsifié : référence perdue, R4/R5 ; cadre réattribué :
+ * référence d'un AUTRE propriétaire consommée, R3). Désormais :
+ *   - toute PTE présente à va >= g_idmap_top est une projection comptée
+ *     (N3-I3) : seul map_page(counted = true) peut en créer une ;
+ *   - le retrait de la PTE (passage, puis INVLPG) a TOUJOURS lieu : retirer
+ *     ne donne jamais d'accès (N3-I4) ;
+ *   - la référence n'est rendue (pmm_unref) QUE si le cadre est ALLOCATED et
+ *     si refs >= D, où D est le nombre RÉEL de projections dynamiques du
+ *     cadre, celle-ci comprise (relevé indépendant du PMM, avant l'effacement).
+ *     Alors refs - 1 >= D - 1 : chaque projection restante garde sa référence.
+ *     Sinon (refs < D, type non ALLOCATED) : AUCUNE écriture dans g_meta,
+ *     anomalie comptée (g_unmap_ref_anomalies). Le déficit refs < D ne
+ *     s'aggrave jamais ; aucune « réparation » n'est tentée (elle supposerait
+ *     de connaître le vrai type et les références prises pour d'autres
+ *     raisons).
+ * La sûreté de la libération ne dépend plus de refs : pmm_free_frame et
+ * alloc_zeroed consultent vmm_frame_dynamically_mapped (N3-I1, N3-I2).
+ * Limite : un refus du PASSAGE (table ou répertoire au type PMM falsifié)
+ * laisse la projection en place ; c'est le refus fermé de P4, hors de N3
+ * (docs/review/K1.0-N3-implementation.md).
  */
+static uint32_t g_unmap_ref_anomalies;    /* retraits sans pmm_unref (incohérence PMM/PTE) */
+
+uint32_t vmm_unmap_ref_anomalies(void)
+{
+    return g_unmap_ref_anomalies;
+}
+
 SAMOS_NOINLINE samos_err_t vmm_unmap(uint32_t va, uint32_t *pa)
 {
     if ((va & 0xFFFu) != 0) {
@@ -824,10 +968,11 @@ SAMOS_NOINLINE samos_err_t vmm_unmap(uint32_t va, uint32_t *pa)
         return SAMOS_ENOENT;
     }
     uint32_t frame = pt[PT_INDEX(va)] & PTE_FRAME;
-    bool counted = pmm_core_type(pmm_state(), frame >> PAGE_SHIFT) == FRAME_ALLOCATED;
-    if (counted && pmm_refs(frame) == 0) {
-        return SAMOS_EINVAL;                   /* incohérence : on ne touche à rien */
-    }
+    /* K1.0-N3 : décision prise AVANT l'effacement, sur le relevé réel (D >= 1,
+     * la projection retirée en fait partie) ; voir l'en-tête. */
+    uint32_t real = dyn_mapping_count(frame, 0u);
+    bool release_ref = pmm_core_type(pmm_state(), frame >> PAGE_SHIFT) == FRAME_ALLOCATED &&
+                       pmm_refs(frame) >= real && real != 0;
     /* K0.7-P4e-1 : effacement par le passage contrôlé ; un refus laisse la
      * projection et la référence intactes. */
     samos_err_t ge = pt_gate_write(PT_KIND_PTE, va, 0);
@@ -846,9 +991,11 @@ SAMOS_NOINLINE samos_err_t vmm_unmap(uint32_t va, uint32_t *pa)
      * (check_elf.sh, ordre passage < invlpg < pmm_unref) et harnais
      * d'intégration sans vidage implicite (tests/tools/tlb_integration.sh). */
     cpu_invlpg((const void *)(uintptr_t)va);    /* vmm_unmap : avant pmm_unref */
-    if (counted) {
+    if (release_ref) {
         samos_err_t e = pmm_unref(frame);
         KASSERT(e == SAMOS_OK);                /* garanti par la vérification préalable */
+    } else {
+        g_unmap_ref_anomalies++;               /* N3-I4 : projection retirée, g_meta intacte */
     }
     return SAMOS_OK;
 }
@@ -873,6 +1020,8 @@ bool vmm_translate(uint32_t va, uint32_t *pa, uint32_t *flags)
 }
 
 uint32_t paging_directory(void) { return (uint32_t)(uintptr_t)g_pd; }
+/* K1.0-N3 : fin (exclue) de l'identité permanente ; au-delà, toute PTE est dynamique. */
+uint32_t paging_idmap_top(void) { return g_idmap_top; }
 uint32_t paging_table_count(void) { return g_tables; }
 
 void mem_probe_last_fault(uint32_t *cr2, uint32_t *err)

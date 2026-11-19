@@ -183,6 +183,11 @@ void ktest_run_all(void)
             finish();
         }
         /* K0.7-P4f-D — Mode ISOLÉ : intégrité de l'image du noyau (N2, N5). */
+        /* K1.0-N3 — Mode ISOLÉ : cadres encore projetés (N3-I1 à I5). */
+        if (strcmp(mode, "n3") == 0) {
+            ktest_suite_n3();
+            finish();
+        }
         if (strcmp(mode, "imageint") == 0) {
             ktest_suite_image_integrity();
             finish();

@@ -212,8 +212,12 @@ void ktest_suite_pmm_trust(void)
 /*
  * K0.7-P4f-B3 — Mode destructif test=tablealias (statut 37) : variante V2 de
  * D1. Un cadre x, projeté à 0xD0008000, est marqué FREE par falsification ;
- * le PMM le distribue comme table neuve. table_create doit arrêter le noyau
- * (« frame already mapped elsewhere ») AVANT tout scellement ou publication.
+ * le PMM le distribue comme table neuve.
+ * K1.0-N3 : le PMM l'arrête désormais lui-même, AVANT la remise à zéro
+ * (« still mapped outside identity … handed out as type 4 », N3-I2). Le
+ * contrôle D1 de table_create (« frame already mapped elsewhere ») devient une
+ * seconde couche, éprouvée par test=tablealias_l2 qui neutralise la première
+ * (image de test seulement). Même cadre, même scénario dans les deux modes.
  */
 void ktest_table_alias(void)
 {
@@ -237,4 +241,11 @@ void ktest_table_alias(void)
     kprintf("[TEST] tablealias: frame 0x%08x mapped at 0x%08x, marked FREE; creating a table\n", x, a2);
     samos_err_t e = vmm_map(nv, y, PTE_WRITE);
     kprintf("[TEST] internal violation NOT fatal (vmm_map returned %d)\n", (int)e);
+}
+
+void ktest_table_alias_l2(void)
+{
+    pmm_test_skip_n3_alloc_check(true);         /* première couche (PMM) neutralisée */
+    kprintf("[TEST] tablealias_l2: PMM mapped-frame check disabled (test image only)\n");
+    ktest_table_alias();
 }

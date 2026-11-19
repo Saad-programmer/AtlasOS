@@ -108,7 +108,11 @@ bool ktest_fatal_mode(const char *mode)
                strcmp(mode, "n1alloc") == 0 || strcmp(mode, "n1low") == 0) {
         ktest_image_steal(mode);               /* K0.7-P4f-D : doit finir en panic */
     } else if (strcmp(mode, "tablealias") == 0) {
-        ktest_table_alias();                   /* K0.7-P4f-B3 : doit finir en panic */
+        ktest_table_alias();                   /* K0.7-P4f-B3 ; K1.0 : arrêt dans le PMM */
+    } else if (strcmp(mode, "tablealias_l2") == 0) {
+        ktest_table_alias_l2();                /* K1.0-N3 : seconde couche (table_create) */
+    } else if (strcmp(mode, "n3type") == 0 || strcmp(mode, "n3table") == 0) {
+        ktest_n3_steal(mode);                  /* K1.0-N3 : doit finir en panic */
     } else if (strcmp(mode, "tcseal") == 0) {
         ktest_table_seal_refused();            /* K0.7-P4f-B3 : doit finir en panic */
     } else if (strcmp(mode, "tcpde") == 0) {

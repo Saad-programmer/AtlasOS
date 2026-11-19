@@ -134,6 +134,7 @@ samos_err_t pmm_core_init(struct pmm *p, frame_desc_t *meta, uint32_t meta_entri
     p->invalid_transitions = 0;
     p->ref_errors = 0;
     p->busy_frees = 0;
+    p->mapped_frees = 0;
     /* Écriture directe (sans set_type) : état initial, free_count = 0. */
     for (uint32_t f = 0; f < nframes; f++) {
         meta[f] = frame_desc_make(FRAME_RESERVED, 0);   /* rien n'est disponible par défaut */

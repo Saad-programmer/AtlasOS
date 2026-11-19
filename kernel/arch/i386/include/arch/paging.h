@@ -51,7 +51,21 @@ samos_err_t vmm_unmap(uint32_t va, uint32_t *pa);
 /* Parcours logiciel des tables : true si va est projetée. */
 bool vmm_translate(uint32_t va, uint32_t *pa, uint32_t *flags);
 
+/*
+ * K1.0-N3 — Projections dynamiques RÉELLES d'un cadre (adresse physique) :
+ * PTE présentes à va >= idmap_top, lues dans les tables publiées et scellées,
+ * SANS consulter le type ni le compteur du PMM (N3-I3). L'identité permanente
+ * n'est jamais comptée. Avant paging_init : 0 / false.
+ * Appelée par le PMM (pmm_free_frame, alloc_zeroed) : lecture seule, aucune
+ * allocation, aucun appel au PMM (pas de cycle).
+ */
+bool vmm_frame_dynamically_mapped(uint32_t frame);
+uint32_t vmm_dynamic_mappings(uint32_t frame);
+/* Retraits effectués SANS rendre de référence (incohérence PMM/PTE, U2). */
+uint32_t vmm_unmap_ref_anomalies(void);
+
 uint32_t paging_directory(void);       /* adresse physique du répertoire (CR3) */
+uint32_t paging_idmap_top(void);  /* K1.0-N3 : fin (exclue) de l'identité permanente */
 uint32_t paging_table_count(void);     /* tables de pages allouées */
 
 /* K0.7-P4d — Retire PTE_WRITE de la projection d'identité de [start, end)
@@ -81,6 +95,10 @@ struct paging_audit {
     uint32_t forbidden_tables;      /* répertoire ou table dans l'image ou la mémoire basse (sans le PMM) */
     uint32_t image_type_mismatch;   /* cadres de l'image dont le type PMM n'est pas KERNEL */
     uint32_t lowmem_allocatable;    /* cadres < 1 MiB de type FREE, ALLOCATED ou PAGETABLE */
+    /* K1.0-N3 (N3-I5), D(f) = projections dynamiques réelles de f (PTE à va >= idmap_top) : */
+    uint32_t mapped_type_mismatch;  /* cadres projetés (D >= 1) dont le type PMM n'est pas ALLOCATED */
+    uint32_t ref_mismatch;          /* cadres ALLOCATED avec refs < D (projection sans référence) */
+    uint32_t ref_surplus;           /* INFORMATIF : refs > D (autres références ou excès) ; n'échoue pas */
 };
 bool paging_audit(struct paging_audit *a);
 #if CONFIG_KTEST
