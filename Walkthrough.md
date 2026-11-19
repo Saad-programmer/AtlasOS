@@ -1974,3 +1974,29 @@ tests/tools/repro_selftest.sh
 | `tests/mutation/selftest.sh` | 15 situations conformes |
 | `make test-repro` | réussi |
 | `make -j8` depuis zéro | réussi |
+
+### K0.7-P4-CLOSE — Clôture documentaire de P4 (décision A du développeur)
+
+- **Objectif :** clôturer P4 **dans le périmètre strict de K0.7**, avec une acceptation explicite et conditionnelle des risques résiduels. Cette acceptation **ne signifie ni que le noyau est sécurisé, ni que les risques sont corrigés**.
+- **Branche :** `claude/k0.7-p4-close`, depuis `1873269` (revue P4f-E, elle-même sur `78b172b`, corrections P4f-D). `main` n'est pas modifié (`a50bead`).
+- **Fichiers :**
+  - `docs/review/K0.7-P4-closure.md` (créé) : objectifs, invariants I1 à I11, corrections D1 à D4 et N1, N2, N5, contre-expériences, preuves et limites, hypothèses de confiance, registre des risques acceptés (§7), conditions d'invalidation (§8) ;
+  - `docs/design/K1-readiness.md` (créé) : capacités réelles, conditions de passage à K1, progression proposée sans implémentation, comparaison de trois approches pour corriger N3, premier jalon K1.0 ;
+  - `Details.md` : §39 (théorie de P4) et note de K0.7 mise à jour ;
+  - `README.md` : état de K0.7 et de P4, tableau des composants actualisé (PMM à descripteurs et références, autotests), limitations (N3, fenêtre WP, coût), feuille de route.
+- **Code :** **aucune modification**. `git diff --stat 78b172ba HEAD -- kernel tests tools Makefile` est vide.
+- **N3 :** reste **ouvert**, accepté temporairement pour P4 et **bloquant** avant les projections dynamiques en production, les espaces d'adressage séparés ou toute isolation mémoire de K1.
+- **Observation (LOW, non corrigée, gel du code) :** `tests/qemu/cases.sh:42` est une ligne orpheline (`"serial:SAMOS: K0.6 boot complete"`) qui suit la fin de l'appel `run_case prod_refuses_test`. Le shell l'exécute comme une commande et affiche `command not found`. Elle est sans effet sur le verdict, car la même assertion figure déjà ligne 40. Elle est présente depuis `697dc01b`, donc aussi dans `main`. Il suffira de la supprimer lors d'un prochain jalon autorisé à modifier les bancs.
+- **Validation (2026-11-19, arbre gelé) :**
+
+| Commande | Résultat |
+|---|---|
+| `make clean && make test` | 186 `[PASS]`, 0 `[FAIL]` ; `QEMU: 77 cas, 77 reussis, 0 echecs` |
+| `make test-mutation` | `MUTATION: 66 mutations, 66 detectees, 0 non detectees ou invalides` |
+| `tests/mutation/selftest.sh` | `MUTATION-SELFTEST: 15 situations, toutes conformes` |
+| `make test-repro` | `REPRO: 2 images comparees, reproductibles` |
+| `make clean && make -j8` | réussi |
+| Moniteur QEMU, image de production, 128 MiB | `CR0=80010011` ; page 0 absente ; `0x100000-0x109000` en `-r-` (`.text`/`.rodata`) ; `0x10b000-0x10e000` en `-r-` (pages scellées) ; pages de garde `0x18f000`, `0x191000`, `0x196000` absentes ; `0x197000-0x1b8000` en `-r-` (répertoire et 32 tables) |
+
+- **Reproduction :** `git checkout claude/k0.7-p4-close && make clean && make test && make test-mutation`.
+- **Suite :** attendre la validation du développeur avant toute fusion dans `main`. K1 n'est pas commencé ; premier jalon proposé : K1.0 — Correction de N3.

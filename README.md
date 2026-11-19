@@ -44,21 +44,26 @@ Le but n'est pas d'assembler des bibliothèques existantes. Il s'agit de **compr
 | K0.4 | GDT, IDT, exceptions CPU | ✅ implémenté et vérifié |
 | K0.5 | PIC 8259, PIT, clavier PS/2, file circulaire | ✅ implémenté et vérifié |
 | K0.6 | Carte mémoire, allocateur physique, pagination, protections | ✅ implémenté et vérifié |
-| K0.7 | Durcissement : correction des défauts mémoire E1-E5, références des cadres, politique de `vmm_map`, canaris de pile, sentinelles et pages de garde des piles, outils de mutation et de reproductibilité | 🔶 **en cours** (non clôturé) ; état intégré dans `main` le 2026-11-18 à titre de **sauvegarde** |
+| K0.7 | Durcissement : correction des défauts mémoire E1-E5, références des cadres, politique de `vmm_map`, canaris de pile, sentinelles et pages de garde des piles, outils de mutation et de reproductibilité | 🔶 **en cours** : R1 et **P4 clôturés dans leur périmètre** ; K0.7 dans son ensemble **non clôturé** (décision du développeur) |
 
-La phase K0 (K0.1 à K0.6) est terminée ; sa revue se trouve dans [`docs/review/K0-review.md`](docs/review/K0-review.md). **K0.7 (sécurisation) est en cours**, sans nouvelle fonctionnalité. Son sous-jalon **R1 (durcissement des piles) est clôturé** : voir [`docs/review/K0.7-R1-closure.md`](docs/review/K0.7-R1-closure.md). Une clôture de jalon ne signifie pas que le noyau est sécurisé ; **P4** (tables de pages et structures critiques inscriptibles par l'identité) reste **non résolu**. Il est réduit par étapes : P4d a scellé l'IDT, les tables de gestionnaires et les racines du VMM ; P4e-1 fait passer toutes les écritures de PDE/PTE par un passage contrôlé (fenêtre CR0.WP) ; P4e-2 scelle le répertoire et les tables de pages (lecture seule dans l'identité). L'audit contradictoire P4f-A a relevé des défauts. Leur état au 2026-11-18 :
+La phase K0 (K0.1 à K0.6) est terminée ; sa revue se trouve dans [`docs/review/K0-review.md`](docs/review/K0-review.md). **K0.7 (sécurisation) est en cours**, sans nouvelle fonctionnalité. Ses sous-jalons clôturés, chacun **dans son périmètre** :
 
-| Défaut | État |
+- **R1** (durcissement des piles) : [`docs/review/K0.7-R1-closure.md`](docs/review/K0.7-R1-closure.md) ;
+- **P4** (protection des structures critiques et des tables de pages) : [`docs/review/K0.7-P4-closure.md`](docs/review/K0.7-P4-closure.md), décision A du développeur, avec **risques résiduels explicitement acceptés**.
+
+État de P4 :
+
+| Élément | État |
 |---|---|
-| D1 — alias obtenu par falsification du PMM | corrigé en P4f-B1, validé par le développeur |
-| D3 — substitution de PDE | corrigé en P4f-B2, validé par le développeur |
-| D4 — échecs de création des tables | corrigé en P4f-B3, validé par le développeur |
-| D2 — preuves d'INVLPG masquées sous QEMU | correction **implémentée** en P4f-B4 (commit `b664b41`), **en attente de validation par le développeur** ; matériel réel non testé |
-| P4f-C | **non commencé** |
+| IDT, gestionnaires, racines du VMM (P4d) ; répertoire et tables de pages (P4e-2) | en lecture seule dans l'identité ; écritures de PDE/PTE par le passage contrôlé `pt_gate_write` (fenêtre CR0.WP) |
+| D1 (alias par falsification du PMM), D3 (substitution de PDE), D4 (échecs de création des tables), D2 (preuves d'INVLPG masquées sous QEMU) | corrigés (P4f-B1 à B4) |
+| N1 (page de l'image publiée comme table), N2 (PDE vers `.text` ou l'IDT), N5 (audit aveugle) | corrigés (P4f-D), contre-vérifiés (P4f-E) |
+| **N3** (libération d'un cadre de données encore projeté, avec des références falsifiées) | **OUVERT** : accepté temporairement pour P4, **bloquant avant K1** (projections dynamiques en production, espaces d'adressage séparés) |
+| GDT/TSS inscriptibles ; NMI ou #MC pendant la fenêtre WP ; monoprocesseur ; matériel réel non testé | **risques acceptés, non corrigés** (registre : `K0.7-P4-closure.md` §7) |
 
-La GDT/TSS et la table du PMM restent inscriptibles.
+**Une clôture de jalon ne signifie pas que le noyau est sécurisé.** SAMOS n'est ni un système d'exploitation complet ni un système sécurisé : c'est un noyau d'étude, testé sous QEMU.
 
-**Intégration dans `main` (2026-11-18).** L'état de `claude/k0.7-hardening` a été intégré dans `main` par avance rapide, pour **sauvegarder** le travail. Une sauvegarde permanente existe en plus : la branche `backup/k0.7-pre-final-audit`. Cette intégration **n'est pas une clôture** : K0.7 reste en cours, P4 n'est pas clôturé, et le noyau n'est pas déclaré sécurisé ni terminé. Son état est suivi dans `Walkthrough.md`, `docs/design/` et [`docs/review/K0.7-R1g-audit.md`](docs/review/K0.7-R1g-audit.md). La phase K1 (x86-64, processus, ordonnanceur, appels système) n'est **pas commencée** et attend l'autorisation du développeur.
+**Branches.** `main` contient l'état sauvegardé au 2026-11-18 (`a50bead`). Les corrections P4f-D, la revue P4f-E et cette clôture se trouvent sur des branches de travail, en attente de la validation du développeur avant toute fusion. La phase **K1** (x86-64, processus, ordonnanceur, appels système) n'est **pas commencée** ; sa préparation, qui commence par la correction de N3, est décrite dans [`docs/design/K1-readiness.md`](docs/design/K1-readiness.md).
 
 ## 4. Vue d'ensemble de l'architecture
 
@@ -102,16 +107,16 @@ Tout le code spécifique au processeur se trouve dans `kernel/arch/i386/`. La mi
 | File circulaire | `kernel/lib/ringbuf.c` | SPSC sans verrou, indices libres, perte comptée |
 | Boucle d'inactivité | `kernel/core/kmain.c` | écho clavier, sommeil `sti; hlt` sans réveil perdu |
 | Carte mémoire | `kernel/mm/memmap.c` | analyse défensive de la carte E820/Multiboot (éléments malformés, tronqués, débordements), tri, repli `mem_lower/mem_upper` |
-| Allocateur physique | `kernel/mm/pmm_core.c`, `pmm.c` | bitmap 1 bit/cadre, next-fit, réservations prioritaires (mémoire basse, noyau, firmware, Multiboot), double libération détectée, cadres remis à zéro |
-| Pagination | `kernel/arch/i386/paging.c` | 32 bits, pages 4 KiB, identité sur la RAM gérée (≤ 1 GiB), page nulle et page de garde non projetées, `.text`/`.rodata` en lecture seule avec CR0.WP, `vmm_map/unmap/translate` avec INVLPG |
+| Allocateur physique | `kernel/mm/pmm_core.c`, `pmm.c` | table de descripteurs typés (FREE, RESERVED, KERNEL, ALLOCATED, PAGETABLE) avec compteur de références, next-fit, réservations prioritaires (mémoire basse, noyau, firmware, Multiboot), double libération et libération d'un cadre référencé refusées, cadres remis à zéro ; cadres de l'image et de la mémoire basse refusés indépendamment des descripteurs (K0.7-P4f-D) |
+| Pagination | `kernel/arch/i386/paging.c` | 32 bits, pages 4 KiB, identité sur la RAM gérée (≤ 1 GiB), page nulle et pages de garde non projetées, `.text`/`.rodata` en lecture seule avec CR0.WP ; K0.7-P4 : structures critiques, répertoire et tables scellés, passage contrôlé `pt_gate_write`, PDE à écriture unique, audit au démarrage ; `vmm_map/unmap/translate` (un seul espace d'adressage) avec INVLPG |
 | Fautes de page | `paging.c`, `probe.asm` | diagnostic contextuel (NULL, débordement de pile, écriture en lecture seule, hors RAM) ; sondes mémoire avec table de correction d'exception |
 | Arithmétique 64 bits | `kernel/lib/math64.c` | division 64/32 sans libgcc (division longue binaire) |
 | Bibliothèque minimale | `kernel/lib/string.c` | `memset`, `memcpy`, `memmove`, `memcmp`, `strlen`, `strnlen`, `strcmp`, `strncmp`, `strlcpy` |
-| Autotests noyau | `kernel/tests/` | 223 vérifications exécutées dans le noyau sous QEMU, plus 13 démarrages volontairement fatals, 1 test clavier interactif et 5 configurations de RAM |
+| Autotests noyau | `kernel/tests/` | image de test distincte : 727 vérifications en 17 suites, 6 modes isolés, des modes volontairement fatals et des configurations de RAM limites ; 77 cas QEMU, 66 mutations détectées (`make test`, `make test-mutation`) |
 
 ## 6. Composants en cours de développement
 
-Aucun : la phase K0 est terminée et en revue (voir `docs/review/K0-review.md`).
+K0.7 (sécurisation) : R1 et P4 clôturés dans leur périmètre ; la clôture de K0.7 dans son ensemble attend la décision du développeur.
 
 ## 7. Composants planifiés
 
@@ -252,20 +257,22 @@ Seuls des outils de développement standard sont utilisés : compilateur, assemb
 
 - PIC 8259 uniquement (pas d'APIC/IOAPIC) : monoprocesseur ; la file clavier repose sur l'ordonnancement mémoire d'un seul cœur x86.
 - Clavier : disposition US QWERTY uniquement ; IRQ parasites gérées mais non testées (non reproductibles sous QEMU).
-- NMI et Machine Check ne sont pas traités spécifiquement : ils mènent à une panique.
+- NMI et Machine Check ne sont pas traités spécifiquement : ils mènent à une panique ; pendant la fenêtre CR0.WP du passage, le gestionnaire s'exécute **sans protection en écriture** (risque accepté pour P4).
 - Pas de segments ni de code ring 3 (prévu en K1).
 - Le port série est en émission seule, par scrutation (pas d'IRQ 4, pas de réception).
 - Le journal n'est pas réentrant : les futurs gestionnaires d'IRQ ne devront pas journaliser.
 - **Pas de bit NX** (pagination 32 bits sans PAE) : les données du noyau sont exécutables ; W^X n'est réalisé que pour le code.
-- Projection en identité : seule la RAM sous 1 GiB est gérée ; toute la RAM est inscriptible par le noyau, sauf `.text`/`.rodata`, les structures scellées en P4d et, depuis P4e-2, le répertoire et les tables de pages (écrits seulement par la fenêtre CR0.WP du passage) ; la GDT/TSS et la table du PMM restent inscriptibles (risque P4, réduit) ; pas encore d'espaces d'adressage séparés ni de noyau *higher-half*.
+- Projection en identité : seule la RAM sous 1 GiB est gérée ; toute la RAM est inscriptible par le noyau, sauf `.text`/`.rodata`, les structures scellées en P4d, le répertoire et les tables de pages (écrits seulement par la fenêtre CR0.WP du passage) ; la GDT/TSS et la table du PMM restent inscriptibles ; pas encore d'espaces d'adressage séparés ni de noyau *higher-half*.
+- **N3 (ouvert) :** des références PMM falsifiées permettent de libérer puis de redistribuer un cadre de données encore projeté (fuite et corruption croisée). Aucun code de production n'utilise aujourd'hui `vmm_map`, mais c'est **bloquant avant K1**.
+- Les contrôles de P4 parcourent le répertoire : `vmm_map`/`vmm_unmap` sont nettement plus coûteux qu'en K0.6 (mesure sous QEMU seulement).
 - K0.7 : les canaris de pile ne protègent que les fonctions que Clang instrumente (11 en production), et seulement à leur retour ; les pages de garde des piles ne couvrent que 4 KiB ; un débordement de la pile de double faute se termine par un triple fault (voir `docs/review/K0.7-R1g-audit.md`).
-- Pas d'allocateur d'objets (`kmalloc`) ; l'allocateur physique n'a ni verrou ni compteur de références (monoprocesseur, appelé hors interruption).
-- Le code d'autotest et les modes de faute volontaire sont compilés dans le noyau (sélectionnés par la ligne de commande) : à exclure d'une future version de production.
+- Pas d'allocateur d'objets (`kmalloc`) ; l'allocateur physique n'a pas de verrou (monoprocesseur, appelé hors interruption).
+- Le code d'autotest et les modes de faute volontaire ne sont compilés que dans l'image de test (`build/samos-test.elf`) ; l'image de production (`build/samos.elf`) ne les contient pas (vérifié par `check_elf.sh`).
 - Testé uniquement sous QEMU. Sur un PC UEFI récent, le mode texte VGA ne sera pas disponible.
 
 ## 17. Feuille de route
 
-`K0.1 ✅ → K0.2 ✅ → K0.3 ✅ → K0.4 ✅ → K0.5 ✅ → K0.6 ✅ → revue K0 (livrée, en attente de décision) → (autorisation) K1 : x86-64, noyau higher-half, kmalloc → processus/ordonnanceur → appels système → IPC → VFS → pilotes → A0 (IA) → V0 (voix) → I0 (agent)`
+`K0.1 ✅ → … → K0.6 ✅ → K0.7 🔶 (R1 ✅, P4 ✅ dans son périmètre) → (autorisation) K1.0 : correction de N3 → K1 : décisions d'architecture, kmalloc, x86-64 / higher-half, espaces d'adressage, ring 3 → processus/ordonnanceur → appels système → IPC → VFS → pilotes → A0 (IA) → V0 (voix) → I0 (agent)` — détail : [`docs/design/K1-readiness.md`](docs/design/K1-readiness.md)
 
 ## 18. Documentation
 

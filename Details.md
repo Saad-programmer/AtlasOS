@@ -1695,7 +1695,9 @@ Ce mécanisme est aussi le **prototype** de l'accès sûr du noyau à la mémoir
 > - « `vmm_map` accepte n'importe quelle adresse physique » : seuls les cadres `ALLOCATED` sont acceptés, avec des droits `0` ou `PTE_WRITE` (E3) ;
 > - les piles disposent de canaris, de sentinelles et de trois pages de garde (sous-jalon **R1 clôturé**, `docs/review/K0.7-R1-closure.md`).
 >
-> Restent vrais : **pas de NX**, identité **entièrement inscriptible, tables de pages comprises (P4)**, GDT, IDT et TSS inscriptibles, PMM monoprocesseur sans verrou. Voir `docs/design/K0.7-*.md` et `docs/review/K0.7-R1g-audit.md`.
+> Restent vrais : **pas de NX**, GDT et TSS inscriptibles, PMM monoprocesseur sans verrou. Voir `docs/design/K0.7-*.md` et `docs/review/K0.7-R1g-audit.md`.
+>
+> **Mise à jour K0.7-P4 (clôturé dans son périmètre).** L'IDT, les gestionnaires, les racines du VMM, le répertoire et les tables de pages ne sont plus inscriptibles par l'identité (§39). Le risque N3 (libération d'un cadre encore projeté avec des références falsifiées) reste **ouvert**.
 
 ---
 
@@ -1733,6 +1735,77 @@ Avec une table de correction d'exception : l'accès est fait par une instruction
 
 **Q11. Pourquoi une projection en identité ? Quelles limites ?**
 Elle est simple : activer la pagination ne déplace rien, et le noyau accède directement aux cadres. Limites : seule la RAM projetée (≤ 1 Gio) est gérable, et l'espace bas est occupé par le noyau, ce qui empêche de donner aux programmes les mêmes adresses. Un noyau *higher-half* (au-dessus de `0xC0000000`, ou de `0xFFFF800000000000` en x86-64) résoudra ces deux points.
+
+
+## 39. Protection des structures critiques et des tables de pages (K0.7-P4)
+
+> **Statut :** P4 est clôturé **dans le périmètre de K0.7** (`docs/review/K0.7-P4-closure.md`), avec des risques résiduels explicitement acceptés. Ce n'est pas une preuve de sécurité générale.
+
+### 39.1 Le problème
+
+Avec une projection en identité, chaque cadre physique est accessible en écriture par le ring 0 à l'adresse virtuelle égale à son adresse physique. Les structures qui gouvernent la traduction et les interruptions (IDT, tables de gestionnaires, répertoire, tables de pages) sont donc **modifiables par une seule écriture fautive**. Modifier une PTE suffit à rendre `.text` inscriptible, ou à projeter n'importe quel cadre. P4 retire ces **alias inscriptibles permanents**.
+
+### 39.2 Principe : lecture seule et passage contrôlé
+
+- Les pages concernées sont projetées **sans W**. Avec CR0.WP = 1, le ring 0 lui-même faute en écrivant (SDM vol. 3A §4.6).
+- Une écriture légitime d'une PDE ou d'une PTE passe par `pt_gate_write` :
+  1. validation complète de la cible et de la valeur ;
+  2. masquage des IRQ ;
+  3. WP = 0 ;
+  4. **une** écriture de 32 bits, alignée, donc atomique pour le MMU ;
+  5. WP = 1 ;
+  6. restauration de IF.
+- Le code machine est vérifié par `check_elf.sh` : une seule instruction entre les deux écritures de CR0, pas d'appel.
+- **Pourquoi pas un alias inscriptible ou une projection temporaire ?** Ces approches laissent une table inscriptible en permanence, ou créent une dépendance circulaire (il faudrait une PTE pour écrire une PTE). La fenêtre WP n'ajoute aucune projection (`docs/design/K0.7-P4c-controlled-writes.md`).
+- **Limite :** `cli` ne masque ni la NMI ni le #MC. Leur gestionnaire s'exécuterait avec WP = 0. C'est prouvé par une injection sous GDB ; aujourd'hui, cela mène à une panique.
+
+### 39.3 La frontière de confiance : ne pas croire le PMM
+
+**Problème.** Les métadonnées du PMM (`g_meta`) sont des données RW. Si le VMM décide « ce cadre est une table » ou « ce cadre est projetable » sur leur seule foi, une écriture de 16 bits suffit à contourner P4 (défaut D1).
+
+**Correction : critères dérivés de sources protégées ou constantes.**
+
+| Critère | Source |
+|---|---|
+| structure de pagination | le répertoire actif et les cibles de ses PDE présentes (RO, à croissance seule) |
+| image du noyau | `[__kernel_start, __kernel_end)`, symboles de l'éditeur de liens |
+| mémoire basse | la constante de 1 MiB |
+
+Ces critères s'appliquent aux projections (D1), à la publication d'une PDE (D3, N2) et à l'allocation **avant** la remise à zéro (N1).
+
+**Raisonnement par induction.** Après `paging_init`, le répertoire est RO. Seul le passage l'écrit, et il refuse toute PDE qui n'est pas « absente vers table neuve, scellée, sans alias, hors de l'image ». L'ensemble des tables publiées ne fait donc que croître, sans doublon. Chaque table y est scellée et sans alias, et le critère de structure reste vrai pour chacune.
+
+### 39.4 Création transactionnelle d'une table
+
+Le cycle de vie d'une table est : FREE → PAGETABLE → remise à zéro → scellement (W retiré, INVLPG) → publication (PDE).
+- Les erreurs **ordinaires** (paramètres, droits, références saturées, mémoire épuisée) sont détectées **avant** l'allocation, sans effet.
+- Après l'allocation, tout refus révèle une **violation d'invariant**. Le cadre ne peut être ni rendu (sens unique du scellement) ni publié : le noyau s'arrête (D4).
+
+### 39.5 TLB : ce que les tests prouvent ou non
+
+Modifier une PTE n'invalide pas le TLB : INVLPG est nécessaire après un retrait de projection ou de droit (SDM vol. 3A §4.10.4.1). Une entrée P = 0 n'est jamais mise en cache ; l'INVLPG après la **création** d'une projection est donc optionnel (§4.10.4.3).
+
+QEMU vide tout le TLB à chaque changement de CR0.WP, ce qui masque un INVLPG oublié. Il faut donc trois niveaux de preuve distincts (D2) :
+- **structurelle :** le code machine, opérande et ordre compris ;
+- **comportementale isolée :** une PTE modifiée sans écriture de CR0 ;
+- **intégration :** une copie du noyau où le passage n'écrit plus CR0.
+
+Aucune n'est une validation sur processeur physique.
+
+### 39.6 Risque ouvert : N3
+
+Les références d'un cadre de **données** restent tenues dans `g_meta`. En les falsifiant, un cadre encore projeté peut être libéré puis redistribué : l'ancienne projection voit et modifie les données du nouveau propriétaire. En K0, aucun code de production n'utilise `vmm_map`, et toute la RAM est déjà inscriptible par l'identité : N3 n'y ajoute aucune capacité. En K1, avec des propriétaires distincts, c'est une faille d'**isolation**. Sa correction est la première condition de K1 (`docs/design/K1-readiness.md`).
+
+### 39.7 Questions de jury
+
+**Q1. Pourquoi ne pas simplement retirer W des tables et les modifier par un alias ?**
+Un alias inscriptible permanent est exactement ce que P4 supprime. Une projection temporaire exige d'écrire une PTE, donc une table inscriptible : c'est circulaire. La fenêtre CR0.WP ne crée aucune projection. Son coût est une fenêtre d'une instruction, pendant laquelle une NMI s'exécuterait sans protection en écriture.
+
+**Q2. En quoi la protection résiste-t-elle à des métadonnées PMM corrompues ?**
+Les décisions critiques n'utilisent pas `g_meta`, mais le répertoire RO et des constantes. Elles concernent les alias, les PDE et l'allocation d'un cadre de l'image ou de la mémoire basse. Les tests falsifient `g_meta` et vérifient le refus, sans effet de bord, octet par octet sous GDB pour l'allocation.
+
+**Q3. Les tests passent sous QEMU : le noyau est-il sûr ?**
+Non. Les tests prouvent des invariants précis dans des scénarios connus, sous QEMU, sur un seul processeur. Restent notamment : la GDT/TSS inscriptibles, la NMI pendant la fenêtre, N3, le matériel réel et le SMP (`K0.7-P4-closure.md` §7).
 
 ## Références
 
