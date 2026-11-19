@@ -440,12 +440,13 @@ mutant_mode seal_keeps_write kernel/arch/i386/paging.c \
     test=tablelife 37 \
     'KERNEL PANIC: memory management initialisation failed (-10)'
 # Contrôle d'erreur supprimé : l'épuisement du PMM n'est plus reconnu ; le
-# cadre 0 est traité comme une table, et son scellement est refusé.
+# cadre 0 est traité comme une table. Depuis K0.7-P4f-D, la seconde couche de
+# table_create le refuse (mémoire basse) avant le scellement.
 mutant_mode tl_enomem_check_removed kernel/arch/i386/paging.c \
     '        return SAMOS_ENOMEM;                    /* seule erreur ordinaire : aucun effet */' \
     '        (void)0;' \
     test=tablelife 37 \
-    'KERNEL PANIC: page-table creation: sealing refused (error -1)'
+    'KERNEL PANIC: page-table creation: frame belongs to the kernel image or low memory (error -10)'
 
 # M53-M58 — K0.7-P4f-B4 : invalidations du TLB (D2). Sous QEMU, la fenêtre
 # CR0.WP du passage vide le TLB : les autotests normaux ne voient aucun INVLPG
@@ -489,3 +490,60 @@ MUT_CMDLINE=test=tlbexp mutant tlbexp_invlpg_removed kernel/tests/test_tlb.c \
     '(void)0;' \
     35 \
     'new_frame_after_invlpg'
+
+# M59-M66 — K0.7-P4f-D : intégrité de l'image du noyau face à un PMM
+# falsifié (N1, N2, N5).
+# Contrôle de l'allocateur supprimé : en création de table, la page de la GDT
+# est remise à zéro, puis la seconde couche (table_create) arrête le noyau par
+# SON diagnostic, absent de la version saine (qui s'arrête dans le PMM).
+mutant_mode n1_alloc_check_removed kernel/mm/pmm.c \
+    '    if (why != 0) {' \
+    '    if (false && why != 0) {' \
+    test=n1gdt 37 \
+    'KERNEL PANIC: page-table creation: frame belongs to the kernel image or low memory'
+# Même suppression, allocation de DONNÉES : aucune seconde couche, la page de
+# test de l'image (motif connu) est distribuée (« NOT trapped »).
+mutant_mode n1_alloc_check_removed_data kernel/mm/pmm.c \
+    '    if (why != 0) {' \
+    '    if (false && why != 0) {' \
+    test=n1alloc 35 \
+    '[TEST] protected frame handed out NOT trapped'
+# Remise à zéro prématurée (avant le contrôle) : le refus survient encore,
+# mais l'empreinte affichée est celle d'une page nulle. (Mode n1alloc : sur
+# une vraie page de .data, le noyau s'arrêterait en silence, ce qui ne serait
+# pas une détection valide.)
+mutant_mode n1_premature_zeroing kernel/mm/pmm.c \
+    '    uint32_t phys = f << PAGE_SHIFT;' \
+    '    uint32_t phys = f << PAGE_SHIFT; memset((void *)(uintptr_t)phys, 0, PAGE_SIZE);' \
+    test=n1alloc 37 \
+    'refused before zeroing, page checksum 0x76efddc5'
+# Contrôle de publication supprimé dans le passage.
+MUT_CMDLINE=test=imageint mutant n2_gate_check_removed kernel/arch/i386/paging.c \
+    '        if (frame_never_table(t)) {' \
+    '        if (false && frame_never_table(t)) {' \
+    35 \
+    'text_pde_refused' \
+    'idt_pde_refused'
+# Passage contourné pour les PDE (aucune validation) : aussi détecté par N2.
+MUT_CMDLINE=test=imageint mutant n2_gate_bypassed kernel/arch/i386/paging.c \
+    'samos_err_t e = pt_gate_check(kind, va, value, &entry);' \
+    'samos_err_t e = (kind == PT_KIND_PDE) ? (entry = &g_pd[PD_INDEX(va)], SAMOS_OK) : pt_gate_check(kind, va, value, &entry);' \
+    35 \
+    'text_pde_refused' \
+    'lowmem_pde_refused'
+# Nouveaux contrôles d'audit supprimés (N5).
+MUT_CMDLINE=test=imageint mutant n5_audit_forbidden_blind kernel/arch/i386/paging.c \
+    'if ((g_pd[i] & PTE_PRESENT) && frame_never_table(g_pd[i] & PTE_FRAME)) {' \
+    'if (false && frame_never_table(g_pd[i] & PTE_FRAME)) {' \
+    35 \
+    'audit_sees_forbidden_table'
+MUT_CMDLINE=test=imageint mutant n5_audit_image_type_blind kernel/arch/i386/paging.c \
+    'if (pmm_core_type(p, f) != FRAME_KERNEL) {' \
+    'if (false) {' \
+    35 \
+    'audit_sees_image_type_mismatch'
+MUT_CMDLINE=test=imageint mutant n5_audit_lowmem_blind kernel/arch/i386/paging.c \
+    'if (t == FRAME_FREE || t == FRAME_ALLOCATED || t == FRAME_PAGETABLE) {' \
+    'if (false && t == FRAME_FREE) {' \
+    35 \
+    'audit_sees_lowmem_allocatable'

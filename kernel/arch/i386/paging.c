@@ -43,6 +43,7 @@ static samos_err_t pt_gate_write(enum pt_kind kind, uint32_t va, uint32_t value)
 static SAMOS_NOINLINE samos_err_t seal_table_frame(uint32_t table);
 static bool frame_has_foreign_alias(uint32_t frame);
 static bool frame_is_paging_structure(uint32_t frame);
+static bool frame_never_table(uint32_t frame);
 
 /* Table de pages couvrant va, ou 0 si le PDE est absent. Lecture seule : les
  * tables publiées sont en lecture seule dans l'identité depuis K0.7-P4e-2. */
@@ -115,6 +116,13 @@ static samos_err_t table_create(uint32_t va, uint32_t **out)
         return SAMOS_ENOMEM;                    /* seule erreur ordinaire : aucun effet */
     }
     /* À partir d'ici, le cadre est PAGETABLE : tout échec est fatal. */
+    /* K0.7-P4f-D (N1) — Seconde couche : l'allocateur refuse déjà, AVANT la
+     * remise à zéro, tout cadre de l'image ou de la mémoire basse (pmm.c,
+     * frame_protected_reason) ; ce contrôle ne peut donc échouer que si ce
+     * premier contrôle disparaît. */
+    if (frame_never_table(pt)) {
+        table_create_fatal("frame belongs to the kernel image or low memory", SAMOS_EPERM, va, pt);
+    }
     /* K0.7-P4f-B1 — Un cadre qui a DÉJÀ un alias hors identité ne devient
      * jamais une table : sous un PMM corrompu, un cadre projeté peut être
      * redistribué (D1, V2). */
@@ -292,6 +300,13 @@ static bool table_identity_sealed(uint32_t frame)
     return (pte & PTE_PRESENT) && (pte & PTE_FRAME) == frame && !(pte & PTE_WRITE);
 }
 
+/* K0.7-P4f-D (N2) — Cadre qui ne peut JAMAIS servir de table de pages :
+ * image du noyau ou mémoire basse (< 1 MiB). Bornes constantes, sans le PMM. */
+static bool frame_never_table(uint32_t frame)
+{
+    return frame < 0x100000u || frame_in_kernel_image(frame);
+}
+
 /* Cadre qui ne doit JAMAIS être projeté ailleurs que dans son identité. */
 static bool frame_alias_forbidden(uint32_t frame)
 {
@@ -367,6 +382,12 @@ static samos_err_t pt_gate_check(enum pt_kind kind, uint32_t va, uint32_t value,
          * pour toute table une fois publiée. */
         if (g_pd[PD_INDEX(va)] & PTE_PRESENT) {
             return SAMOS_EEXIST;
+        }
+        /* K0.7-P4f-D (N2) — Jamais une table dans l'image ni en mémoire
+         * basse : une page RO de l'image (.text, IDT) passerait sinon pour
+         * « scellée » (identité sans W) si son type PMM était falsifié. */
+        if (frame_never_table(t)) {
+            return SAMOS_EPERM;
         }
         if (frame_is_paging_structure(t)) {
             return SAMOS_EPERM;
@@ -581,6 +602,33 @@ bool paging_audit(struct paging_audit *a)
         }
     }
     a->unpublished = typed > published ? typed - published : 0;
+    /* K0.7-P4f-D (N5) — Identité PHYSIQUE des structures actives : aucune
+     * cible de PDE ni le répertoire dans l'image ou la mémoire basse (sans
+     * le PMM) ; cohérence entre les cadres protégés et le PMM : chaque cadre
+     * de l'image doit être KERNEL, aucun cadre de la mémoire basse ne doit
+     * être distribuable (FREE, ALLOCATED, PAGETABLE). Ces deux dernières
+     * vérifications détectent une falsification APRÈS coup ; la protection
+     * qui compte est le refus avant écriture dans l'allocateur (pmm.c). */
+    if (frame_never_table(pd)) {
+        a->forbidden_tables++;
+    }
+    for (uint32_t i = 0; i < 1024u; i++) {
+        if ((g_pd[i] & PTE_PRESENT) && frame_never_table(g_pd[i] & PTE_FRAME)) {
+            a->forbidden_tables++;
+        }
+    }
+    for (uint32_t f = ((uint32_t)(uintptr_t)__kernel_start >> PAGE_SHIFT);
+         f < ((uint32_t)(uintptr_t)__kernel_end >> PAGE_SHIFT) && f < p->nframes; f++) {
+        if (pmm_core_type(p, f) != FRAME_KERNEL) {
+            a->image_type_mismatch++;
+        }
+    }
+    for (uint32_t f = 0; f < (0x100000u >> PAGE_SHIFT) && f < p->nframes; f++) {
+        enum frame_type t = pmm_core_type(p, f);
+        if (t == FRAME_FREE || t == FRAME_ALLOCATED || t == FRAME_PAGETABLE) {
+            a->lowmem_allocatable++;
+        }
+    }
     /* K0.7-P4f-B2 — PDE en double (deux PDE vers une même table, ou PDE vers
      * le répertoire), sans le PMM. O(n²) sur les PDE présentes. */
     for (uint32_t i = 0; i < 1024u; i++) {
@@ -620,7 +668,8 @@ bool paging_audit(struct paging_audit *a)
         }
     }
     return a->writable == 0 && a->aliases == 0 && a->bad_pdes == 0 && a->unpublished == 0 &&
-           typed == published && a->foreign_aliases == 0 && a->struct_writable == 0 && a->dup_pdes == 0;
+           typed == published && a->foreign_aliases == 0 && a->struct_writable == 0 && a->dup_pdes == 0 &&
+           a->forbidden_tables == 0 && a->image_type_mismatch == 0 && a->lowmem_allocatable == 0;
 }
 
 #if CONFIG_KTEST

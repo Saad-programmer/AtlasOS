@@ -7,6 +7,7 @@
 #include <samos/kernel.h>
 #include <samos/log.h>
 #include <samos/multiboot.h>
+#include <samos/panic.h>
 #include <samos/pmm.h>
 #include <samos/string.h>
 
@@ -23,10 +24,15 @@ SAMOS_STATIC_ASSERT((PAGING_IDMAP_LIMIT >> PAGE_SHIFT) <= PMM_MAX_FRAMES,
                     "la table de descripteurs doit couvrir toute la RAM projetable");
 static frame_desc_t g_meta[PMM_MAX_FRAMES];
 static struct pmm g_pmm;
+/* K0.7-P4f-D — Carte mémoire du démarrage (g_memmap de mm.c, jamais modifiée
+ * après mm_init) : seconde source, DISTINCTE de g_meta, pour reconnaître la
+ * mémoire réservée par le microprogramme. */
+static const struct memmap *g_boot_map;
 
 samos_err_t pmm_init(const struct memmap *m, uint32_t limit_bytes)
 {
     samos_err_t e = pmm_core_init(&g_pmm, g_meta, PMM_MAX_FRAMES, limit_bytes >> PAGE_SHIFT, m);
+    g_boot_map = m;
     if (e != SAMOS_OK) {
         return e;
     }
@@ -52,6 +58,69 @@ samos_err_t pmm_init(const struct memmap *m, uint32_t limit_bytes)
     return e;
 }
 
+/*
+ * K0.7-P4f-D (N1, audit P4f-C) — Cadres JAMAIS distribuables, quel que soit
+ * leur descripteur. Une falsification de g_meta pouvait faire distribuer une
+ * page de l'image (GDT/TSS, .data, pile), REMISE À ZÉRO ci-dessous puis
+ * publiée comme table. Critères INDÉPENDANTS de g_meta, appliqués AVANT toute
+ * écriture dans le cadre :
+ *   1. image du noyau [__kernel_start, __kernel_end) : symboles de l'éditeur
+ *      de liens (constantes) ; la table des descripteurs elle-même y est ;
+ *   2. mémoire basse [0, 1 MiB) : constante (IVT, BDA, EBDA, VGA, ROM) ;
+ *   3. hors d'une région DISPONIBLE de la carte du démarrage, ou recouvrant
+ *      une région non disponible (même règle que pmm_core_init : toute autre
+ *      région l'emporte). Source : g_memmap, distincte de g_meta mais non
+ *      scellée (donnée RW de l'image) : critère plus faible que 1 et 2.
+ * Renvoie le motif, ou 0 si le cadre est distribuable.
+ */
+static const char *frame_protected_reason(uint32_t phys)
+{
+    if (phys < 0x100000u) {
+        return "low memory";
+    }
+    if (phys >= ((uint32_t)(uintptr_t)__kernel_start & ~(PAGE_SIZE - 1u)) &&
+        phys < (uint32_t)(uintptr_t)__kernel_end) {
+        return "kernel image";
+    }
+    if (g_boot_map != 0) {
+        uint64_t lo = phys, hi = (uint64_t)phys + PAGE_SIZE;
+        bool inside = false;
+        for (unsigned i = 0; i < g_boot_map->count; i++) {
+            const struct mem_region *r = &g_boot_map->r[i];
+            bool overlap = r->base < hi && lo < r->base + r->length;
+            if (!overlap) {
+                continue;
+            }
+            if (r->type != MULTIBOOT_MEMORY_AVAILABLE) {
+                return "firmware-reserved memory";
+            }
+            if (r->base <= lo && hi <= r->base + r->length) {
+                inside = true;
+            }
+        }
+        if (!inside) {
+            return "outside available memory";
+        }
+    }
+    return 0;
+}
+
+/* Empreinte FNV-1a de la page (lecture seule, par l'identité) : le
+ * diagnostic prouve que la page refusée n'a PAS été modifiée. Page nulle :
+ * jamais projetée, empreinte non calculée. */
+static uint32_t page_checksum(uint32_t phys)
+{
+    if (phys == 0) {
+        return 0;
+    }
+    const volatile uint8_t *b = (const volatile uint8_t *)(uintptr_t)phys;
+    uint32_t h = 2166136261u;
+    for (uint32_t i = 0; i < PAGE_SIZE; i++) {
+        h = (h ^ b[i]) * 16777619u;
+    }
+    return h;
+}
+
 /* K0.7-M2.3 : allocation typée commune ; le type est fixé AVANT que le cadre
  * ne quitte le PMM, il n'existe donc aucun instant où une table de pages
  * serait vue comme un cadre ALLOCATED libérable. */
@@ -62,6 +131,16 @@ static uint32_t alloc_zeroed(enum frame_type type)
         return 0;
     }
     uint32_t phys = f << PAGE_SHIFT;
+    /* K0.7-P4f-D (N1) — Contrôle AVANT la remise à zéro. Un cadre protégé ne
+     * peut être distribué que si g_meta est corrompue : violation
+     * d'invariant, arrêt déterministe. Le cadre n'est ni écrit ni rendu ;
+     * l'empreinte affichée permet de vérifier qu'il est intact. */
+    const char *why = frame_protected_reason(phys);
+    if (why != 0) {
+        panic("pmm: descriptor table corrupted: protected frame %p (%s) handed out as type %d; "
+              "refused before zeroing, page checksum 0x%08x",
+              (void *)(uintptr_t)phys, why, (int)type, page_checksum(phys));
+    }
     /* Remise à zéro : un cadre libéré peut contenir des données d'un ancien
      * propriétaire (fuite d'information) ou de vieilles entrées de table de
      * pages (projection fantôme). Accès par l'identité : la mémoire gérée est

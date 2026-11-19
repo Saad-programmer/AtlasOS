@@ -376,6 +376,40 @@ run_case tlbvmm "test=tlbvmm" 33 \
     "serial:[TEST] suite K0.7 P4f-B4 VMM TLB coherence (integration) done:" \
     "serial:[TEST] ALL TESTS PASSED" "![FAIL]" "!KERNEL PANIC"
 
+# K0.7-P4f-D — Intégrité de l'image du noyau (N1, N2, N5). imageint : le
+# passage refuse une PDE vers .text, l'IDT, la GDT ou la mémoire basse, même
+# typées PAGETABLE ; l'audit signale table interdite, type d'image falsifié,
+# mémoire basse distribuable.
+run_case imageint "test=imageint" 33 \
+    "serial:[TEST] suite K0.7 P4f-D kernel image integrity (isolated) done:" \
+    "serial:[TEST] N5 audit: forbidden_tables=1 image_type_mismatch=1 lowmem_allocatable=1" \
+    "serial:[TEST] ALL TESTS PASSED" "![FAIL]" "!KERNEL PANIC"
+# N1 : un cadre protégé marqué FREE est refusé par l'allocateur AVANT la
+# remise à zéro (arrêt déterministe). Pages stables (GDT, .data) : empreinte
+# identique avant et dans le diagnostic. Pile active et mémoire VGA (écrites
+# légitimement entre les deux mesures) : empreinte différente de celle d'une
+# page remise à zéro (0x76efddc5).
+for n1 in "n1gdt:kernel image:same" "n1data:kernel image:same" "n1alloc:kernel image:same" \
+          "n1stack:kernel image:nonzero" "n1low:low memory:nonzero"; do
+    IFS=: read -r m why chk <<<"$n1"
+    run_case "$m" "test=$m" 37 \
+        "serial:KERNEL PANIC: pmm: descriptor table corrupted: protected frame 0x" \
+        "serial:($why) handed out as type" \
+        "serial:refused before zeroing, page checksum 0x" \
+        "!protected frame handed out NOT trapped" \
+        "!preconditions not met" \
+        "!RECURSIVE PANIC" "!DOUBLE FAULT"
+    total=$((total + 1))
+    before=$(tr -d '\r' < "$OUT/$m.serial.log" 2>/dev/null | sed -n 's/.*marked FREE (PMM lies: 1), page checksum \(0x[0-9a-f]*\),.*/\1/p' | head -1)
+    after=$(tr -d '\r' < "$OUT/$m.serial.log" 2>/dev/null | sed -n 's/.*refused before zeroing, page checksum \(0x[0-9a-f]*\).*/\1/p' | head -1)
+    if [ -n "$before" ] && [ -n "$after" ] && { { [ "$chk" = same ] && [ "$before" = "$after" ]; } ||
+                                                 { [ "$chk" = nonzero ] && [ "$after" != 0x76efddc5 ]; }; }; then
+        echo "[PASS] ${m}_page_intact (avant $before, refus $after)"; passed=$((passed + 1))
+    else
+        echo "[FAIL] ${m}_page_intact (avant ${before:-absent}, refus ${after:-absent}, regle $chk)"; fail=1
+    fi
+done
+
 # K0.7-R1d — Sentinelles de S2 : un mot sentinelle (le mot 2) est altéré, puis
 # une vraie #DF est provoquée. La tâche #DF doit le signaler (masque 0x4) et
 # paniquer avec un message identifiable ; aucune panique récursive.

@@ -182,6 +182,11 @@ void ktest_run_all(void)
             ktest_suite_tlb_vmm();
             finish();
         }
+        /* K0.7-P4f-D — Mode ISOLÉ : intégrité de l'image du noyau (N2, N5). */
+        if (strcmp(mode, "imageint") == 0) {
+            ktest_suite_image_integrity();
+            finish();
+        }
         if (ktest_fatal_mode(mode)) {
             kprintf("[TEST] fatal mode '%s' returned: fault not raised\n", mode);
             qemu_exit(QEMU_EXIT_FAILURE);

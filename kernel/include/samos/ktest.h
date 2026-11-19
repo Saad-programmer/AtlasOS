@@ -54,6 +54,8 @@ void ktest_table_seal_refused(void); /* K0.7-P4f-B3, test=tcseal (doit finir en 
 void ktest_table_pde_refused(void); /* K0.7-P4f-B3, test=tcpde (doit finir en panic) */
 void ktest_suite_tlb_experiment(void); /* K0.7-P4f-B4, mode isolé test=tlbexp */
 void ktest_suite_tlb_vmm(void);     /* K0.7-P4f-B4, mode isolé test=tlbvmm */
+void ktest_suite_image_integrity(void); /* K0.7-P4f-D, mode isolé test=imageint */
+void ktest_image_steal(const char *mode); /* K0.7-P4f-D, test=n1gdt|n1data|n1stack|n1alloc|n1low (panic) */
 void ktest_pt_sealed_write(const char *what); /* K0.7-P4e-2, test=sealpd|sealpt|sealnewpt */
 void ktest_sealed_write(const char *what); /* K0.7-P4d, test=sealidt|sealhandlers|sealvmm */
 #define KTEST_S2_PREFILL 0x5F2A11EDu

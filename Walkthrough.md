@@ -1941,3 +1941,36 @@ tests/tools/repro_selftest.sh
   - P4f-C non commencé ;
   - K1 non commencé.
 - **Branches :** aucune branche supprimée (`claude/k0.7-hardening`, `claude/trusting-lovelace-x7fiip`, `backup/k0.7-pre-final-audit` conservées).
+
+### K0.7-P4f-D — Intégrité des cadres de l'image du noyau (correction de N1, N2, N5)
+
+- **Document :** `docs/review/K0.7-P4f-D-kernel-image-integrity.md`.
+- **Branche :** `claude/k0.7-p4f-d`, depuis `f3345ecc` (audit P4f-C) ; `main` non modifié.
+- **Reproduction** (copie de `f3345ecc`) :
+  - GDT/TSS, `.data`, pile et VGA marquées FREE étaient remises à zéro puis distribuées ou publiées comme tables. Issues : triple fault, corruption silencieuse, panique fortuite ;
+  - le passage acceptait une PDE vers `.text` ou l'IDT typées PAGETABLE.
+- **Corrections :**
+  - `pmm.c` (`alloc_zeroed`) : avant la remise à zéro, refus sans `g_meta` des cadres de l'image (bornes de l'éditeur de liens), de la mémoire basse (< 1 MiB) et des cadres hors d'une région disponible de la carte du démarrage. Le refus est une panique déterministe, avec l'empreinte de la page ;
+  - `table_create` : seconde couche, fatale ;
+  - `pt_gate_check` : refus d'une PDE vers l'image ou la mémoire basse ;
+  - `paging_audit` : `forbidden_tables`, `image_type_mismatch` et `lowmem_allocatable`.
+- **Tests :**
+  - mode isolé `test=imageint` (12 vérifications) ;
+  - modes destructifs `n1gdt`, `n1data`, `n1alloc`, `n1stack`, `n1low`. Le banc vérifie le diagnostic et l'intégrité de la page : même empreinte avant et au refus, ou, pour la pile active et la VGA, une empreinte différente de celle d'une page nulle ;
+  - 77 cas QEMU.
+- **Mutations :**
+  - M59-M66 ajoutées ;
+  - M52 recalée : son diagnostic vient désormais de la seconde couche.
+- **Limites :**
+  - le critère « carte du démarrage » n'est pas testé (aucune région réservée dans la mémoire gérée sous QEMU) ;
+  - N3, N4, GDT/TSS et NMI restent ouverts ;
+  - K0.7 n'est pas clôturé.
+- **Validation :**
+
+| Commande | Résultat |
+|---|---|
+| `make clean && make test` | 186 `[PASS]`, 0 `[FAIL]`, 77 cas QEMU sur 77 |
+| `make test-mutation` | 66 mutations sur 66 |
+| `tests/mutation/selftest.sh` | 15 situations conformes |
+| `make test-repro` | réussi |
+| `make -j8` depuis zéro | réussi |

@@ -104,6 +104,9 @@ bool ktest_fatal_mode(const char *mode)
         ktest_pt_sealed_write(mode);           /* K0.7-P4e-2 : doit finir en panic */
     } else if (strcmp(mode, "pdesteal") == 0) {
         ktest_pde_steal();                     /* K0.7-P4f-B2 : doit finir en panic */
+    } else if (strcmp(mode, "n1gdt") == 0 || strcmp(mode, "n1data") == 0 || strcmp(mode, "n1stack") == 0 ||
+               strcmp(mode, "n1alloc") == 0 || strcmp(mode, "n1low") == 0) {
+        ktest_image_steal(mode);               /* K0.7-P4f-D : doit finir en panic */
     } else if (strcmp(mode, "tablealias") == 0) {
         ktest_table_alias();                   /* K0.7-P4f-B3 : doit finir en panic */
     } else if (strcmp(mode, "tcseal") == 0) {

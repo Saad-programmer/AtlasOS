@@ -77,6 +77,10 @@ struct paging_audit {
     uint32_t foreign_aliases;   /* alias hors identité d'un cadre de pagination publié ou de l'image */
     uint32_t struct_writable;   /* cadre de pagination publié dont l'identité porte W */
     uint32_t dup_pdes;          /* K0.7-P4f-B2 : PDE vers le répertoire ou vers une table déjà désignée */
+    /* K0.7-P4f-D (N5) : */
+    uint32_t forbidden_tables;      /* répertoire ou table dans l'image ou la mémoire basse (sans le PMM) */
+    uint32_t image_type_mismatch;   /* cadres de l'image dont le type PMM n'est pas KERNEL */
+    uint32_t lowmem_allocatable;    /* cadres < 1 MiB de type FREE, ALLOCATED ou PAGETABLE */
 };
 bool paging_audit(struct paging_audit *a);
 #if CONFIG_KTEST
