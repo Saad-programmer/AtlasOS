@@ -651,3 +651,52 @@ MUT_CMDLINE=test=n3 mutant n3_audit_type_mismatch_blind kernel/arch/i386/paging.
     35 \
     'n3_i5_type_free_seen' \
     'n3_i5_r4_type_seen'
+
+# M80-M85 — K1.0-N3-TEST-CLOSE : lacunes relevées par la contre-vérification
+# (docs/review/K1.0-N3-final-verification.md, sondes X1 à X4, X9, X10).
+# X1 : U2 trop strict (> au lieu de >=) : le retrait COHÉRENT ne rend plus sa
+# référence. Défaut distinct de n3_unmap_consumes_other_ref (sens opposé).
+MUT_CMDLINE=test=n3 mutant n3_unmap_strict_gt kernel/arch/i386/paging.c \
+    'pmm_refs(frame) >= real && real != 0;' \
+    'pmm_refs(frame) > real && real != 0;' \
+    35 \
+    'n3_i4_last_unmap_releases'
+# X2 : D relevé APRÈS l'effacement (la projection retirée n'est plus comptée) :
+# en déficit, la référence de la projection restante est consommée.
+MUT_CMDLINE=test=n3 mutant n3_unmap_count_after_removal kernel/arch/i386/paging.c \
+    'uint32_t real = dyn_mapping_count(frame, 0u);' \
+    'uint32_t real = dyn_mapping_count(frame, 0u) - 1u;' \
+    35 \
+    'n3_i4_other_ref_kept'
+# X3 : pmm_unref AVANT l'INVLPG (une seule instruction invlpg, appel au PMM
+# placé avant elle). Invisible aux autotests sous QEMU (vidage du TLB par la
+# fenêtre CR0.WP) : seul le contrôle du code machine le détecte, par la règle
+# d'ordre de vmm_unmap.
+mutant_tool n3_unmap_unref_before_invlpg kernel/arch/i386/paging.c \
+    '    cpu_invlpg((const void *)(uintptr_t)va);    /* vmm_unmap : avant pmm_unref */' \
+    '    if (release_ref) { samos_err_t e0 = pmm_unref(frame); KASSERT(e0 == SAMOS_OK); } release_ref = false; cpu_invlpg((const void *)(uintptr_t)va);' \
+    'tools/check_elf.sh build/samos.elf --production' \
+    'vmm_unmap:invlpg-apres-pmm_unref'
+# X4 : déduplication de l'audit supprimée : ref_mismatch compte une anomalie
+# par PTE (3 pour un cadre à 3 projections) au lieu d'une par cadre.
+MUT_CMDLINE=test=n3 mutant n3_audit_counts_per_pte kernel/arch/i386/paging.c \
+    'if (frame_alias_forbidden(frame) || dyn_first_slot(frame) != ((i << 10) | j)) {' \
+    'if (frame_alias_forbidden(frame) || (dyn_first_slot(frame) & 0u) != 0) {' \
+    35 \
+    'n3_i5_ref_mismatch_per_frame'
+# X9 : l'oracle ignore la dernière PTE (index 1023) de chaque table.
+MUT_CMDLINE=test=n3 mutant n3_scan_skips_last_pte kernel/arch/i386/paging.c \
+    "for (uint32_t j = 0; j < 1024u; j++) {    /* N3 : jusqu'à la PTE 1023 incluse */" \
+    'for (uint32_t j = 0; j < 1023u; j++) {' \
+    35 \
+    'n3_x9_last_pte_counted' \
+    'n3_x9_last_pte_free_refused' \
+    'n3_x9_last_pte_not_reallocated'
+# X10 : l'oracle ignore la dernière PDE (1023).
+MUT_CMDLINE=test=n3 mutant n3_scan_skips_last_pde kernel/arch/i386/paging.c \
+    'for (uint32_t i = PD_INDEX(g_idmap_top); i < 1024u; i++) {    /* N3 : depuis la PDE de la frontière */' \
+    'for (uint32_t i = PD_INDEX(g_idmap_top); i < 1023u; i++) {' \
+    35 \
+    'n3_x10_last_pde_counted' \
+    'n3_x10_last_pde_free_refused' \
+    'n3_x10_last_pde_not_zeroed'

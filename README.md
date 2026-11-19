@@ -112,7 +112,7 @@ Tout le code spécifique au processeur se trouve dans `kernel/arch/i386/`. La mi
 | Fautes de page | `paging.c`, `probe.asm` | diagnostic contextuel (NULL, débordement de pile, écriture en lecture seule, hors RAM) ; sondes mémoire avec table de correction d'exception |
 | Arithmétique 64 bits | `kernel/lib/math64.c` | division 64/32 sans libgcc (division longue binaire) |
 | Bibliothèque minimale | `kernel/lib/string.c` | `memset`, `memcpy`, `memmove`, `memcmp`, `strlen`, `strnlen`, `strcmp`, `strncmp`, `strlcpy` |
-| Autotests noyau | `kernel/tests/` | image de test distincte : 727 vérifications en 17 suites, 6 modes isolés, des modes volontairement fatals et des configurations de RAM limites ; 77 cas QEMU, 66 mutations détectées (`make test`, `make test-mutation`) |
+| Autotests noyau | `kernel/tests/` | image de test distincte : 727 vérifications en 17 suites, 7 modes isolés (dont `n3`, K1.0), des modes volontairement fatals et des configurations de RAM limites ; 84 cas QEMU, 85 mutations détectées (`make test`, `make test-mutation`) |
 
 ## 6. Composants en cours de développement
 

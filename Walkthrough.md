@@ -2046,3 +2046,31 @@ tests/tools/repro_selftest.sh
 
 - **Statut :** N3-I1, I2, I3 et I5 sont satisfaits dans le modèle actuel ; N3-I4 l'est pour les incohérences du cadre projeté, mais pas sous une table au type falsifié (refus fermé de P4). **En attente de validation** ; K1.0 n'est pas déclaré terminé.
 - **Reproduction :** `git checkout claude/k1.0-n3-implement && make clean && make test && make test-mutation`.
+
+### K1.0-N3-VERIFY et K1.0-N3-TEST-CLOSE — Contre-vérification et fermeture des lacunes de tests
+
+- **VERIFY** (branche `claude/k1.0-n3-verify`, commit `8a834c2`, rapport seul) :
+  - preuve de U2 (`refs' ≥ min(refs, D − 1)`, D relevé avant l'effacement) ;
+  - frontières et refus avant destruction (GDB) ;
+  - 13 sondes jetables : X9 (dernière PTE) et X10 (dernière PDE) **non détectées** par les bancs ;
+  - décision B.
+- **TEST-CLOSE** (branche `claude/k1.0-n3-test-close`, depuis `8a834c2`) :
+  - `kernel/tests/test_n3.c` : scénarios X9 (`0xD13FF000`), X10 (`0xFFC00000`) et X4 (3 projections, `refs` = 1), avec 17 assertions nommées ;
+  - `kernel/arch/i386/paging.c` : un commentaire d'ancrage seulement (code machine et sections chargées identiques à `04c08f7`) ;
+  - `tests/mutation/cases.sh` : 6 mutations (X1, X2, X3, X4, X9, X10), soit 85 au total ;
+  - documentation : explication du coût fixe corrigée dans `docs/review/K1.0-N3-implementation.md` et dans `Details.md` §40.5 (parcours des PDE au-delà de l'identité, et pas seulement la table de la frontière) ; `README.md` ; `docs/review/K1.0-N3-final-verification.md` §11.
+- **Incident :** la mutation X2 visait d'abord aussi `n3_i4_last_unmap_releases`, qui n'échoue pas sous X2 (constaté sur une copie). Seule `n3_i4_other_ref_kept` est retenue.
+- **Validation (arbre gelé, 2026-11-19) :**
+
+| Commande | Résultat |
+|---|---|
+| `make clean && make test` | 193 `[PASS]`, 0 `[FAIL]` ; `QEMU: 84 cas, 84 reussis, 0 echecs` |
+| `make test-mutation` | `MUTATION: 85 mutations, 85 detectees, 0 non detectees ou invalides` |
+| `tests/mutation/selftest.sh` | `MUTATION-SELFTEST: 15 situations, toutes conformes` |
+| `make test-repro` | `REPRO: 2 images comparees, reproductibles` |
+| `make clean && make -j8` | réussi |
+| `check_elf.sh` production / test | 31 / 29 `[PASS]`, 0 `[FAIL]` |
+| mode `n3` à 16M, 128M et 1500M | 56 vérifications, 0 échec |
+| moniteur QEMU, production | `CR0=80010011`, cartographie inchangée |
+
+- **Statut :** recommandation A (intégration possible), **en attente de l'autorisation explicite** du développeur. K1.0 n'est pas déclaré terminé avant cette décision ; K0.7 n'est pas clôturé.

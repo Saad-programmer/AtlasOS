@@ -1855,7 +1855,7 @@ Dans `alloc_zeroed`, le cadre a déjà quitté l'état FREE (`pmm_core_alloc_as`
 
 ### 40.5 Coût
 
-L'oracle lit 1 024 PTE par table présente au-delà de `idmap_top` : son coût est O(T) par appel. Sous TCG, avec 1 000 couples `alloc` + `free`, on mesure ×2,7 sans table dynamique (la table de la frontière est toujours lue), ×6,7 avec 8 tables et ×22,7 avec 32. Une structure scellée de comptes par cadre (approche B) donnerait O(1), au prix d'une nouvelle structure de confiance et d'une refonte du passage (deux écritures par fenêtre WP). C'est une décision d'architecture, renvoyée à K1.4.
+L'oracle lit 1 024 PTE par table présente au-delà de `idmap_top` : son coût est O(T) par appel. Sous TCG, avec 1 000 couples `alloc` + `free`, on mesure environ ×2,7 sans table dynamique, ×6,7 avec 8 tables et ×22,7 avec 32. Le coût fixe vient principalement du parcours des PDE au-delà de l'identité (768 à 993 lectures par appel, deux appels par couple) ; la table de la frontière, lue en entier quand `idmap_top` n'est pas multiple de 4 MiB, n'en ajoute qu'une part (mesure à 1500 MiB, `docs/review/K1.0-N3-final-verification.md` §6). Une structure scellée de comptes par cadre (approche B) donnerait O(1), au prix d'une nouvelle structure de confiance et d'une refonte du passage (deux écritures par fenêtre WP). C'est une décision d'architecture, renvoyée à K1.4.
 
 ### 40.6 Limites
 

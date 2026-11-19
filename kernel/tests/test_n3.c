@@ -82,6 +82,57 @@ static bool audit(struct paging_audit *a)
     return paging_audit(a);
 }
 
+/*
+ * K1.0-N3-TEST-CLOSE — Borne de parcours de l'oracle (X9 : dernière PTE d'une
+ * table ; X10 : dernière PDE). Un cadre est projeté à `va` (adresse vérifiée
+ * libre au préalable), rempli d'un motif, puis son compteur est FALSIFIÉ à 0 :
+ * seul l'oracle peut alors refuser la libération et la réattribution. Si
+ * l'oracle manque cette PTE (mutation), la libération réussit, le cadre est
+ * redistribué (hint forcé sur lui) et remis à zéro : assertions dédiées.
+ */
+struct n3_bound {
+    bool mapped, counted, free_refused, not_reallocated, data_intact, cleanup;
+};
+
+static struct n3_bound n3_bound_probe(uint32_t va, uint32_t tag)
+{
+    struct n3_bound r = { 0 };
+    const struct pmm *p = pmm_state();
+    uint32_t f = pmm_alloc_frame(), pa = 0, fl = 0;
+    if (f == 0 || vmm_translate(va, 0, 0)) {
+        return r;                               /* adresse occupée ou mémoire épuisée : tout échoue */
+    }
+    r.mapped = vmm_map(va, f, PTE_WRITE) == SAMOS_OK && vmm_translate(va, &pa, &fl) && pa == f &&
+               (fl & PTE_PRESENT) && pmm_refs(f) == 1;
+    if (!r.mapped) {
+        return r;
+    }
+    fill(va, tag);
+    r.counted = vmm_frame_dynamically_mapped(f) && vmm_dynamic_mappings(f) == 1;
+    forge(f, FRAME_ALLOCATED, 0);               /* refs falsifié : seul l'oracle protège */
+    frame_desc_t d = desc(f);
+    uint32_t fc = p->free_count;
+    r.free_refused = pmm_free_frame(f) == SAMOS_EBUSY && desc(f) == d && p->free_count == fc;
+    /* Réattribution : le next-fit est pointé sur f. Cadre non FREE : un autre
+     * cadre est rendu ; si f avait été libéré à tort, il serait rendu, remis à
+     * zéro. Sous la version saine, aucun arrêt (f n'est jamais candidat). */
+    pmm_rw()->hint = f >> 12;
+    uint32_t g = pmm_alloc_frame();
+    r.not_reallocated = g != 0 && g != f;
+    r.data_intact = holds(va, tag);
+    if (g != 0 && g != f) {
+        (void)pmm_free_frame(g);
+    }
+    /* Retrait (U2 : refs falsifié, pas de unref), puis libération. Sous une
+     * mutation, f peut avoir été redistribué : on le rend dans tous les cas. */
+    r.cleanup = vmm_unmap(va, 0) == SAMOS_OK && !vmm_translate(va, 0, 0) && pmm_refs(f) == 0 &&
+                pmm_free_frame(f) == SAMOS_OK;
+    if (g == f) {
+        (void)pmm_free_frame(f);
+    }
+    return r;
+}
+
 void ktest_suite_n3(void)
 {
     ktest_suite("K1.0 N3 mapped frames vs PMM metadata (isolated)");
@@ -255,6 +306,79 @@ void ktest_suite_n3(void)
         forge(r, FRAME_ALLOCATED, 0);           /* restauration : plus aucune projection */
         KTEST_CHECK(pmm_free_frame(r) == SAMOS_OK);
     }
+
+    /* --- K1.0-N3-TEST-CLOSE : bornes de parcours de l'oracle (X9, X10) --- */
+    struct n3_bound last_pte = n3_bound_probe(0xD13FF000u, 0x1A570000u);   /* PDE 0x344, PTE 1023 */
+    bool n3_x9_last_pte_mapped = last_pte.mapped;
+    KTEST_CHECK(n3_x9_last_pte_mapped);
+    bool n3_x9_last_pte_counted = last_pte.counted;
+    KTEST_CHECK(n3_x9_last_pte_counted);
+    bool n3_x9_last_pte_free_refused = last_pte.free_refused;
+    KTEST_CHECK(n3_x9_last_pte_free_refused);
+    bool n3_x9_last_pte_not_reallocated = last_pte.not_reallocated;
+    KTEST_CHECK(n3_x9_last_pte_not_reallocated);
+    bool n3_x9_last_pte_data_intact = last_pte.data_intact;
+    KTEST_CHECK(n3_x9_last_pte_data_intact);
+    bool n3_x9_last_pte_cleanup = last_pte.cleanup;
+    KTEST_CHECK(n3_x9_last_pte_cleanup);
+    /* Dernière PDE (1023) : aucune réservation dans ce noyau (pas de projection
+     * récursive, aucun MMIO projeté ; les adresses physiques hautes comme
+     * 0xFEE00000 ne concernent pas l'espace VIRTUEL). PTE 0 de cette table,
+     * pour distinguer X10 de X9 ; pas 0xFFFFF000 (dernière page de l'espace). */
+    const uint32_t vlpd = 0xFFC00000u;
+    const volatile uint32_t *pd = (const volatile uint32_t *)(uintptr_t)paging_directory();
+    bool lpd_free_before = !(pd[vlpd >> 22] & PTE_PRESENT);
+    struct n3_bound last_pde = n3_bound_probe(vlpd, 0x1A5D0000u);
+    uint32_t lpde = pd[vlpd >> 22], lpt = lpde & PTE_FRAME, lpt_flags = 0, lpt_pa = 0;
+    bool lpt_ro = vmm_translate(lpt, &lpt_pa, &lpt_flags) && lpt_pa == lpt && !(lpt_flags & PTE_WRITE);
+    bool n3_x10_va_valid = lpd_free_before && vlpd >= top && (vlpd >> 22) == 1023u;
+    KTEST_CHECK(n3_x10_va_valid);
+    bool n3_x10_last_pde_mapped = last_pde.mapped;
+    KTEST_CHECK(n3_x10_last_pde_mapped);
+    bool n3_x10_last_pde_counted = last_pde.counted;
+    KTEST_CHECK(n3_x10_last_pde_counted);
+    bool n3_x10_last_pde_free_refused = last_pde.free_refused;
+    KTEST_CHECK(n3_x10_last_pde_free_refused);
+    bool n3_x10_last_pde_not_zeroed = last_pde.not_reallocated && last_pde.data_intact;
+    KTEST_CHECK(n3_x10_last_pde_not_zeroed);
+    /* P4 : PDE conforme (P | W, rien d'autre), table scellée (identité sans W),
+     * jamais projetée dynamiquement ; audit sans écart. */
+    bool lpd_audit = audit(&a);
+    bool n3_x10_p4_protections_kept = (lpde & 0xFFFu & ~(uint32_t)PTE_ACCESSED) == (PTE_PRESENT | PTE_WRITE) &&
+                                      lpt_ro && !vmm_frame_dynamically_mapped(lpt) && lpd_audit;
+    KTEST_CHECK(n3_x10_p4_protections_kept);
+    bool n3_x10_last_pde_cleanup = last_pde.cleanup;
+    KTEST_CHECK(n3_x10_last_pde_cleanup);
+    kprintf("[TEST] N3 bounds: last PTE va 0x%08x counted=%d free_refused=%d; last PDE va 0x%08x (PDE 0x%08x) "
+            "counted=%d free_refused=%d\n", 0xD13FF000u, (int)last_pte.counted, (int)last_pte.free_refused,
+            vlpd, lpde, (int)last_pde.counted, (int)last_pde.free_refused);
+
+    /* --- K1.0-N3-TEST-CLOSE (X4) : trois projections, un déficit, UNE anomalie --- */
+    const uint32_t VX[3] = { 0xD1010000u, 0xD1011000u, 0xD1012000u };
+    uint32_t tr = pmm_alloc_frame();
+    bool x4_free_vas = !vmm_translate(VX[0], 0, 0) && !vmm_translate(VX[1], 0, 0) && !vmm_translate(VX[2], 0, 0);
+    bool x4_mapped = tr != 0 && x4_free_vas && vmm_map(VX[0], tr, PTE_WRITE) == SAMOS_OK &&
+                     vmm_map(VX[1], tr, 0) == SAMOS_OK && vmm_map(VX[2], tr, 0) == SAMOS_OK &&
+                     vmm_dynamic_mappings(tr) == 3 && pmm_refs(tr) == 3;
+    KTEST_CHECK(x4_mapped);
+    fill(VX[0], 0x7B1E0000u);
+    bool x4_clean_before = audit(&a) && a.ref_mismatch == 0;   /* 3 projections, 3 références */
+    forge(tr, FRAME_ALLOCATED, 1);                             /* déficit : 1 pour 3 */
+    bool x4_ok = audit(&a);
+    uint32_t x4_rm = a.ref_mismatch, x4_tm = a.mapped_type_mismatch, x4_sp = a.ref_surplus;
+    kprintf("[TEST] N3 X4: 3 mappings, refs 1: ref_mismatch=%u mapped_type_mismatch=%u ref_surplus=%u\n",
+            x4_rm, x4_tm, x4_sp);
+    bool n3_i5_ref_mismatch_per_frame = x4_clean_before && !x4_ok && x4_rm == 1 && x4_tm == 0 && x4_sp == 0;
+    KTEST_CHECK(n3_i5_ref_mismatch_per_frame);
+    /* Aucun effet destructif : audit en lecture seule, données et descripteur intacts. */
+    bool n3_x4_audit_non_destructive = holds(VX[0], 0x7B1E0000u) && pmm_refs(tr) == 1 &&
+                                       vmm_dynamic_mappings(tr) == 3;
+    KTEST_CHECK(n3_x4_audit_non_destructive);
+    an0 = vmm_unmap_ref_anomalies();
+    bool x4_cleanup = vmm_unmap(VX[0], 0) == SAMOS_OK && vmm_unmap(VX[1], 0) == SAMOS_OK &&
+                      vmm_unmap(VX[2], 0) == SAMOS_OK && pmm_refs(tr) == 0 &&
+                      vmm_unmap_ref_anomalies() == an0 + 2u && pmm_free_frame(tr) == SAMOS_OK;
+    KTEST_CHECK(x4_cleanup);
 
     /* --- État final cohérent --- */
     bool final_ok = audit(&a);

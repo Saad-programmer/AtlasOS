@@ -360,7 +360,7 @@ static uint32_t dyn_mapping_count(uint32_t frame, uint32_t limit)
             continue;
         }
         const volatile uint32_t *pt = (const volatile uint32_t *)(uintptr_t)(pde & PTE_FRAME);
-        for (uint32_t j = 0; j < 1024u; j++) {
+        for (uint32_t j = 0; j < 1024u; j++) {    /* N3 : jusqu'à la PTE 1023 incluse */
             uint32_t va = (i << 22) | (j << 12);
             uint32_t pte = pt[j];
             if (va >= g_idmap_top && (pte & PTE_PRESENT) && (pte & PTE_FRAME) == frame) {
