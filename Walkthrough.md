@@ -2157,3 +2157,26 @@ tests/tools/repro_selftest.sh
   - SKIP : 0 à 128 MiB, 512 MiB et 4 GiB ; 1, annoncé, à 16 MiB ;
   - CI n° 4 : `success`.
 - **Statut :** en attente de la décision du développeur sur la reprise de l'intégration. K0.7 n'est pas clôturé.
+
+### K0.7-E820-INTEGRATE — Intégration de la résolution de périmètre et de la correction E820 (2026-11-20)
+
+- **Contrôles préalables :**
+  - `main` = `daaa7a8`, ancêtre du candidat `94ae07b` ;
+  - diff réel examiné : aucun fichier de production, aucune licence ;
+  - 91 mutations ; scénarios synthétiques et cas QEMU à 4 GiB présents.
+- **Validation locale sur `94ae07b` :**
+  - 196 `[PASS]`, 0 `[FAIL]`, 86 cas QEMU sur 86 ;
+  - SKIP : 1 à 16 MiB (justifié), 0 à 128 MiB, 512 MiB et 4 GiB ;
+  - 91 mutations sur 91, auto-test du moteur 15 sur 15 ;
+  - reproductibilité, `-j8`, `check_elf.sh` (31 / 29) réussis ; aucun symbole de test en production ; permissions inchangées.
+- **Mutations sur GitHub :** exécution n° 6 (`44725013584`, `workflow_dispatch`, SHA `94ae07b`), job `136250101359` **exécuté** en 12 min 30 s, conclusion `success`. Journal complet analysé : 91 mutations distinctes lancées et détectées, aucun `[FAIL]`, 15 situations conformes. Avertissement : `actions/checkout` v4.2.2 vise Node.js 20, déclaré obsolète.
+- **Sauvegarde :** `backup/k0.7-pre-scope-integrate` → `daaa7a8`.
+- **Intégration :** avance rapide `daaa7a8..94ae07b` ; `origin/main` = `94ae07b`, vérifié. Les autres sauvegardes et le stash sont intacts.
+
+### K0.7-FORMAL-CLOSE — Clôture formelle proposée (documentation seulement)
+
+- **Branche :** `claude/k0.7-formal-close`, depuis `main` = `94ae07b`. Aucune modification de production, de test ni de CI ; aucune licence.
+- **Document :** `docs/review/K0.7-formal-closure.md` : périmètre, traçabilité, réalisations, reports décidés le 2026-11-20, preuves avec SHA et environnement, risques, publication et licence, conditions d'entrée dans K1.1.
+- **Cohérence :** trois mentions périmées du README mises à jour ; note datée en §14 de `K0.7-scope-resolution.md` ; aucune référence active au document inexistant `K0.7-review.md`.
+- **Aucun banc exécuté** pour ce jalon documentaire ; les preuves citées sont celles du 2026-11-20 sur `94ae07b`.
+- **Verdict proposé :** **A**. La clôture ne sera définitive qu'après la décision explicite du développeur. K1.1 n'est pas commencé.

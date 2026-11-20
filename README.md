@@ -63,7 +63,7 @@ La phase K0 (K0.1 à K0.6) est terminée ; sa revue se trouve dans [`docs/review
 
 **Une clôture de jalon ne signifie pas que le noyau est sécurisé.** SAMOS n'est ni un système d'exploitation complet ni un système sécurisé : c'est un noyau d'étude, testé sous QEMU.
 
-**Branches.** `main` contient P4 (clôturé dans son périmètre) et la correction K1.0-N3 (`daaa7a8`, 2026-11-19). L'audit de clôture globale de K0.7 ([`docs/review/K0.7-final-closure-audit.md`](docs/review/K0.7-final-closure-audit.md)) conclut que le **périmètre de K0.7 doit être clarifié** avant sa clôture ; la clarification et le traitement des écarts sont proposés dans [`docs/review/K0.7-scope-resolution.md`](docs/review/K0.7-scope-resolution.md) (en attente de décision) : **K0.7 n'est pas clôturé**. **K1.1** (décisions d'architecture) et la migration x86-64 ne sont **pas commencés** ; leur préparation est décrite dans [`docs/design/K1-readiness.md`](docs/design/K1-readiness.md).
+**Branches.** `main` contient P4 (clôturé dans son périmètre) et la correction K1.0-N3 (`daaa7a8`, 2026-11-19). L'audit de clôture globale de K0.7 ([`docs/review/K0.7-final-closure-audit.md`](docs/review/K0.7-final-closure-audit.md)) conclut que le **périmètre de K0.7 doit être clarifié** avant sa clôture ; la clarification et le traitement des écarts ([`docs/review/K0.7-scope-resolution.md`](docs/review/K0.7-scope-resolution.md)) sont intégrés dans `main` (`94ae07b`, 2026-11-20). Une **clôture formelle est proposée** ([`docs/review/K0.7-formal-closure.md`](docs/review/K0.7-formal-closure.md)), en attente de la décision du développeur : **K0.7 n'est pas encore clôturé**. **K1.1** (décisions d'architecture) et la migration x86-64 ne sont **pas commencés** ; leur préparation est décrite dans [`docs/design/K1-readiness.md`](docs/design/K1-readiness.md).
 
 ## 4. Vue d'ensemble de l'architecture
 
@@ -112,11 +112,11 @@ Tout le code spécifique au processeur se trouve dans `kernel/arch/i386/`. La mi
 | Fautes de page | `paging.c`, `probe.asm` | diagnostic contextuel (NULL, débordement de pile, écriture en lecture seule, hors RAM) ; sondes mémoire avec table de correction d'exception |
 | Arithmétique 64 bits | `kernel/lib/math64.c` | division 64/32 sans libgcc (division longue binaire) |
 | Bibliothèque minimale | `kernel/lib/string.c` | `memset`, `memcpy`, `memmove`, `memcmp`, `strlen`, `strnlen`, `strcmp`, `strncmp`, `strlcpy` |
-| Autotests noyau | `kernel/tests/` | image de test distincte : 729 vérifications en 17 suites à 128 MiB (aussi exécutées à 16 MiB, 512 MiB et 4 GiB ; à 16 MiB, une vérification propre au banc de 128 MiB est **sautée et annoncée** : `[SKIP]`, jamais comptée comme un succès), 7 modes isolés (dont `n3`, K1.0), des modes volontairement fatals et des configurations de RAM limites ; 86 cas QEMU (dont les autotests complets à 16 MiB, 512 MiB et 4 GiB), 91 mutations détectées (`make test`, `make test-mutation`) ; intégration continue GitHub Actions (`.github/workflows/ci.yml`, sur la branche `claude/k0.7-scope-resolve`, non encore intégrée) |
+| Autotests noyau | `kernel/tests/` | image de test distincte : 729 vérifications en 17 suites à 128 MiB (aussi exécutées à 16 MiB, 512 MiB et 4 GiB ; à 16 MiB, une vérification propre au banc de 128 MiB est **sautée et annoncée** : `[SKIP]`, jamais comptée comme un succès), 7 modes isolés (dont `n3`, K1.0), des modes volontairement fatals et des configurations de RAM limites ; 86 cas QEMU (dont les autotests complets à 16 MiB, 512 MiB et 4 GiB), 91 mutations détectées (`make test`, `make test-mutation`) ; intégration continue GitHub Actions (`.github/workflows/ci.yml`) : compilation, ELF, banc complet et reproductibilité à chaque `push` ; mutations sur déclenchement manuel (91 sur 91 détectées sur GitHub le 2026-11-20) |
 
 ## 6. Composants en cours de développement
 
-K0.7 (sécurisation) : R1 et P4 clôturés dans leur périmètre ; la clôture de K0.7 dans son ensemble attend la décision du développeur.
+K0.7 (sécurisation) : R1 et P4 clôturés dans leur périmètre ; périmètre de K0.7 résolu, clôture formelle proposée (`docs/review/K0.7-formal-closure.md`), en attente de la décision du développeur. Reports décidés le 2026-11-20 : mémoire basse en lecture seule, couche HAL, instrumentation permanente de la pile de double faute.
 
 ## 7. Composants planifiés
 
@@ -272,7 +272,7 @@ Seuls des outils de développement standard sont utilisés : compilateur, assemb
 
 ## 17. Feuille de route
 
-`K0.1 ✅ → … → K0.6 ✅ → K0.7 🔶 (R1 ✅, P4 ✅ dans son périmètre) → K1.0-N3 ✅ (correction de N3, intégrée) → clôture de K0.7 (périmètre à clarifier) → K1 : décisions d'architecture, kmalloc, x86-64 / higher-half, espaces d'adressage, ring 3 → processus/ordonnanceur → appels système → IPC → VFS → pilotes → A0 (IA) → V0 (voix) → I0 (agent)` — détail : [`docs/design/K1-readiness.md`](docs/design/K1-readiness.md)
+`K0.1 ✅ → … → K0.6 ✅ → K0.7 🔶 (R1 ✅, P4 ✅ dans son périmètre) → K1.0-N3 ✅ (correction de N3, intégrée) → clôture de K0.7 (formelle proposée, en attente de décision) → K1 : décisions d'architecture, kmalloc, x86-64 / higher-half, espaces d'adressage, ring 3 → processus/ordonnanceur → appels système → IPC → VFS → pilotes → A0 (IA) → V0 (voix) → I0 (agent)` — détail : [`docs/design/K1-readiness.md`](docs/design/K1-readiness.md)
 
 ## 18. Documentation
 
@@ -296,3 +296,5 @@ Seuls des outils de développement standard sont utilisés : compilateur, assemb
 ## 20. Licence
 
 **Aucune licence n'est encore établie.** Le choix appartient au développeur. Sans licence explicite, tous les droits sont réservés.
+
+*Décision du 2026-11-20 :* aucune licence n'est choisie pour le moment, et aucune ne doit être ajoutée automatiquement. Aucune release n'est publiée.
