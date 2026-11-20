@@ -63,7 +63,7 @@ La phase K0 (K0.1 à K0.6) est terminée ; sa revue se trouve dans [`docs/review
 
 **Une clôture de jalon ne signifie pas que le noyau est sécurisé.** SAMOS n'est ni un système d'exploitation complet ni un système sécurisé : c'est un noyau d'étude, testé sous QEMU.
 
-**Branches.** `main` contient P4 (clôturé dans son périmètre) et la correction K1.0-N3 (`daaa7a8`, 2026-11-19). L'audit de clôture globale de K0.7 ([`docs/review/K0.7-final-closure-audit.md`](docs/review/K0.7-final-closure-audit.md)) conclut que le **périmètre de K0.7 doit être clarifié** avant sa clôture ; la clarification et le traitement des écarts ([`docs/review/K0.7-scope-resolution.md`](docs/review/K0.7-scope-resolution.md)) sont intégrés dans `main` (`94ae07b`, 2026-11-20). La clôture formelle ([`docs/review/K0.7-formal-closure.md`](docs/review/K0.7-formal-closure.md), verdict A approuvé par le développeur) est intégrée dans `main` (`edcd7f5`) : **K0.7 — CLOSED (scope-defined), 2026-11-20**. Cette clôture ne signifie pas que SAMOS est sécurisé, terminé ou validé sur matériel réel. **K1.1** (décisions d'architecture) et la migration x86-64 ne sont **pas commencés** ; leur préparation est décrite dans [`docs/design/K1-readiness.md`](docs/design/K1-readiness.md).
+**Branches.** `main` contient P4 (clôturé dans son périmètre) et la correction K1.0-N3 (`daaa7a8`, 2026-11-19). L'audit de clôture globale de K0.7 ([`docs/review/K0.7-final-closure-audit.md`](docs/review/K0.7-final-closure-audit.md)) conclut que le **périmètre de K0.7 doit être clarifié** avant sa clôture ; la clarification et le traitement des écarts ([`docs/review/K0.7-scope-resolution.md`](docs/review/K0.7-scope-resolution.md)) sont intégrés dans `main` (`94ae07b`, 2026-11-20). La clôture formelle ([`docs/review/K0.7-formal-closure.md`](docs/review/K0.7-formal-closure.md), verdict A approuvé par le développeur) est intégrée dans `main` (`edcd7f5`) : **K0.7 — CLOSED (scope-defined), 2026-11-20**. Cette clôture ne signifie pas que SAMOS est sécurisé, terminé ou validé sur matériel réel. **K1.1** : la revue de conception ([`docs/review/K1.1-design-review.md`](docs/review/K1.1-design-review.md), `63aca66`) est intégrée dans `main` ; le sous-jalon **M64-0** (infrastructure de test seulement : même image i386 validée sous `qemu-system-i386` et `qemu-system-x86_64`) est sur la branche `claude/k1.1-m64-0`, **en attente de validation** ([`docs/review/K1.1-M64-0-report.md`](docs/review/K1.1-M64-0-report.md)). **La migration x86-64 n'est pas commencée** : aucun code 64 bits, aucun trampoline ; préparation : [`docs/design/K1-readiness.md`](docs/design/K1-readiness.md).
 
 ## 4. Vue d'ensemble de l'architecture
 
@@ -116,7 +116,7 @@ Tout le code spécifique au processeur se trouve dans `kernel/arch/i386/`. La mi
 
 ## 6. Composants en cours de développement
 
-Aucun. **K0.7 — CLOSED (scope-defined), 2026-11-20** (`docs/review/K0.7-formal-closure.md`) ; K1.1 n'est pas commencé. Reports décidés le 2026-11-20, qui ne sont **pas** des réalisations : mémoire basse en lecture seule, couche HAL, instrumentation permanente de la pile de double faute.
+Aucun. **K0.7 — CLOSED (scope-defined), 2026-11-20** (`docs/review/K0.7-formal-closure.md`) ; K1.1-M64-0 (infrastructure de test à deux émulateurs, aucun code du noyau) attend la validation du développeur. Reports décidés le 2026-11-20, qui ne sont **pas** des réalisations : mémoire basse en lecture seule, couche HAL, instrumentation permanente de la pile de double faute.
 
 ## 7. Composants planifiés
 
@@ -146,7 +146,9 @@ AtlasOS/
 ├── tests/
 │   ├── tools/                tests négatifs des outils de vérification
 │   ├── host/                 tests unitaires hébergés (ASan + UBSan)
-│   └── qemu/                 tests de démarrage QEMU et vérifications GDB
+│   └── qemu/                 tests de démarrage QEMU et vérifications GDB ;
+│                             emu.sh, emu_matrix.sh, emu_compare.sh : choix et
+│                             comparaison des émulateurs (K1.1-M64-0)
 ├── tools/check_elf.sh        vérifications statiques de l'image ELF
 ├── docs/adr/                 décisions d'architecture
 ├── docs/review/              revue de fin de phase (K0)
@@ -230,6 +232,9 @@ make test
 | Hébergés | `make test-host` | `string.c` ; `format.c` (comparaison différentielle avec `snprintf` de la libc) ; `math64.c` (100 000 divisions comparées à la division native) ; `ringbuf.c` (1 million d'opérations comparées à un modèle) ; `kbd_decode.c` (automate et 65 536 paires d'octets) ; `memmap.c` (cartes hostiles et 20 000 cartes aléatoires) ; `pmm_core.c` (invariants, épuisement, 200 000 opérations contre un modèle) ; le tout sous AddressSanitizer + UBSan |
 | QEMU | `make test-qemu` | démarrage normal (sans triple fault), sortie série de bout en bout, clavier de bout en bout (frappes injectées par `sendkey`), autotests noyau (`-append test`), chemin de panique (`test=panic`, statut 37), refus d'un mode de test inconnu, exceptions fatales `test=ud/de/gp/np/intbad`, double faute par porte de tâche (`test=df`), triple fault volontaire détecté (`test=triple`), violations mémoire `test=null/wtext/wrodata/unmapped`, débordement de pile attrapé (`test=stack`), RAM de 16 MiB à 4 GiB |
 | GDB | `make test-gdb` | état exact des registres à l'entrée de `kmain` ; test négatif du magic invalide ; lecture de la mémoire VGA `0xB8000` depuis l'extérieur du noyau |
+| Deux émulateurs (K1.1-M64-0) | `make test-x86_64-emu` | la **même** image i386, les mêmes bancs QEMU et GDB sous `qemu-system-i386` puis `qemu-system-x86_64` ; verdicts, bilans et SKIP doivent être identiques (`tests/qemu/emu_matrix.sh`, `emu_compare.sh`) |
+
+**Choix de l'émulateur.** `make test QEMU=qemu-system-x86_64` exécute tous les bancs sous un autre émulateur ; le défaut reste `qemu-system-i386`. Chaque rapport commence par une ligne `[EMU]` : émulateur, version, modèle de CPU mesuré par QMP (`qemu32` ou `qemu64`, **non équivalents**), machine. Sous `qemu-system-x86_64`, GDB est forcé en architecture `i386:x86-64` : `$esp`, `$eflags` et la mémoire sont exacts, mais `$eip`, le désassemblage et les arguments C symboliques ne le sont pas (Details.md §41). Les tests négatifs de ce choix (émulateur absent, invalide, d'une autre architecture ; GDB en erreur ; divergence) sont dans `tests/tools/emu_selftest.sh`, exécuté par `make test-tools`.
 
 Le noyau transmet son verdict à QEMU via le périphérique `isa-debug-exit` (statut 33 = succès, 35 = échec, 37 = panic).
 

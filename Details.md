@@ -1876,6 +1876,57 @@ L'oracle lit 1 024 PTE par table présente au-delà de `idmap_top` : son coût e
 
 **Pourquoi `refs` existe-t-il encore ?** Il reste la seconde barrière pour les références prises **sans** projection (épinglage), que l'oracle ne voit pas, et il permet un refus rapide dans le cas normal. L'audit signale ses incohérences (`ref_mismatch`, `ref_surplus`).
 
+## 41. Une image i386 sous deux émulateurs ; GDB face à un CPU 64 bits (K1.1-M64-0)
+
+> **Statut :** infrastructure de test seulement ; aucun code du noyau n'est modifié. Rapport et preuves : `docs/review/K1.1-M64-0-report.md`.
+
+### 41.1 Le problème
+
+La migration x86-64 (décision D1) doit garder une **référence i386 gelée** (étiquette `ref/i386-k0.7`) et la tester en continu. Les futurs jalons démarreront sous `qemu-system-x86_64`. Avant d'y écrire la moindre ligne de code 64 bits, il faut donc savoir si les bancs actuels donnent **les mêmes verdicts** quand on change seulement d'émulateur. Sinon, une différence de plateforme serait plus tard confondue avec une régression de la migration.
+
+### 41.2 Deux émulateurs, deux CPU différents
+
+Un processeur x86-64 démarre en mode réel, exactement comme un i386. Le chargeur Multiboot de QEMU le fait passer en mode protégé 32 bits avant de sauter à `_start`. **Le même noyau 32 bits** fonctionne donc sur les deux machines. Elles ne sont pourtant **pas** équivalentes ; voici ce qui a été mesuré par QMP sous QEMU 8.2.2 :
+
+| | `qemu-system-i386` | `qemu-system-x86_64` |
+|---|---|---|
+| Modèle de CPU par défaut | `qemu32` | `qemu64` (annonce le mode long dans CPUID) |
+| Machine | `pc-i440fx-noble-v2` | `pc-i440fx-noble-v2` |
+| Carte E820 à 128 MiB | 6 régions | 7 régions (`0xfd00000000-0xffffffffff` réservée en plus, au-delà de 4 GiB) |
+
+La région supplémentaire se trouve au-dessus de 4 GiB. Le noyau 32 bits la publie mais ne l'utilise pas, d'où **130 559 KiB disponibles** dans les deux cas. Les journaux bruts diffèrent donc légitimement ; c'est pourquoi la comparaison porte sur les verdicts et non sur le texte (§41.4).
+
+### 41.3 Le protocole distant de GDB et la description des registres
+
+GDB pilote le « stub » intégré à QEMU par le *GDB Remote Serial Protocol*. Le paquet `g` renvoie **tous** les registres d'un bloc, dans l'ordre et à la taille donnés par une **description de cible** XML (`qXfer:features:read`). Le stub de `qemu-system-x86_64` décrit **toujours** l'architecture 64 bits (`rax`…`r15`, `rip` ; 608 octets), quel que soit le mode du CPU à cet instant. Un GDB qui a déduit « i386 » d'un ELF32 attend 312 octets. Il rejette donc la cible :
+
+```text
+Remote 'g' packet reply is too long (expected 312 bytes, got 608 bytes)
+warning: Architecture rejected target-supplied description
+```
+
+La solution retenue impose `set architecture i386:x86-64` **avant** `target remote`, puis charge les symboles par `symbol-file`. GDB accepte alors la description. En mode protégé, les 32 bits de poids faible de `rsp` **sont** ESP, et `$esp` est un pseudo-registre défini comme cette moitié basse. EFLAGS et la mémoire sont lus sans transformation. Les adresses des symboles ELF32 sont les mêmes. En revanche :
+
+- `$eip` n'existe pas dans cette architecture : on utilise `$pc` ou `$rip` ;
+- le **désassembleur** décode le code 32 bits comme du code 64 bits (`push %rbp` au lieu de `push %ebp`) ;
+- l'**affichage symbolique** des arguments C est faux (`kmain (magic=0, ...)`) : les emplacements DWARF 32 bits sont interprétés avec la disposition des registres 64 bits.
+
+Les vérifications GDB n'utilisent que des registres (`$esp`, `$eflags`), la mémoire brute et des adresses de symboles. Chacune a été comparée **valeur par valeur** sous les deux émulateurs : ESP = `0x196fec`, `[ESP+4]` = `0x2badb002`, `[ESP+8]` = `0x9500`, EFLAGS = `0x46`, PC = `kmain` = `0x1029b0`. L'inverse échoue aussi, et c'est voulu : imposer `i386:x86-64` face à `qemu-system-i386` est refusé (« not compatible with reported target architecture i386 »).
+
+### 41.4 Ne jamais confondre absence de validation et succès
+
+Trois mécanismes empêchent un faux succès :
+
+1. **Identification de l'émulateur** (`tests/qemu/emu.sh`). Avant tout test, QEMU est interrogé par QMP. Un émulateur absent, une réponse vide (`/bin/true`) ou un CPU d'une autre architecture donnent le statut 2.
+2. **Trois exigences par test GDB.** Le statut de GDB doit être nul. Son journal ne doit contenir aucun diagnostic d'échec connu. Les valeurs attendues doivent être présentes. Une valeur correcte affichée par un GDB en échec reste un échec (test E6).
+3. **Comparaison stricte** (`tests/qemu/emu_compare.sh`). Les verdicts, les bilans et les `[TEST] skipped=N` sont comparés sans aucune tolérance. Un résultat absent est un échec, jamais un accord.
+
+### 41.5 Questions de jury
+
+**Pourquoi ne pas simplement remplacer qemu-system-i386 par qemu-system-x86_64 ?** Parce que les deux CPU diffèrent (§41.2). La référence i386 doit rester mesurée sur le CPU sur lequel elle a été validée. Le second émulateur est ajouté **à côté**, et les écarts sont rendus visibles.
+
+**La lecture de `$esp` via une architecture 64 bits est-elle fiable ?** Pour un CPU en mode protégé, oui : l'architecture définit ESP comme les 32 bits de poids faible de RSP. Ce n'est pas qu'une affirmation : la mesure a été répétée sous les deux émulateurs avec des valeurs identiques. Les tests négatifs E5 montrent en outre qu'une architecture inadaptée produit bien des échecs.
+
 ## Références
 
 1. Free Software Foundation, *Multiboot Specification*, version 0.6.96, §3.1 (en-tête), §3.2 (état machine), §3.3 (structure d'information).

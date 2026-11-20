@@ -2180,3 +2180,41 @@ tests/tools/repro_selftest.sh
 - **Cohérence :** trois mentions périmées du README mises à jour ; note datée en §14 de `K0.7-scope-resolution.md` ; aucune référence active au document inexistant `K0.7-review.md`.
 - **Aucun banc exécuté** pour ce jalon documentaire ; les preuves citées sont celles du 2026-11-20 sur `94ae07b`.
 - **Verdict proposé :** **A**. La clôture ne sera définitive qu'après la décision explicite du développeur. K1.1 n'est pas commencé.
+
+## Jalon K1.1-M64-0 — Référence i386 et validation sous deux émulateurs (en attente de validation)
+
+- **Objectif :** fixer la référence i386 (D-REF). Montrer que les bancs actuels donnent les mêmes verdicts sous `qemu-system-i386` et `qemu-system-x86_64` (D-CI), avant toute ligne de code 64 bits. Infrastructure de test seulement : aucun fichier de `kernel/` n'est modifié.
+- **Point de départ :** `main` = `63aca66` (revue de conception K1.1). Branche : `claude/k1.1-m64-0`.
+- **Étiquette :** `ref/i386-k0.7` a été créée localement (annotée, objet `eace948`, cible `7e43b78`). Sa poussée a été **refusée** par le mandataire Git de l'environnement. Elle est absente de GitHub et reste à pousser par le développeur.
+- **Déroulement :**
+  1. **Expérience GDB hors dépôt**, avant toute modification des bancs.
+     - Sous `qemu-system-x86_64`, GDB en architecture i386 rejette la description de registres 64 bits (`Remote 'g' packet reply is too long`).
+     - Avec `set architecture i386:x86-64`, puis `target remote` et `symbol-file`, chaque valeur lue par `gdb_checks.sh` est identique à celle de `qemu-system-i386` (ESP `0x196fec`, `[ESP+4]` `0x2badb002`, `[ESP+8]` `0x9500`, EFLAGS `0x46`, PC = `kmain`).
+     - Limites : `$eip`, le désassemblage et les arguments C symboliques sont faux.
+  2. **Mesure des CPU par QMP.**
+     - `qemu32` contre `qemu64`, sur la même machine `pc-i440fx-noble-v2`.
+     - La machine x86_64 publie une région E820 réservée de plus, au-delà de 4 GiB.
+     - Configurations par défaut conservées.
+  3. **Bibliothèque `tests/qemu/emu.sh`.** `run.sh` et `gdb_checks.sh` l'utilisent ; elle produit la ligne `[EMU]` de chaque rapport.
+  4. **Adaptation de `gdb_checks.sh`.**
+     - Connexion adaptée à l'émulateur.
+     - Trois exigences par test : statut de GDB, absence de diagnostic d'échec, valeurs attendues.
+  5. **Matrice et comparaison.**
+     - `tests/qemu/emu_matrix.sh` exécute les mêmes scripts sous plusieurs émulateurs ; `tests/qemu/emu_compare.sh` compare leurs résultats.
+     - Cible `make test-x86_64-emu`. Le Makefile transmet `QEMU` aux bancs.
+  6. **Tests négatifs** `tests/tools/emu_selftest.sh` (16), puis la matrice CI.
+- **Incidents :**
+  - **Guillemet dans une expansion.** Un `'` à l'intérieur de `${GDB_ARCH:-…}` entre guillemets doubles provoquait une erreur de syntaxe bash (statut 2, aucun test exécuté). Le texte a été reformulé.
+  - **Divergence de mesures.** La première matrice a **échoué** sur une divergence de mesures entre parenthèses (`n1stack`, `n1low`), sous des verdicts identiques :
+    - l'empreinte de la pile active varie même d'une exécution à l'autre sous un seul émulateur ;
+    - celle de la mémoire basse diffère entre les BIOS.
+    - Correction : comparaison par statut et nom ; écarts de mesure **listés** en `[INFO]` ; deux tests négatifs l'encadrent.
+  - **Auto-test du moteur de mutations interrompu.** La situation `wrong_assert` s'est terminée en statut 2 au lieu de 1, avec `l'état du dépôt a changé pendant les mutations`. Cause : le rapport était en cours d'écriture pendant l'exécution, et la protection du moteur l'a correctement signalé. Après relance sans modification concurrente : 15 / 15.
+- **Validation locale :**
+  - `make test` : 212 `[PASS]`, 0 `[FAIL]` sous chaque émulateur ;
+  - 86 / 86 cas QEMU et 8 / 8 vérifications GDB sous chacun ;
+  - SKIP : 1 à 16 MiB, 0 ailleurs, sous les deux ;
+  - `make test-x86_64-emu` : verdicts identiques ;
+  - 91 / 91 mutations sous i386 ; auto-test du moteur 15 / 15 ; reproductibilité réussie.
+- **Détails et preuves :** `docs/review/K1.1-M64-0-report.md`, `Details.md` §41.
+- **Statut :** en attente de la validation du développeur ; aucune intégration dans `main`, M64-1 non commencé.

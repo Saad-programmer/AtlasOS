@@ -14,6 +14,11 @@
 #   0   = QEMU s'est arrêté seul : avec -no-reboot, signe d'un triple fault
 #   127 = QEMU introuvable (toujours un échec)
 #
+# Variables globales (environnement) :
+#   QEMU=qemu-system-i386  émulateur (K1.1-M64-0 : qemu-system-x86_64 accepté,
+#                          même image i386 ; identifié par tests/qemu/emu.sh)
+#   TEST_OUT=DIR           répertoire des journaux (défaut : build/tests)
+#
 # Variables par cas (préfixe d'appel) :
 #   IMG=prod|test   image à démarrer (défaut : test)
 #   QEMU_MEM=128M   taille de la RAM
@@ -29,7 +34,9 @@
 set -u
 PROD_KERNEL="${1:?usage: run.sh build/samos.elf build/samos-test.elf}"
 TEST_KERNEL="${2:?usage: run.sh build/samos.elf build/samos-test.elf}"
-OUT="$(dirname "$TEST_KERNEL")/tests"
+# TEST_OUT : répertoire des journaux (K1.1-M64-0 : un répertoire par émulateur
+# quand tests/qemu/emu_matrix.sh compare deux émulateurs).
+OUT="${TEST_OUT:-$(dirname "$TEST_KERNEL")/tests}"
 mkdir -p "$OUT"
 QEMU="${QEMU:-qemu-system-i386}"
 TIMEOUT="${TIMEOUT:-10}"
@@ -38,11 +45,13 @@ total=0
 passed=0
 
 # Garde-fou contre un faux positif global : sans QEMU, tous les cas « timeout »
-# ne doivent pas pouvoir réussir.
-if ! command -v "$QEMU" >/dev/null 2>&1; then
-    echo "[FAIL] QEMU introuvable ($QEMU)"
-    exit 2
-fi
+# ne doivent pas pouvoir réussir. K1.1-M64-0 : l'émulateur est identifié par
+# QMP (tests/qemu/emu.sh) ; absent, invalide ou d'une autre architecture, il
+# est refusé (statut 2). Son identité figure en tête du rapport.
+# shellcheck source=tests/qemu/emu.sh
+source "$(dirname "$0")/emu.sh"
+emu_probe "$QEMU" || exit 2
+emu_print "$QEMU"
 for k in "$PROD_KERNEL" "$TEST_KERNEL"; do
     [ -f "$k" ] || { echo "[FAIL] image absente : $k"; exit 2; }
 done

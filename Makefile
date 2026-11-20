@@ -8,6 +8,12 @@
 #   make debug      démarre QEMU en attente de GDB sur localhost:1234
 #   make check-elf  vérifications statiques de l'image ELF (tools/check_elf.sh)
 #   make test       check-elf + tests hébergés + autotests QEMU + vérifications GDB
+#   make test-x86_64-emu  bancs QEMU + GDB de la MÊME image i386 sous
+#                   qemu-system-i386 PUIS qemu-system-x86_64, et comparaison
+#
+# Émulateur (K1.1-M64-0) : « make test QEMU=qemu-system-x86_64 » exécute les
+# bancs sous un autre émulateur ; défaut qemu-system-i386. La variable est
+# transmise explicitement à chaque banc qui démarre QEMU.
 #   make clean      supprime build/
 # =============================================================================
 
@@ -25,6 +31,7 @@ CC        := clang
 AS        := nasm
 LD        := ld
 QEMU      := qemu-system-i386
+QEMU_X86_64 := qemu-system-x86_64
 
 TARGET    := i686-unknown-none-elf
 
@@ -147,7 +154,7 @@ PROD_OBJS := $(call objs,prod,$(C_SRCS))
 TEST_OBJS := $(call objs,test,$(C_SRCS) $(TEST_SRCS))
 
 .PHONY: all run run-vga run-test debug check-elf test test-tools test-host test-qemu \
-        test-gdb test-mutation test-repro clean
+        test-gdb test-mutation test-repro test-x86_64-emu clean
 
 all: $(KERNEL) $(TEST_KERNEL)
 
@@ -204,27 +211,28 @@ check-elf: $(KERNEL) $(TEST_KERNEL)
 
 test-tools: $(KERNEL) $(TEST_KERNEL)
 	tests/tools/check_elf_negative.sh $(TEST_KERNEL)
-	tests/tools/harness_selftest.sh $(KERNEL) $(TEST_KERNEL)
+	QEMU='$(QEMU)' tests/tools/harness_selftest.sh $(KERNEL) $(TEST_KERNEL)
+	QEMU='$(QEMU)' tests/tools/emu_selftest.sh $(KERNEL) $(TEST_KERNEL)
 	tests/tools/canary_check.sh $(KERNEL) $(TEST_KERNEL)
 	tests/tools/frame_limit_check.sh $(CC) $(CFLAGS) $(PROD_DEFS)
 	tests/tools/pt_write_lint.sh
-	tests/tools/tlb_integration.sh
+	QEMU='$(QEMU)' tests/tools/tlb_integration.sh
 
 test-host:
 	tests/host/run.sh
 
 test-qemu: $(KERNEL) $(TEST_KERNEL)
-	tests/qemu/run.sh $(KERNEL) $(TEST_KERNEL)
+	QEMU='$(QEMU)' tests/qemu/run.sh $(KERNEL) $(TEST_KERNEL)
 
 test-gdb: $(KERNEL)
-	tests/qemu/gdb_checks.sh $(KERNEL)
+	QEMU='$(QEMU)' tests/qemu/gdb_checks.sh $(KERNEL)
 
 # Vérification du banc de tests lui-même (K0.7-R0) : défauts connus (E3, E5,
 # M2.5c) injectés dans une copie isolée des sources (tests/mutation/cases.sh) ;
 # chaque défaut doit être DÉTECTÉ par des assertions nommées. Environ 20 s.
 # Auto-test du mécanisme : tests/mutation/selftest.sh.
 test-mutation:
-	tests/mutation/run.sh
+	QEMU='$(QEMU)' tests/mutation/run.sh
 
 # Reproductibilité (K0.7-R0) : deux compilations propres dans deux répertoires
 # différents ; les images sans débogage doivent être identiques octet pour
@@ -235,6 +243,12 @@ test-repro:
 	tests/tools/repro_check.sh
 
 test: check-elf test-tools test-host test-qemu test-gdb
+
+# K1.1-M64-0 : même image i386, mêmes bancs, deux émulateurs ; les verdicts,
+# bilans et SKIP doivent être identiques (tests/qemu/emu_matrix.sh). La
+# référence reste qemu-system-i386 quelle que soit la valeur de QEMU.
+test-x86_64-emu: $(KERNEL) $(TEST_KERNEL)
+	tests/qemu/emu_matrix.sh $(KERNEL) $(TEST_KERNEL) qemu-system-i386 $(QEMU_X86_64)
 
 clean:
 	rm -rf $(BUILD)

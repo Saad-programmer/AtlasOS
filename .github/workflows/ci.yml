@@ -8,6 +8,13 @@
 # 2.42, QEMU 8.2.2, GDB 15.1) ; versions affichées dans le journal.
 # Ce fichier ne modifie ni les protections de branches ni les paramètres du
 # dépôt ; il n'a aucun droit d'écriture (permissions: contents: read).
+#
+# K1.1-M64-0 (D-CI) : la même image i386 est validée sous deux émulateurs,
+# une variante de matrice par émulateur, chacune identifiable par son nom :
+#   qemu-system-i386    référence (CPU qemu32), banc complet ;
+#   qemu-system-x86_64  CPU qemu64, banc complet, puis comparaison des
+#                       verdicts avec qemu-system-i386 (make test-x86_64-emu).
+# Les mutations restent manuelles et sous qemu-system-i386 (défaut du Makefile).
 name: CI
 
 on:
@@ -29,9 +36,15 @@ concurrency:
 
 jobs:
   build-and-test:
-    name: Compilation, ELF, tests hôte, QEMU, GDB, reproductibilité
+    name: Compilation, ELF, tests hôte, QEMU, GDB, reproductibilité (${{ matrix.emulator }})
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    strategy:
+      fail-fast: false        # un émulateur en échec ne masque pas l'autre
+      matrix:
+        emulator: [qemu-system-i386, qemu-system-x86_64]
+    env:
+      EMU: ${{ matrix.emulator }}
     steps:
       - name: Récupération du dépôt
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
@@ -44,14 +57,17 @@ jobs:
           clang --version | head -1
           nasm -v
           ld --version | head -1
-          qemu-system-i386 --version | head -1
+          "$EMU" --version | head -1
           gdb --version | head -1
       - name: Compilation des deux images (parallèle, depuis zéro)
         run: make clean && make -j"$(nproc)"
       - name: Vérification ELF
         run: make check-elf
-      - name: Banc complet (outils, hôte, QEMU, GDB)
-        run: make clean && make test
+      - name: Banc complet (outils, hôte, QEMU, GDB) sous ${{ matrix.emulator }}
+        run: make clean && make test QEMU="$EMU"
+      - name: Comparaison qemu-system-i386 / qemu-system-x86_64
+        if: matrix.emulator == 'qemu-system-x86_64'
+        run: make test-x86_64-emu
       - name: Reproductibilité
         run: make test-repro
 
