@@ -63,7 +63,7 @@ La phase K0 (K0.1 à K0.6) est terminée ; sa revue se trouve dans [`docs/review
 
 **Une clôture de jalon ne signifie pas que le noyau est sécurisé.** SAMOS n'est ni un système d'exploitation complet ni un système sécurisé : c'est un noyau d'étude, testé sous QEMU.
 
-**Branches.** `main` contient P4 (clôturé dans son périmètre) et la correction K1.0-N3 (`daaa7a8`, 2026-11-19). L'audit de clôture globale de K0.7 ([`docs/review/K0.7-final-closure-audit.md`](docs/review/K0.7-final-closure-audit.md)) conclut que le **périmètre de K0.7 doit être clarifié** avant sa clôture ; la clarification et le traitement des écarts ([`docs/review/K0.7-scope-resolution.md`](docs/review/K0.7-scope-resolution.md)) sont intégrés dans `main` (`94ae07b`, 2026-11-20). La clôture formelle ([`docs/review/K0.7-formal-closure.md`](docs/review/K0.7-formal-closure.md), verdict A approuvé par le développeur) est intégrée dans `main` (`edcd7f5`) : **K0.7 — CLOSED (scope-defined), 2026-11-20**. Cette clôture ne signifie pas que SAMOS est sécurisé, terminé ou validé sur matériel réel. **K1.1** : la revue de conception ([`docs/review/K1.1-design-review.md`](docs/review/K1.1-design-review.md), `63aca66`) est intégrée dans `main` ; le sous-jalon **M64-0** (infrastructure de test seulement : même image i386 validée sous `qemu-system-i386` et `qemu-system-x86_64`) est **intégré dans `main`** (`bbcc73a`, 2026-11-20, sur décision du développeur ; [`docs/review/K1.1-M64-0-report.md`](docs/review/K1.1-M64-0-report.md)). L'étiquette de référence annotée `ref/i386-k0.7` est **publiée sur GitHub** (objet `f671c13`, cible `7e43b78`, référence i386 de la décision D-REF). **M64-1 n'est pas commencé.** **La migration x86-64 n'est pas commencée** : aucun code 64 bits, aucun trampoline ; préparation : [`docs/design/K1-readiness.md`](docs/design/K1-readiness.md).
+**Branches.** `main` contient P4 (clôturé dans son périmètre) et la correction K1.0-N3 (`daaa7a8`, 2026-11-19). L'audit de clôture globale de K0.7 ([`docs/review/K0.7-final-closure-audit.md`](docs/review/K0.7-final-closure-audit.md)) conclut que le **périmètre de K0.7 doit être clarifié** avant sa clôture ; la clarification et le traitement des écarts ([`docs/review/K0.7-scope-resolution.md`](docs/review/K0.7-scope-resolution.md)) sont intégrés dans `main` (`94ae07b`, 2026-11-20). La clôture formelle ([`docs/review/K0.7-formal-closure.md`](docs/review/K0.7-formal-closure.md), verdict A approuvé par le développeur) est intégrée dans `main` (`edcd7f5`) : **K0.7 — CLOSED (scope-defined), 2026-11-20**. Cette clôture ne signifie pas que SAMOS est sécurisé, terminé ou validé sur matériel réel. **K1.1** : la revue de conception ([`docs/review/K1.1-design-review.md`](docs/review/K1.1-design-review.md), `63aca66`) est intégrée dans `main` ; le sous-jalon **M64-0** (infrastructure de test seulement : même image i386 validée sous `qemu-system-i386` et `qemu-system-x86_64`) est **intégré dans `main`** (`bbcc73a`, 2026-11-20, sur décision du développeur ; [`docs/review/K1.1-M64-0-report.md`](docs/review/K1.1-M64-0-report.md)). La conception commune M64-1/M64-2 ([`docs/review/K1.1-M64-1-design.md`](docs/review/K1.1-M64-1-design.md)) est intégrée (`5370fe5`). **M64-1** (construction double : un squelette ELF64 x86-64 **lié et inspecté statiquement, non amorçable**) est sur la branche `claude/k1.1-m64-1-build`, **en attente d'audit** ([`docs/review/K1.1-M64-1-report.md`](docs/review/K1.1-M64-1-report.md)). L'étiquette de référence annotée `ref/i386-k0.7` est **publiée sur GitHub** (objet `f671c13`, cible `7e43b78`, référence i386 de la décision D-REF). **SAMOS n'exécute aucun code 64 bits** : le squelette x86-64 se compile et se lie seulement ; aucun tremplin, aucun mode long (M64-2, non autorisé) ; préparation : [`docs/design/K1-readiness.md`](docs/design/K1-readiness.md).
 
 ## 4. Vue d'ensemble de l'architecture
 
@@ -116,7 +116,7 @@ Tout le code spécifique au processeur se trouve dans `kernel/arch/i386/`. La mi
 
 ## 6. Composants en cours de développement
 
-Aucun. **K0.7 — CLOSED (scope-defined), 2026-11-20** (`docs/review/K0.7-formal-closure.md`) ; K1.1-M64-0 (infrastructure de test à deux émulateurs, aucun code du noyau) est intégré dans `main` (`bbcc73a`) ; M64-1 n'est pas commencé. Reports décidés le 2026-11-20, qui ne sont **pas** des réalisations : mémoire basse en lecture seule, couche HAL, instrumentation permanente de la pile de double faute.
+Aucun. **K0.7 — CLOSED (scope-defined), 2026-11-20** (`docs/review/K0.7-formal-closure.md`) ; K1.1-M64-0 (infrastructure de test à deux émulateurs, aucun code du noyau) est intégré dans `main` (`bbcc73a`) ; K1.1-M64-1 (construction double, squelette ELF64 non amorçable) attend l'audit du développeur sur sa branche. Reports décidés le 2026-11-20, qui ne sont **pas** des réalisations : mémoire basse en lecture seule, couche HAL, instrumentation permanente de la pile de double faute.
 
 ## 7. Composants planifiés
 
@@ -146,10 +146,16 @@ AtlasOS/
 ├── tests/
 │   ├── tools/                tests négatifs des outils de vérification
 │   ├── host/                 tests unitaires hébergés (ASan + UBSan)
+│   ├── tools/x86_64_build_check.sh  chaîne x86-64 : drapeaux, séparation, ELF64,
+│   │                         tests négatifs, reproductibilité (K1.1-M64-1)
 │   └── qemu/                 tests de démarrage QEMU et vérifications GDB ;
 │                             emu.sh, emu_matrix.sh, emu_compare.sh : choix et
 │                             comparaison des émulateurs (K1.1-M64-0)
+├── kernel/arch/x86_64/       SQUELETTE x86-64 non amorçable (K1.1-M64-1) : entry.asm,
+│                             skeleton.c, skeleton_test.c, linker.ld
+├── mk/x86_64.mk              construction x86-64 séparée (build/x86_64/)
 ├── tools/check_elf.sh        vérifications statiques de l'image ELF
+├── tools/check_elf64.sh      vérifications statiques du squelette ELF64 (règles X1 à X12)
 ├── docs/adr/                 décisions d'architecture
 ├── docs/review/              revue de fin de phase (K0)
 ├── README.md  Walkthrough.md  Details.md  CLAUDE.md
@@ -184,6 +190,14 @@ make
 ```
 
 Le résultat est `build/samos.elf` (ELF 32 bits, Multiboot 1). La carte de liaison est produite dans `build/samos.map`.
+
+**Squelette x86-64 (K1.1-M64-1), construction seulement :**
+
+```bash
+make x86_64
+```
+
+Produit `build/x86_64/samos64.elf` et `build/x86_64/samos64-test.elf` : des ELF64 x86-64 **liés et inspectés statiquement** (`make check-elf64`), qui **ne sont pas amorçables**. Ils n'ont pas d'en-tête Multiboot, le format d'image (décision A-1) n'étant pas tranché, et pas de passage en mode long (M64-2). Aucun banc ne les démarre. `make` (cible `all`) ne construit que l'i386.
 
 ## 12. Exécution sous QEMU
 
@@ -232,6 +246,7 @@ make test
 | Hébergés | `make test-host` | `string.c` ; `format.c` (comparaison différentielle avec `snprintf` de la libc) ; `math64.c` (100 000 divisions comparées à la division native) ; `ringbuf.c` (1 million d'opérations comparées à un modèle) ; `kbd_decode.c` (automate et 65 536 paires d'octets) ; `memmap.c` (cartes hostiles et 20 000 cartes aléatoires) ; `pmm_core.c` (invariants, épuisement, 200 000 opérations contre un modèle) ; le tout sous AddressSanitizer + UBSan |
 | QEMU | `make test-qemu` | démarrage normal (sans triple fault), sortie série de bout en bout, clavier de bout en bout (frappes injectées par `sendkey`), autotests noyau (`-append test`), chemin de panique (`test=panic`, statut 37), refus d'un mode de test inconnu, exceptions fatales `test=ud/de/gp/np/intbad`, double faute par porte de tâche (`test=df`), triple fault volontaire détecté (`test=triple`), violations mémoire `test=null/wtext/wrodata/unmapped`, débordement de pile attrapé (`test=stack`), RAM de 16 MiB à 4 GiB |
 | GDB | `make test-gdb` | état exact des registres à l'entrée de `kmain` ; test négatif du magic invalide ; lecture de la mémoire VGA `0xB8000` depuis l'extérieur du noyau |
+| Construction x86-64 (K1.1-M64-1) | `make test-x86_64-build` (inclus dans `make test`) | **aucune exécution** : drapeaux du compilateur (`-mno-red-zone`, `-mgeneral-regs-only`, `-fno-pic`, `-mcmodel=small` provisoire), séparation des objets ELF32/ELF64, symboles des entrées de liaison, règles ELF64 X1 à X12 (`tools/check_elf64.sh`), 27 tests négatifs, reproductibilité |
 | Deux émulateurs (K1.1-M64-0) | `make test-x86_64-emu` | la **même** image i386, les mêmes bancs QEMU et GDB sous `qemu-system-i386` puis `qemu-system-x86_64` ; chaque côté doit être complet et sans échec (bilans cohérents, SKIP attendus), puis verdicts, bilans et SKIP identiques ; seules les mesures de `n1stack` et `n1low` peuvent différer, et elles sont affichées (`tests/qemu/emu_matrix.sh`, `emu_compare.sh`) |
 
 **Choix de l'émulateur.** `make test QEMU=qemu-system-x86_64` exécute tous les bancs sous un autre émulateur ; le défaut reste `qemu-system-i386`. Chaque rapport commence par une ligne `[EMU]` : émulateur, version, modèle de CPU mesuré par QMP (`qemu32` ou `qemu64`, **non équivalents**), machine. Sous `qemu-system-x86_64`, GDB est forcé en architecture `i386:x86-64` : `$esp`, `$eflags` et la mémoire sont exacts, mais `$eip`, le désassemblage et les arguments C symboliques ne le sont pas (Details.md §41). Les tests négatifs de ce choix (émulateur absent, invalide, d'une autre architecture ; GDB en erreur ; divergence) sont dans `tests/tools/emu_selftest.sh`, exécuté par `make test-tools`.

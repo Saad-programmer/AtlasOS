@@ -254,3 +254,8 @@ clean:
 	rm -rf $(BUILD)
 
 -include $(PROD_OBJS:.o=.d) $(TEST_OBJS:.o=.d)
+
+# K1.1-M64-1 — Construction double : squelette ELF64 x86-64 NON AMORÇABLE,
+# variables, objets et répertoires séparés (build/x86_64/). Inclus en
+# dernier : ne change ni la cible par défaut ni aucune commande de l'i386.
+include mk/x86_64.mk

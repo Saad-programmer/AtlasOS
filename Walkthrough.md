@@ -2271,3 +2271,36 @@ tests/tools/repro_selftest.sh
   - Vérification : `git ls-remote origin 'refs/tags/*'` donne l'objet et `^{}` = `7e43b78`.
 - **Alignement local :** l'étiquette locale créée le 2026-11-20 à 15:49:59 UTC (objet `eace948bca10aac95f65b7087ba6a779305f2cfc`, même cible) a été alignée sur l'objet officiel. Opération : `git update-ref` conditionnée à l'ancienne valeur, sur autorisation du développeur. Aucune étiquette distante n'a été déplacée, aucun push forcé.
 - **Documentation :** les mentions « étiquette absente de GitHub » sont marquées historiques. Preuves et dates conservées.
+
+## Jalon K1.1-M64-1 — Construction double i386 / x86-64 (en attente d'audit)
+
+- **Objectif :** ajouter une chaîne de construction x86-64 contrôlée, à côté de l'i386. Elle produit un **squelette ELF64 lié et inspectable statiquement, non amorçable**. Aucun passage en mode long (M64-2). Conception : `docs/review/K1.1-M64-1-design.md` §11.1.
+- **Point de départ :** `main` = `5370fe5`. Branche : `claude/k1.1-m64-1-build`.
+- **Fichiers créés** (aucune source i386 modifiée) :
+  - `kernel/arch/x86_64/boot/entry.asm` : `_start` 64 bits inerte (`cli ; hlt`), **sans en-tête Multiboot** (A-1 non tranchée) ;
+  - `kernel/arch/x86_64/skeleton.c` : un objet par classe de permissions (.text, .rodata, .data, .bss) ;
+  - `kernel/arch/x86_64/skeleton_test.c` : témoin `ktest_m64_skeleton_marker`, présent dans l'image de test seulement ;
+  - `kernel/arch/x86_64/linker.ld` : ELF64 lié à 1 MiB (**hypothèse locale**, pas D-LAYOUT), sections alignées sur 4 KiB, 3 PHDRS R E / R / RW, assertions R4 ;
+  - `mk/x86_64.mk` : variables `X64_*`, répertoire `build/x86_64/`, cibles `x86_64`, `check-elf64`, `test-x86_64-build` (ajoutée à `make test`) ;
+  - `tools/check_elf64.sh` : règles X1 à X12 ;
+  - `tests/tools/x86_64_build_check.sh` : drapeaux (F0 à F7), séparation (S0, S1), symboles des entrées de liaison (L0 à L2), images (C0, C1), tests négatifs N1 à N16, reproductibilité (E).
+- **Fichier modifié :** `Makefile`, avec une seule ligne ajoutée à la fin (`include mk/x86_64.mk`).
+- **Compilation :**
+  - commande : `make x86_64` ;
+  - drapeaux C : `--target=x86_64-unknown-none-elf -march=x86-64 -ffreestanding -nostdlibinc -fno-pic -fno-pie -mno-red-zone -mgeneral-regs-only -mcmodel=small -fstack-protector-strong -fcf-protection=none -O2 -g -Werror …` ;
+  - NASM : `-f elf64` ;
+  - `ld` : `-m elf_x86_64 -T kernel/arch/x86_64/linker.ld --fatal-warnings`.
+  - `-mcmodel=small` est une **hypothèse locale** (A-6 différée).
+- **Incidents :**
+  - **Analyse des colonnes de `readelf`.** Dans la première version de `check_elf64.sh`, les drapeaux de section sont dans la colonne 7, pas la 6, et ceux des segments commencent à la colonne 7. Le vérificateur échouait sur des images correctes ; corrigé.
+  - **N6 accepté à tort.** Le test négatif N6 (symbole indéfini) a été **accepté** par la règle X8. Cause : GNU ld résout un symbole indéfini faible, ou forcé par `--unresolved-symbols=ignore-all`, à 0, et le retire de la table des symboles de l'exécutable statique. Correction : contrôle sur les objets d'entrée (L0 à L2), interdiction de ces options de `ld` (F7), limite documentée dans X8.
+  - **F7 accepté à tort.** La première expression régulière exigeait une espace après `=`, si bien que F7 était accepté ; corrigé.
+  - **Faux S1, vrai S0.** Le premier S1 échouait parce que l'espace de travail se trouvait dans la zone exclue par l'analyse. Une fois déplacé, un répertoire périmé de l'exécution précédente a été **détecté à juste titre** par S0 (objet i386 dans `build/x86_64`). Répertoire généré supprimé ; espace de travail déplacé dans `build/tests/x86_64_build`.
+- **Validation locale :**
+  - `make -n -B all` est identique avant et après la modification ;
+  - images i386 (production et test) **identiques octet pour octet** à `main` ;
+  - `make test` : 260 `[PASS]`, 0 `[FAIL]` sous chaque émulateur, dont 33 contrôles x86-64 ; 86/86 cas QEMU, GDB 8/8 ;
+  - matrice des émulateurs identique ; reproductibilité réussie ;
+  - auto-test du moteur de mutations 15/15 ; 91/91 mutations.
+- **Expérience jetable, hors dépôt :** compilation LP64 de 7 modules portables. Résultat : 0 erreur, et 0 avertissement `-Wconversion`/`-Wshorten-64-to-32` sur 4 d'entre eux. Elle n'est **pas** ajoutée au dépôt (pas de portage anticipé).
+- **Statut :** en attente de l'audit du développeur. Aucune intégration dans `main`. M64-2 n'est pas commencé.

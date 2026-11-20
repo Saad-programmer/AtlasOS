@@ -1927,6 +1927,55 @@ Trois mécanismes empêchent un faux succès :
 
 **La lecture de `$esp` via une architecture 64 bits est-elle fiable ?** Pour un CPU en mode protégé, oui : l'architecture définit ESP comme les 32 bits de poids faible de RSP. Ce n'est pas qu'une affirmation : la mesure a été répétée sous les deux émulateurs avec des valeurs identiques. Les tests négatifs E5 montrent en outre qu'une architecture inadaptée produit bien des échecs.
 
+## 42. Construction double i386 / x86-64 : un squelette ELF64 contrôlé (K1.1-M64-1)
+
+> **Statut :** chaîne de construction **seulement**. Le squelette ELF64 est compilé, lié et inspecté **statiquement**. Il n'est **pas amorçable** et **aucun code 64 bits n'est exécuté** par SAMOS. Rapport : `docs/review/K1.1-M64-1-report.md`. Conception : `docs/review/K1.1-M64-1-design.md`.
+
+### 42.1 Pourquoi un squelette avant le tremplin
+
+Le passage au mode long (M64-2) mêlera du code 32 bits et 64 bits, un nouveau format d'image et de nouvelles tables. Si la **chaîne de construction** elle-même est fausse (mauvaise cible, drapeau oublié, objet i386 lié dans l'image 64 bits, segment W+X), les erreurs de M64-2 seraient indiscernables d'erreurs de construction. M64-1 isole donc ce risque : on prouve d'abord que l'on sait **produire** un ELF64 conforme, sans rien exécuter.
+
+### 42.2 Séparation des deux architectures
+
+- **Variables propres.** `mk/x86_64.mk` définit `X64_CFLAGS`, `X64_ASFLAGS`, `X64_LDFLAGS`. Les variables de l'i386 (`CFLAGS`, `ASFLAGS`, `LDFLAGS`, `ARCH`) ne sont ni lues ni modifiées.
+- **Répertoires propres.** Les objets x86-64 vont dans `build/x86_64/{prod,test}/`. Une règle à motifs GNU Make `build/prod/%.o` ne peut désigner que des chemins commençant par `build/prod/` : les règles des deux architectures ne peuvent pas se capturer mutuellement.
+- **`make all` inchangé.** Il ne construit que l'i386. Le moteur de mutations, la reproductibilité et les images de référence sont donc intacts.
+- **Preuve.** La sortie de `make -n -B all` est identique avant et après l'ajout. Les images i386 sont identiques octet pour octet à la référence, et chaque objet est contrôlé par sa classe ELF et sa machine.
+
+### 42.3 Les drapeaux propres au x86-64
+
+| Option | Rôle | Conséquence si absente |
+|---|---|---|
+| `--target=x86_64-unknown-none-elf` | code x86-64 sans système d'exploitation | code i386 ou dépendant de l'hôte |
+| `-mno-red-zone` | interdit la **zone rouge** de l'ABI System V AMD64 : 128 octets sous RSP qu'une fonction feuille peut utiliser sans décrémenter RSP | une interruption empile sur la pile courante et **écrase** ces données. Corruption silencieuse, propre aux noyaux |
+| `-mgeneral-regs-only` | aucun registre x87, MMX, SSE ou AVX | Clang utiliserait SSE pour des copies ou des calculs flottants, alors qu'aucun état FPU n'est sauvegardé ni activé (CR4.OSFXSR) |
+| `-mcmodel=small` | adresses du code et des données sous 2 GiB, adressage relatif à RIP sur 32 bits | **hypothèse locale** : vraie pour un noyau lié à 1 MiB. Un noyau *higher-half* demanderait `-mcmodel=kernel` (adresses dans les 2 GiB **hauts**). C'est la décision A-6, liée à D-LAYOUT, **non tranchée** |
+| `-fno-pic -fno-pie` | code à adresse fixe | table GOT et relogements dynamiques inutiles en noyau |
+
+`-mstack-alignment=16`, indispensable pour la cible i686, est **inutile** en x86-64 : l'ABI impose déjà un alignement de 16 octets.
+
+### 42.4 Ce que prouvent les contrôles statiques, et ce qu'ils ne prouvent pas
+
+`tools/check_elf64.sh` (règles X1 à X12) vérifie :
+- l'en-tête : ELF64, x86-64, EXEC, entrée `_start` ;
+- l'**absence** de magic Multiboot, car l'image ne doit pas se présenter comme amorçable ;
+- les sections, alignées sur 4 KiB et ordonnées ;
+- les segments : trois PT_LOAD R E / R / RW, aucun W+X, aucune page partagée ;
+- l'absence de symbole indéfini et de section dynamique ;
+- les bornes de l'image, et la séparation production/test ;
+- le **périmètre** : aucune instruction de registre de contrôle, de MSR, de table de descripteurs, ni de registre SIMD ;
+- la compatibilité des adresses avec le modèle `small`.
+
+**Limite constatée.** GNU ld résout un symbole **faible** indéfini, ou un symbole forcé par `--unresolved-symbols=ignore-all`, à l'adresse 0, et **le retire** de la table des symboles de l'exécutable statique. Aucune lecture de l'image ne peut alors le révéler. Ce cas est donc contrôlé **en amont**, sur les objets d'entrée (règles L0 à L2) et sur les options de `ld` (F7).
+
+**Ce que ces contrôles ne prouvent pas :** que du code 64 bits s'exécute correctement, qu'une protection mémoire est appliquée (aucune table de pages n'existe), ou que l'image est chargeable. Ce sont les objets de M64-2 et des jalons suivants.
+
+### 42.5 Questions de jury
+
+**Pourquoi ne pas simplement compiler tout le noyau en 64 bits ?** Parce que ce serait un portage non contrôlé. Les modules spécifiques à l'i386 (GDT, IDT à portes de tâche, pagination à 2 niveaux, cadre d'interruption 32 bits) n'ont pas d'équivalent direct. Les compiler en 64 bits produirait du code qui se lie peut-être, mais dont le comportement serait faux. M64-1 ne revendique que la chaîne de construction.
+
+**À quoi sert un test négatif sur un vérificateur ?** À prouver qu'il **peut échouer**. Un vérificateur qui accepte tout produirait des faux PASS. Pendant M64-1, un test négatif a montré qu'un symbole indéfini passait la règle X8, d'où le contrôle sur les objets.
+
 ## Références
 
 1. Free Software Foundation, *Multiboot Specification*, version 0.6.96, §3.1 (en-tête), §3.2 (état machine), §3.3 (structure d'information).
