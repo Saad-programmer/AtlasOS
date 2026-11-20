@@ -2181,7 +2181,7 @@ tests/tools/repro_selftest.sh
 - **Aucun banc exécuté** pour ce jalon documentaire ; les preuves citées sont celles du 2026-11-20 sur `94ae07b`.
 - **Verdict proposé :** **A**. La clôture ne sera définitive qu'après la décision explicite du développeur. K1.1 n'est pas commencé.
 
-## Jalon K1.1-M64-0 — Référence i386 et validation sous deux émulateurs (en attente de validation)
+## Jalon K1.1-M64-0 — Référence i386 et validation sous deux émulateurs (intégré dans `main`, `bbcc73a`)
 
 - **Objectif :** fixer la référence i386 (D-REF). Montrer que les bancs actuels donnent les mêmes verdicts sous `qemu-system-i386` et `qemu-system-x86_64` (D-CI), avant toute ligne de code 64 bits. Infrastructure de test seulement : aucun fichier de `kernel/` n'est modifié.
 - **Point de départ :** `main` = `63aca66` (revue de conception K1.1). Branche : `claude/k1.1-m64-0`.
@@ -2217,7 +2217,7 @@ tests/tools/repro_selftest.sh
   - `make test-x86_64-emu` : verdicts identiques ;
   - 91 / 91 mutations sous i386 ; auto-test du moteur 15 / 15 ; reproductibilité réussie.
 - **Détails et preuves :** `docs/review/K1.1-M64-0-report.md`, `Details.md` §41.
-- **Statut :** en attente de la validation du développeur ; aucune intégration dans `main`, M64-1 non commencé.
+- **Statut à `2ce5f00` (historique) :** en attente de la validation du développeur ; aucune intégration dans `main`, M64-1 non commencé. Statut actuel : voir K1.1-M64-0-INTEGRATE ci-dessous.
 
 ### K1.1-M64-0-AUDIT — Audit du comparateur (verdict provisoire A conditionnel)
 
@@ -2248,4 +2248,18 @@ tests/tools/repro_selftest.sh
   - matrice identique ; reproductibilité réussie ;
   - auto-test du moteur 15/15 ; 91/91 mutations ;
   - contre-tests sur données réelles : 21/21 conformes.
-- **Statut :** en attente de la décision du développeur ; aucune intégration.
+- **Statut à `bbcc73a` avant décision (historique) :** en attente de la décision du développeur ; aucune intégration. Statut actuel : voir ci-dessous.
+
+### K1.1-M64-0-INTEGRATE — Intégration dans `main` (2026-11-20)
+
+- **Décision :** verdict A accepté par le développeur ; intégration du candidat `bbcc73a`.
+- **Préconditions vérifiées :** SHA locaux et distants ; ascendance ; arbre propre ; sauvegardes et stash intacts ; diff de 12 fichiers, sans changement de production ; CI n° 19 (`44789173477`) `success` sur les deux variantes au SHA exact.
+- **Mutations :** 91/91 et auto-test 15/15 exécutés localement uniquement, **pas** sur GitHub.
+- **Sauvegarde :** `backup/k1.1-pre-m64-0-integrate` → `63aca66`.
+- **Intégration :** avance rapide seule `63aca66..bbcc73a` ; `main` = `origin/main` = `bbcc73ade522964835fcc8e9cb96dad1d157b679`.
+- **Étiquette :** `ref/i386-k0.7` locale (→ `7e43b78`) ; absence distante non résolue.
+- **Statut :**
+  - **K1.1-M64-0 — INTEGRATED** ; M64-1 NOT STARTED ;
+  - noyau de production i386 ; migration x86-64 NOT STARTED ;
+  - licence NOT DECIDED ; release NOT AUTHORIZED.
+
