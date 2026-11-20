@@ -55,6 +55,7 @@ run_case selftest "test" 33 \
     "re:suite K0.5 irq done: [1-9][0-9]* checks, 0 failures" \
     "re:suite K0.6 mm done: [1-9][0-9]* checks, 0 failures" \
     "[TEST] ALL TESTS PASSED" \
+    "serial:[TEST] skipped=0" "![SKIP]" \
     "![FAIL]"
 
 # K0.3 — Chemin de panique : message, emplacement, trace de pile, statut 37.
@@ -521,7 +522,17 @@ QEMU_MEM=4G TIMEOUT=6 run_case mem_4G "" 124 \
 # globale) ; le délai par défaut de 10 s faisait échouer ce cas de façon
 # aléatoire. À 128 MiB : 4,6 s. Cause précise de la durée non mesurée
 # (la durée croît avec la RAM : parcours des cadres et des tables).
-QEMU_MEM=512M TIMEOUT=30 run_case selftest_512M "test" 33 "[TEST] ALL TESTS PASSED" "![FAIL]"
+QEMU_MEM=512M TIMEOUT=30 run_case selftest_512M "test" 33 "[TEST] ALL TESTS PASSED" "![FAIL]" \
+    "serial:[TEST] skipped=0" "![SKIP]"
+# K0.7-SCOPE-RESOLVE — Autotests complets à 16 MiB (N2 de l'audit M2). Le
+# noyau y fonctionne ; seule la vérification du scénario de référence
+# (« plus de 100 MiB », configuration -m 128M) est SAUTÉE, et le banc exige
+# que ce saut soit annoncé, unique et motivé : un SKIP n'est jamais un succès.
+QEMU_MEM=16M TIMEOUT=30 run_case selftest_16M "test" 33 "[TEST] ALL TESTS PASSED" "![FAIL]" \
+    "serial:[PASS] memmap_covers_multiboot_mem" \
+    "serial:[PASS] memmap_upper_region_available" \
+    "serial:[SKIP] memmap_bench_total_over_100mib: precondition not met: Multiboot reports < 100 MiB above 1 MiB" \
+    "serial:[TEST] skipped=1"
 
 # K0.7 — Faute imbriquée : #UD dans un gestionnaire de #BP. La garde d'imbrication
 # arrête le noyau dès le second niveau, avec un rapport explicite.

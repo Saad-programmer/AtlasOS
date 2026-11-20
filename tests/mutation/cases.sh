@@ -700,3 +700,24 @@ MUT_CMDLINE=test=n3 mutant n3_scan_skips_last_pde kernel/arch/i386/paging.c \
     'n3_x10_last_pde_counted' \
     'n3_x10_last_pde_free_refused' \
     'n3_x10_last_pde_not_zeroed'
+
+# M86-M88 — K0.7-SCOPE-RESOLVE : cohérence de la carte mémoire avec Multiboot
+# (test_memmap, N2 de l'audit M2). Défauts de memmap.c (production) détectés à
+# toute taille de RAM ; le troisième (une page perdue par région) échappait à
+# l'ancien seuil fixe de 100 MiB à 128 MiB.
+mutant memmap_total_first_region_only kernel/mm/memmap.c \
+    '            t += m->r[i].length;' \
+    '            t += m->r[i].length; return t;' \
+    35 \
+    'memmap_covers_multiboot_mem'
+mutant memmap_parse_halves_length kernel/mm/memmap.c \
+    '        add_region(m, base, length, type);' \
+    '        add_region(m, base, length / 2u, type);' \
+    35 \
+    'memmap_upper_region_available'
+mutant memmap_parse_loses_one_page kernel/mm/memmap.c \
+    '        add_region(m, base, length, type);' \
+    '        add_region(m, base, length - (type == MULTIBOOT_MEMORY_AVAILABLE ? 0x1000u : 0u), type);' \
+    35 \
+    'memmap_covers_multiboot_mem' \
+    'memmap_upper_region_available'

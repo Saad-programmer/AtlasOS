@@ -14,6 +14,14 @@
 void ktest_suite(const char *name);
 void ktest_check(bool cond, const char *expr, const char *file, int line);
 unsigned ktest_failures(void);
+/* K0.7-SCOPE-RESOLVE — Vérification NON exécutée parce que sa précondition
+ * n'est pas réunie (configuration du banc, information absente du chargeur).
+ * Ce n'est PAS un succès : elle n'entre ni dans checks ni dans failures, elle
+ * est comptée à part (« [TEST] skipped=N ») et annoncée par « [SKIP] nom :
+ * raison ». Le banc QEMU exige qu'aucune vérification ne soit sautée dans la
+ * configuration de référence (128 MiB). */
+void ktest_skip(const char *name, const char *reason);
+unsigned ktest_skipped(void);
 
 #define KTEST_CHECK(cond) ktest_check((cond), #cond, __FILE__, __LINE__)
 

@@ -20,6 +20,7 @@
 
 static unsigned g_checks;
 static unsigned g_failures;
+static unsigned g_skipped;                 /* K0.7-SCOPE-RESOLVE : préconditions non réunies */
 static const char *g_suite;          /* suite en cours */
 static unsigned g_suite_checks0;     /* compteurs au début de la suite */
 static unsigned g_suite_fail0;
@@ -90,6 +91,17 @@ unsigned ktest_failures(void)
     return g_failures;
 }
 
+void ktest_skip(const char *name, const char *reason)
+{
+    g_skipped++;
+    kprintf("[SKIP] %s: %s\n", name, reason);
+}
+
+unsigned ktest_skipped(void)
+{
+    return g_skipped;
+}
+
 /* Fonctions imbriquées non inlinées : la trace de pile doit montrer plusieurs
  * cadres. */
 static __attribute__((noinline)) SAMOS_NORETURN void deliberate_panic_inner(int code)
@@ -134,6 +146,9 @@ static SAMOS_NORETURN void finish(void)
 {
     suite_close();
     kprintf("[TEST] suites=%u checks=%u failures=%u\n", g_suites, g_checks, g_failures);
+    /* Ligne séparée : le format de la ligne précédente est lu tel quel par le
+     * moteur de mutations et par le harnais TLB. */
+    kprintf("[TEST] skipped=%u\n", g_skipped);
     if (g_failures == 0) {
         kprintf("[TEST] ALL TESTS PASSED\n");
         qemu_exit(QEMU_EXIT_SUCCESS);

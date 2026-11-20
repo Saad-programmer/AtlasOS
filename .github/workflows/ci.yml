@@ -1,0 +1,73 @@
+# SAMOS / AtlasOS — Intégration continue minimale (K0.7-SCOPE-RESOLVE).
+#
+# Principe : exécuter dans un environnement propre EXACTEMENT les cibles du
+# Makefile que le développement utilise, sans secret ni dépendance tierce
+# autre que l'action officielle de récupération du dépôt (épinglée par SHA).
+# Paquets : dépôts officiels d'Ubuntu 24.04, mêmes versions que
+# l'environnement de développement (clang 18.1.3, NASM 2.16.01, binutils
+# 2.42, QEMU 8.2.2, GDB 15.1) ; versions affichées dans le journal.
+# Ce fichier ne modifie ni les protections de branches ni les paramètres du
+# dépôt ; il n'a aucun droit d'écriture (permissions: contents: read).
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      mutations:
+        description: "Exécuter aussi make test-mutation (environ 45 minutes)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Compilation, ELF, tests hôte, QEMU, GDB, reproductibilité
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Récupération du dépôt
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - name: Outils (dépôts Ubuntu officiels)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang nasm binutils gcc make qemu-system-x86 gdb python3
+      - name: Versions
+        run: |
+          clang --version | head -1
+          nasm -v
+          ld --version | head -1
+          qemu-system-i386 --version | head -1
+          gdb --version | head -1
+      - name: Compilation des deux images (parallèle, depuis zéro)
+        run: make clean && make -j"$(nproc)"
+      - name: Vérification ELF
+        run: make check-elf
+      - name: Banc complet (outils, hôte, QEMU, GDB)
+        run: make clean && make test
+      - name: Reproductibilité
+        run: make test-repro
+
+  mutations:
+    name: Mutations (déclenchement manuel)
+    if: github.event_name == 'workflow_dispatch' && inputs.mutations
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Récupération du dépôt
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - name: Outils (dépôts Ubuntu officiels)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang nasm binutils gcc make qemu-system-x86 gdb python3
+      - name: Moteur de mutations et son auto-test
+        run: |
+          make test-mutation
+          tests/mutation/selftest.sh

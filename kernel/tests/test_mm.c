@@ -9,6 +9,7 @@
 #include <arch/cpu.h>
 #include <arch/gdt.h>
 #include <arch/paging.h>
+#include <samos/bootinfo.h>
 #include <samos/kernel.h>
 #include <samos/ktest.h>
 #include <samos/log.h>
@@ -34,7 +35,50 @@ static void test_memmap(void)
         sorted = sorted && m->r[i - 1].base <= m->r[i].base;
     }
     KTEST_CHECK(sorted);
-    KTEST_CHECK(memmap_total(m, MULTIBOOT_MEMORY_AVAILABLE) > 100u * 1024 * 1024);  /* -m 128M */
+    /*
+     * K0.7-SCOPE-RESOLVE — Jusqu'ici : « mémoire disponible > 100 MiB »,
+     * c'est-à-dire la configuration du banc (-m 128M) codée en dur. À 16 MiB,
+     * le noyau fonctionne, mais cette assertion échouait (N2 de l'audit M2).
+     * Elle est REMPLACÉE par une vérification de cohérence entre deux sources
+     * indépendantes, valable à toute taille de RAM, et la condition du banc est
+     * CONSERVÉE comme précondition explicite (SKIP annoncé, jamais un succès).
+     *
+     * Multiboot (spécification 0.6.96, §3.3) : mem_lower = mémoire basse à
+     * partir de 0 ; mem_upper = mémoire à partir de 1 MiB, au plus jusqu'au
+     * premier trou. La carte E820 doit donc contenir AU MOINS ces quantités, et
+     * [1 MiB, 1 MiB + mem_upper) doit tenir dans UNE région disponible.
+     * Égalité constatée sous QEMU de 16 MiB à 1500 MiB ; à 4 GiB, E820 ajoute
+     * la mémoire au-dessus de 4 GiB, que mem_upper ne compte pas : d'où >=.
+     * Sans carte E820 (MBI_FLAG_MMAP absent), mm.c construit la carte à partir
+     * de mem_lower/mem_upper (memmap_from_basic) : la comparaison serait une
+     * tautologie, elle est donc sautée.
+     */
+    const struct bootinfo *bi = bootinfo_get();
+    uint64_t avail = memmap_total(m, MULTIBOOT_MEMORY_AVAILABLE);
+    if ((bi->flags & MBI_FLAG_MEM) && (bi->flags & MBI_FLAG_MMAP)) {
+        uint64_t mb = ((uint64_t)bi->mem_lower_kib + bi->mem_upper_kib) * 1024u;
+        bool memmap_covers_multiboot_mem = avail >= mb;
+        KTEST_CHECK(memmap_covers_multiboot_mem);
+        uint64_t up_end = 0x100000u + (uint64_t)bi->mem_upper_kib * 1024u;
+        bool memmap_upper_region_available = false;
+        for (unsigned i = 0; i < m->count; i++) {
+            if (m->r[i].type == MULTIBOOT_MEMORY_AVAILABLE && m->r[i].base <= 0x100000u &&
+                m->r[i].base + m->r[i].length >= up_end) {
+                memmap_upper_region_available = true;
+            }
+        }
+        KTEST_CHECK(memmap_upper_region_available);
+    } else {
+        ktest_skip("memmap_vs_multiboot_mem", "loader gave no E820 map or no mem_lower/mem_upper");
+    }
+    /* Précondition du scénario de référence (-m 128M), lue dans la source
+     * indépendante : moins de 100 MiB annoncés par Multiboot => SKIP. */
+    if ((bi->flags & MBI_FLAG_MEM) && bi->mem_upper_kib >= 100u * 1024u) {
+        bool memmap_bench_total_over_100mib = avail > 100u * 1024 * 1024;
+        KTEST_CHECK(memmap_bench_total_over_100mib);
+    } else {
+        ktest_skip("memmap_bench_total_over_100mib", "precondition not met: Multiboot reports < 100 MiB above 1 MiB");
+    }
 }
 
 static bool frame_ok(uint32_t phys)
