@@ -2110,3 +2110,27 @@ tests/tools/repro_selftest.sh
 | moniteur QEMU, production | `CR0=80010011` ; mémoire basse `-rw` ; code, pages scellées et tables `-r-` |
 
 - **Décision proposée :** **C**, périmètre à clarifier. K0.7 **n'est pas clôturé** ; en attente de la décision du développeur.
+
+### K0.7-SCOPE-RESOLVE — Clarification du périmètre et traitement des écarts (en attente de décision)
+
+- **Branche :** `claude/k0.7-scope-resolve`, depuis `87f9369`. `main` (`daaa7a8`) n'est pas modifié. Aucun code de production modifié.
+- **Document :** `docs/review/K0.7-scope-resolution.md` :
+  - sources et collisions de numérotation ;
+  - tableau de traçabilité, avec une décision par objectif ; les décisions du jour sont marquées [2026-11-20] et distinguées des décisions historiques.
+- **`test_memmap` (M2-N2) :**
+  - l'assertion « > 100 MiB » (K0.6) codait en dur la configuration du banc ;
+  - mesures sous QEMU : E820 disponible = `mem_lower` + `mem_upper` de 16 MiB à 1500 MiB, et supérieur à 4 GiB ;
+  - remplacement par deux vérifications de cohérence avec Multiboot ; l'ancienne assertion devient une précondition explicite, `[SKIP]` sous 100 MiB ;
+  - `ktest_skip()` et une ligne `[TEST] skipped=N` séparée ;
+  - cas `selftest_16M` ; `skipped=0` exigé à 128 et 512 MiB ;
+  - contre-expériences : trois défauts de `memmap.c` détectés à 16 et 128 MiB, dont une perte d'une page par région, que l'ancien test manquait à 128 MiB ; versionnés en mutations (88 au total).
+- **Régression corrigée :** le cas `sane_fails` de `tests/mutation/selftest.sh` reposait sur l'échec à 16 MiB. Il est désormais provoqué par un mode de test inexistant.
+- **Mémoire basse :** étude des plages ; seule `0xB8000` est écrite après la pagination ; dépendances futures SMP et ACPI. **Report confirmé** (aucun changement de droits).
+- **Pile #DF :** mesure GDB sans changement de code, 852 octets sur 4 096 utilisés sur une vraie double faute (`test=stack`). Instrumentation permanente reportée.
+- **HAL :** périmètre minimal défini, report.
+- **CI :** `.github/workflows/ci.yml` (`ubuntu-24.04`, paquets officiels, `contents: read`, checkout épinglé par SHA). Exécution GitHub n° 1 (`44642571188`) sur `d5a4c0f` : tâche principale **`success`** ; mutations `skipped` (manuelles).
+- **Publication :** critères minimaux définis le 2026-11-20 ; licence non choisie (D5).
+- **Validation :**
+  - local, sur `d5a4c0f` : 194 `[PASS]`, 0 `[FAIL]` ; 85 cas QEMU sur 85 ; 88 mutations sur 88 ; reproductibilité, `-j8` et `check_elf.sh` (31 / 29) réussis ;
+  - auto-test du moteur : 15 situations conformes après correction (1 échec avant, §10.2 du rapport).
+- **Statut :** K0.7 **non clôturé** ; en attente de la décision du développeur sur les points B1 à B4 (§12 du rapport).

@@ -7,7 +7,7 @@
 #   1. QEMU absent                       -> 2, « prérequis absent »
 #   2. fichier de cas absent             -> 2, « fichier de cas absent »
 #   3. fichier de cas vide               -> 2, « aucune mutation exécutée »
-#   4. version saine en échec (16 MiB)   -> 2, « version saine en échec »
+#   4. version saine en échec (mode inexistant) -> 2, « version saine en échec »
 #   5. mutation sans effet observable    -> 1, « NON DÉTECTÉE »
 #   6. texte original introuvable        -> 1, « trouvé 0 fois »
 #   7. mutation qui casse la compilation -> 1, « compilation en échec »
@@ -53,7 +53,12 @@ expect missing_cases 2 "fichier de cas absent"
 : > "$T/empty.sh"
 expect empty 2 "aucune mutation exécutée"
 echo "$GOOD" > "$T/sane_fails.sh"
-expect sane_fails 2 "version saine en échec" QEMU_MEM=16M
+# Version saine en échec. Jusqu'en K0.7-SCOPE-RESOLVE, ce cas lançait la
+# version saine à 16 MiB, où test_memmap échouait (seuil fixe de 100 MiB, N2 de
+# l'audit M2). Ce défaut étant corrigé, le cas dépendait d'un bogue : il est
+# désormais provoqué par un mode de test inexistant (« [TEST] unknown test
+# mode », statut 35), échec déterministe indépendant de la taille de la RAM.
+expect sane_fails 2 "version saine en échec" MUT_CMDLINE=test=no_such_mode
 
 cat > "$T/undetected.sh" <<'EOF'
 mutant log_text kernel/mm/mm.c '"pmm: descriptor table consistent\n"' '"pmm: descriptor table CONSISTENT\n"' 35 'x'
