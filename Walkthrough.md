@@ -2218,3 +2218,34 @@ tests/tools/repro_selftest.sh
   - 91 / 91 mutations sous i386 ; auto-test du moteur 15 / 15 ; reproductibilité réussie.
 - **Détails et preuves :** `docs/review/K1.1-M64-0-report.md`, `Details.md` §41.
 - **Statut :** en attente de la validation du développeur ; aucune intégration dans `main`, M64-1 non commencé.
+
+### K1.1-M64-0-AUDIT — Audit du comparateur (verdict provisoire A conditionnel)
+
+- **Contrôles :**
+  - `origin/claude/k1.1-m64-0` = `defacd1` ; `main` = `origin/main` = `63aca66` ;
+  - `defacd1` ne modifie que le rapport ; aucun fichier de `kernel/` ni de `tools/` changé depuis `main` ;
+  - CI n° 18 (`44775949654`) sur `defacd1` : deux variantes `success`.
+- **Contre-tests sur résultats réels falsifiés** (21, hors dépôt).
+  - Le comparateur de `defacd1` acceptait (statut 0) neuf situations qui auraient dû être refusées :
+    - un même SKIP inattendu, ou une ligne `skipped=` absente, des deux côtés ;
+    - un même `[FAIL]` (QEMU ou GDB) des deux côtés ;
+    - un résultat GDB tronqué de la même façon des deux côtés ;
+    - une empreinte **stable** falsifiée (`n1gdt`) ;
+    - une parenthèse arbitraire ajoutée à un verdict ;
+    - une mesure `n1low` de forme invalide ;
+    - un verdict hors bilan.
+  - Dans le pipeline complet, `emu_matrix.sh` vérifiait aussi le statut de chaque banc, ce qui couvrait les situations « échec commun ». Les situations de mesure, en revanche, **masquaient** une divergence.
+- **Corrections :**
+  - `tests/qemu/emu_compare.sh` :
+    - validation individuelle de chaque côté (bilans `QEMU:` et `GDB:` uniques, sans échec et cohérents avec le nombre de verdicts ; aucune ligne `[FAIL]` ou `[SKIP]` ; table des SKIP attendus) ;
+    - parenthèse de mesure tolérée pour `n1stack_page_intact` et `n1low_page_intact` seulement, au format exact `(avant 0xH, refus 0xH)` ;
+    - `pipefail` et refus d'un résumé vide ou en erreur.
+    - Ce dernier point vient d'un défaut de la première version de la correction, révélé par les contre-tests : un `sed` en erreur vidait les deux résumés, qui devenaient « identiques ».
+  - `tests/qemu/gdb_checks.sh` : bilan `GDB: N verifications, R reussies, E echecs`. Critères et messages inchangés.
+  - `tests/tools/emu_selftest.sh` : E7 passe à 22 cas, dont la LIMITE documentée (un faux PASS commun et cohérent avec les bilans n'est pas détectable).
+- **Revalidation :**
+  - `make test` : 227 `[PASS]`, 0 `[FAIL]` sous chaque émulateur (196 + 31 tests de l'émulateur) ; 86/86 ; GDB 8/8 avec son bilan ;
+  - matrice identique ; reproductibilité réussie ;
+  - auto-test du moteur 15/15 ; 91/91 mutations ;
+  - contre-tests sur données réelles : 21/21 conformes.
+- **Statut :** en attente de la décision du développeur ; aucune intégration.

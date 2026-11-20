@@ -1919,7 +1919,7 @@ Trois mécanismes empêchent un faux succès :
 
 1. **Identification de l'émulateur** (`tests/qemu/emu.sh`). Avant tout test, QEMU est interrogé par QMP. Un émulateur absent, une réponse vide (`/bin/true`) ou un CPU d'une autre architecture donnent le statut 2.
 2. **Trois exigences par test GDB.** Le statut de GDB doit être nul. Son journal ne doit contenir aucun diagnostic d'échec connu. Les valeurs attendues doivent être présentes. Une valeur correcte affichée par un GDB en échec reste un échec (test E6).
-3. **Comparaison stricte** (`tests/qemu/emu_compare.sh`). Les verdicts, les bilans et les `[TEST] skipped=N` sont comparés sans aucune tolérance. Un résultat absent est un échec, jamais un accord.
+3. **Comparaison stricte** (`tests/qemu/emu_compare.sh`). Chaque côté est d'abord validé **seul** : bilan unique, sans échec et cohérent avec le nombre de verdicts (`QEMU:` et `GDB:`) ; aucune ligne `[FAIL]` ou `[SKIP]` ; SKIP des autotests conformes à une table explicite. Deux bancs qui échouent de la même façon ne sont donc jamais un succès. Les verdicts, les bilans et les SKIP sont ensuite comparés sans aucune tolérance, sauf la parenthèse « (avant 0x…, refus 0x…) » des deux seuls cas `n1stack` et `n1low`, affichée en `[INFO]`. Un résultat absent ou une erreur interne du comparateur est un échec, jamais un accord. **Limite :** une erreur commune aux deux bancs et cohérente avec leurs bilans n'est pas détectable par comparaison ; la parité ne prouve pas la correction du noyau.
 
 ### 41.5 Questions de jury
 

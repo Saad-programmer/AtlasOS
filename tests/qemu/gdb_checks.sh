@@ -46,6 +46,12 @@ PORT="${GDB_PORT:-1234}"
 QEMU="${QEMU:-qemu-system-i386}"
 GDB="${GDB:-gdb}"
 fail=0
+npass=0 nfail=0  # vérifications (bilan « GDB: » lu par tests/qemu/emu_compare.sh)
+# pass_ / fail_ : seul point d'émission des verdicts de vérification. Les
+# lignes « [FAIL] gdb: statut / erreur GDB » de gdb_run sont des diagnostics
+# en plus ; elles mettent fail=1 et sont refusées par le comparateur.
+pass_() { echo "[PASS] gdb: $1"; npass=$((npass + 1)); }
+fail_() { echo "[FAIL] gdb: $1"; nfail=$((nfail + 1)); fail=1; }
 
 # shellcheck source=tests/qemu/emu.sh
 source "$(dirname "$0")/emu.sh"
@@ -104,11 +110,11 @@ gdb_run "$OUT/gdb_abi.log" \
     -ex 'kill' || fail=1
 stop_qemu
 check() {   # check NOM MOTIF
-    if grep -q "^$2\$" "$OUT/gdb_abi.log"; then echo "[PASS] gdb: $1"; else echo "[FAIL] gdb: $1 (voir $OUT/gdb_abi.log)"; fail=1; fi
+    if grep -q "^$2\$" "$OUT/gdb_abi.log"; then pass_ "$1"; else fail_ "$1 (voir $OUT/gdb_abi.log)"; fi
 }
 check "ESP % 16 == 12 a l'entree de kmain" "ESPMOD16=12"
 check "1er argument = 0x2BADB002" "ARG0=0x2badb002"
-if grep -q '^ARG1=0x[1-9a-f]' "$OUT/gdb_abi.log"; then echo "[PASS] gdb: 2e argument (mbi) non nul"; else echo "[FAIL] gdb: 2e argument nul"; fail=1; fi
+if grep -q '^ARG1=0x[1-9a-f]' "$OUT/gdb_abi.log"; then pass_ "2e argument (mbi) non nul"; else fail_ "2e argument nul"; fi
 check "EFLAGS.DF == 0" "DF=0"
 check "EFLAGS.IF == 0" "IF=0"
 check "ESP dans la pile de demarrage" "INSTACK=1"
@@ -127,9 +133,9 @@ stop_qemu
 if grep -q 'KERNEL PANIC: invalid multiboot magic 0xdeadbeef' "$BLOG" &&
    grep -q '\*\*\* system halted' "$BLOG" &&
    ! grep -q 'boot complete' "$BLOG"; then
-    echo "[PASS] gdb: magic invalide -> refus explicite et arret"
+    pass_ "magic invalide -> refus explicite et arret"
 else
-    echo "[FAIL] gdb: magic invalide non detecte (voir $BLOG)"; fail=1
+    fail_ "magic invalide non detecte (voir $BLOG)"
 fi
 
 # ---- 3. Contenu réel de la mémoire VGA ------------------------------------------
@@ -157,9 +163,10 @@ od -An -v -tu1 "$OUT/vga.bin" | tr -s ' ' '\n' | sed '/^$/d' | awk 'NR % 2 == 1'
 # les premières lignes ne sont plus dans le tampon. On cherche donc des lignes
 # de FIN de démarrage, toujours visibles (le défilement est testé en K0.3).
 if grep -q 'timer: PIT channel 0' "$OUT/vga.txt" && grep -q 'boot complete' "$OUT/vga.txt"; then
-    echo "[PASS] gdb: texte de demarrage present en memoire VGA 0xB8000"
+    pass_ "texte de demarrage present en memoire VGA 0xB8000"
 else
-    echo "[FAIL] gdb: texte absent de la memoire VGA (voir $OUT/vga.txt)"; fail=1
+    fail_ "texte absent de la memoire VGA (voir $OUT/vga.txt)"
 fi
 
+echo "GDB: $((npass + nfail)) verifications, $npass reussies, $nfail echecs"
 exit $fail
