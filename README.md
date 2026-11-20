@@ -44,9 +44,9 @@ Le but n'est pas d'assembler des bibliothèques existantes. Il s'agit de **compr
 | K0.4 | GDT, IDT, exceptions CPU | ✅ implémenté et vérifié |
 | K0.5 | PIC 8259, PIT, clavier PS/2, file circulaire | ✅ implémenté et vérifié |
 | K0.6 | Carte mémoire, allocateur physique, pagination, protections | ✅ implémenté et vérifié |
-| K0.7 | Durcissement : correction des défauts mémoire E1-E5, références des cadres, politique de `vmm_map`, canaris de pile, sentinelles et pages de garde des piles, outils de mutation et de reproductibilité | 🔶 **en cours** : R1 et **P4 clôturés dans leur périmètre** ; K0.7 dans son ensemble **non clôturé** (décision du développeur) |
+| K0.7 | Durcissement : correction des défauts mémoire E1-E5, références des cadres, politique de `vmm_map`, canaris de pile, sentinelles et pages de garde des piles, outils de mutation et de reproductibilité | ✅ **K0.7 — CLOSED (scope-defined), 2026-11-20** : R1 et P4 clôturés dans leur périmètre ; reports explicites et risques résiduels ouverts ([`docs/review/K0.7-formal-closure.md`](docs/review/K0.7-formal-closure.md)) |
 
-La phase K0 (K0.1 à K0.6) est terminée ; sa revue se trouve dans [`docs/review/K0-review.md`](docs/review/K0-review.md). **K0.7 (sécurisation) est en cours**, sans nouvelle fonctionnalité. Ses sous-jalons clôturés, chacun **dans son périmètre** :
+La phase K0 (K0.1 à K0.6) est terminée ; sa revue se trouve dans [`docs/review/K0-review.md`](docs/review/K0-review.md). **K0.7 — CLOSED (scope-defined), 2026-11-20** (sécurisation, sans nouvelle fonctionnalité). Ses sous-jalons clôturés, chacun **dans son périmètre** :
 
 - **R1** (durcissement des piles) : [`docs/review/K0.7-R1-closure.md`](docs/review/K0.7-R1-closure.md) ;
 - **P4** (protection des structures critiques et des tables de pages) : [`docs/review/K0.7-P4-closure.md`](docs/review/K0.7-P4-closure.md), décision A du développeur, avec **risques résiduels explicitement acceptés**.
@@ -63,7 +63,7 @@ La phase K0 (K0.1 à K0.6) est terminée ; sa revue se trouve dans [`docs/review
 
 **Une clôture de jalon ne signifie pas que le noyau est sécurisé.** SAMOS n'est ni un système d'exploitation complet ni un système sécurisé : c'est un noyau d'étude, testé sous QEMU.
 
-**Branches.** `main` contient P4 (clôturé dans son périmètre) et la correction K1.0-N3 (`daaa7a8`, 2026-11-19). L'audit de clôture globale de K0.7 ([`docs/review/K0.7-final-closure-audit.md`](docs/review/K0.7-final-closure-audit.md)) conclut que le **périmètre de K0.7 doit être clarifié** avant sa clôture ; la clarification et le traitement des écarts ([`docs/review/K0.7-scope-resolution.md`](docs/review/K0.7-scope-resolution.md)) sont intégrés dans `main` (`94ae07b`, 2026-11-20). Une **clôture formelle est proposée** ([`docs/review/K0.7-formal-closure.md`](docs/review/K0.7-formal-closure.md)), en attente de la décision du développeur : **K0.7 n'est pas encore clôturé**. **K1.1** (décisions d'architecture) et la migration x86-64 ne sont **pas commencés** ; leur préparation est décrite dans [`docs/design/K1-readiness.md`](docs/design/K1-readiness.md).
+**Branches.** `main` contient P4 (clôturé dans son périmètre) et la correction K1.0-N3 (`daaa7a8`, 2026-11-19). L'audit de clôture globale de K0.7 ([`docs/review/K0.7-final-closure-audit.md`](docs/review/K0.7-final-closure-audit.md)) conclut que le **périmètre de K0.7 doit être clarifié** avant sa clôture ; la clarification et le traitement des écarts ([`docs/review/K0.7-scope-resolution.md`](docs/review/K0.7-scope-resolution.md)) sont intégrés dans `main` (`94ae07b`, 2026-11-20). La clôture formelle ([`docs/review/K0.7-formal-closure.md`](docs/review/K0.7-formal-closure.md), verdict A approuvé par le développeur) est intégrée dans `main` (`edcd7f5`) : **K0.7 — CLOSED (scope-defined), 2026-11-20**. Cette clôture ne signifie pas que SAMOS est sécurisé, terminé ou validé sur matériel réel. **K1.1** (décisions d'architecture) et la migration x86-64 ne sont **pas commencés** ; leur préparation est décrite dans [`docs/design/K1-readiness.md`](docs/design/K1-readiness.md).
 
 ## 4. Vue d'ensemble de l'architecture
 
@@ -116,7 +116,7 @@ Tout le code spécifique au processeur se trouve dans `kernel/arch/i386/`. La mi
 
 ## 6. Composants en cours de développement
 
-K0.7 (sécurisation) : R1 et P4 clôturés dans leur périmètre ; périmètre de K0.7 résolu, clôture formelle proposée (`docs/review/K0.7-formal-closure.md`), en attente de la décision du développeur. Reports décidés le 2026-11-20 : mémoire basse en lecture seule, couche HAL, instrumentation permanente de la pile de double faute.
+Aucun. **K0.7 — CLOSED (scope-defined), 2026-11-20** (`docs/review/K0.7-formal-closure.md`) ; K1.1 n'est pas commencé. Reports décidés le 2026-11-20, qui ne sont **pas** des réalisations : mémoire basse en lecture seule, couche HAL, instrumentation permanente de la pile de double faute.
 
 ## 7. Composants planifiés
 
@@ -272,7 +272,7 @@ Seuls des outils de développement standard sont utilisés : compilateur, assemb
 
 ## 17. Feuille de route
 
-`K0.1 ✅ → … → K0.6 ✅ → K0.7 🔶 (R1 ✅, P4 ✅ dans son périmètre) → K1.0-N3 ✅ (correction de N3, intégrée) → clôture de K0.7 (formelle proposée, en attente de décision) → K1 : décisions d'architecture, kmalloc, x86-64 / higher-half, espaces d'adressage, ring 3 → processus/ordonnanceur → appels système → IPC → VFS → pilotes → A0 (IA) → V0 (voix) → I0 (agent)` — détail : [`docs/design/K1-readiness.md`](docs/design/K1-readiness.md)
+`K0.1 ✅ → … → K0.6 ✅ → K0.7 ✅ CLOSED (scope-defined), 2026-11-20 (R1 ✅, P4 ✅ dans son périmètre ; K1.0-N3 ✅ correction de N3 intégrée) → K1 : décisions d'architecture, kmalloc, x86-64 / higher-half, espaces d'adressage, ring 3 → processus/ordonnanceur → appels système → IPC → VFS → pilotes → A0 (IA) → V0 (voix) → I0 (agent)` — détail : [`docs/design/K1-readiness.md`](docs/design/K1-readiness.md)
 
 ## 18. Documentation
 
