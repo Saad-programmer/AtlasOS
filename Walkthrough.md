@@ -2185,7 +2185,7 @@ tests/tools/repro_selftest.sh
 
 - **Objectif :** fixer la référence i386 (D-REF). Montrer que les bancs actuels donnent les mêmes verdicts sous `qemu-system-i386` et `qemu-system-x86_64` (D-CI), avant toute ligne de code 64 bits. Infrastructure de test seulement : aucun fichier de `kernel/` n'est modifié.
 - **Point de départ :** `main` = `63aca66` (revue de conception K1.1). Branche : `claude/k1.1-m64-0`.
-- **Étiquette :** `ref/i386-k0.7` a été créée localement (annotée, objet `eace948`, cible `7e43b78`). Sa poussée a été **refusée** par le mandataire Git de l'environnement. Elle est absente de GitHub et reste à pousser par le développeur.
+- **Étiquette :** `ref/i386-k0.7` a été créée localement (annotée, objet `eace948`, cible `7e43b78`). Sa poussée a été **refusée** par le mandataire Git de l'environnement. Elle est absente de GitHub et reste à pousser par le développeur. *(Historique : publiée ensuite par le développeur, voir K1.1-M64-0-REFERENCE ci-dessous.)*
 - **Déroulement :**
   1. **Expérience GDB hors dépôt**, avant toute modification des bancs.
      - Sous `qemu-system-x86_64`, GDB en architecture i386 rejette la description de registres 64 bits (`Remote 'g' packet reply is too long`).
@@ -2257,9 +2257,17 @@ tests/tools/repro_selftest.sh
 - **Mutations :** 91/91 et auto-test 15/15 exécutés localement uniquement, **pas** sur GitHub.
 - **Sauvegarde :** `backup/k1.1-pre-m64-0-integrate` → `63aca66`.
 - **Intégration :** avance rapide seule `63aca66..bbcc73a` ; `main` = `origin/main` = `bbcc73ade522964835fcc8e9cb96dad1d157b679`.
-- **Étiquette :** `ref/i386-k0.7` locale (→ `7e43b78`) ; absence distante non résolue.
+- **Étiquette (état à l'intégration, historique) :** `ref/i386-k0.7` locale (→ `7e43b78`) ; absence distante non résolue. Résolue ensuite : voir K1.1-M64-0-REFERENCE.
 - **Statut :**
   - **K1.1-M64-0 — INTEGRATED** ; M64-1 NOT STARTED ;
   - noyau de production i386 ; migration x86-64 NOT STARTED ;
   - licence NOT DECIDED ; release NOT AUTHORIZED.
 
+### K1.1-M64-0-REFERENCE — Publication de la référence i386 (2026-11-20)
+
+- **Publication :** le développeur a publié l'étiquette annotée `ref/i386-k0.7` depuis son poste (date de l'étiquette : 2026-11-20 18:18:31 UTC).
+  - Objet officiel : `f671c13658c7cedff81c96ad4186013b54063256`.
+  - Cible : `7e43b786cc049e112b19e1ad786c15df6c4aeba9`.
+  - Vérification : `git ls-remote origin 'refs/tags/*'` donne l'objet et `^{}` = `7e43b78`.
+- **Alignement local :** l'étiquette locale créée le 2026-11-20 à 15:49:59 UTC (objet `eace948bca10aac95f65b7087ba6a779305f2cfc`, même cible) a été alignée sur l'objet officiel. Opération : `git update-ref` conditionnée à l'ancienne valeur, sur autorisation du développeur. Aucune étiquette distante n'a été déplacée, aucun push forcé.
+- **Documentation :** les mentions « étiquette absente de GitHub » sont marquées historiques. Preuves et dates conservées.
