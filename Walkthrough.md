@@ -2135,3 +2135,25 @@ tests/tools/repro_selftest.sh
   - auto-test du moteur : 15 situations conformes après correction (1 échec avant, §10.2 du rapport).
 - **CI sur le commit de documentation `a349042` :** exécution GitHub n° 2 (`44644534288`), conclusion **`success`** (tâche principale) ; mutations `skipped` (manuelles). Le présent ajout déclenche une exécution n° 3, dont le résultat n'est pas consigné ici.
 - **Statut :** K0.7 **non clôturé** ; en attente de la décision du développeur sur les points B1 à B4 (§12 du rapport).
+
+### K0.7-E820-FIX — Couverture mémoire vérifiée par plage (2026-11-20)
+
+- **Origine :** à la revue d'intégration, deux défauts de la vérification E820 de `58feb25` :
+  - F2, faux PASS : le total disponible compensait une plage manquante ;
+  - F1, faux FAIL : `base + length` débordait pour une région finissant à 2^64.
+
+  En rejouant l'ancienne logique sur des cartes synthétiques, deux défauts de plus sont apparus : F3 (entrées réservées ignorées, faux PASS) et F4 (une seule région exigée, faux FAIL). Au total, l'ancienne logique se trompe sur 7 cas sur 15.
+- **Sémantique retenue :** celle de `pmm_core_init` (une région non disponible l'emporte en cas de chevauchement). Aucune ambiguïté dans `memmap.c`, qui garde les entrées brutes ; aucun changement de production.
+- **Fichiers :**
+  - `kernel/tests/memcover.c` et `.h` (nouveaux, tests seulement) ;
+  - `kernel/tests/test_mm.c` (plages `[0, mem_lower)` et `[1 MiB, 1 MiB + mem_upper)`) ;
+  - `tests/host/test_memcover.c` et `tests/host/cases.sh` (17 cartes synthétiques) ;
+  - `tests/qemu/cases.sh` (`selftest_4G` ; noms recalés dans `selftest_16M`) ;
+  - `tests/mutation/cases.sh` (3 mutations recalées, 3 nouvelles ; 91 au total) ;
+  - `Makefile` (source de test) ; `docs/review/K0.7-scope-resolution.md` §13 ; `README.md`.
+- **Validation :**
+  - local, sur `21cf673` : 196 `[PASS]`, 0 `[FAIL]` ; 86 cas QEMU sur 86 ; 91 mutations sur 91 ; auto-test du moteur 15 sur 15 ; reproductibilité, `-j8` et `check_elf.sh` réussis ;
+  - image de production identique à `main` ;
+  - SKIP : 0 à 128 MiB, 512 MiB et 4 GiB ; 1, annoncé, à 16 MiB ;
+  - CI n° 4 : `success`.
+- **Statut :** en attente de la décision du développeur sur la reprise de l'intégration. K0.7 n'est pas clôturé.
