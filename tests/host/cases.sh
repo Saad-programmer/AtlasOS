@@ -5,6 +5,7 @@ build_and_run test_format kernel/lib/format.c kernel/lib/math64.c kernel/lib/str
 build_and_run test_ringbuf kernel/lib/ringbuf.c
 build_and_run test_kbd_decode kernel/drivers/kbd_decode.c kernel/lib/string.c
 build_and_run test_memmap kernel/mm/memmap.c kernel/lib/string.c
+build_and_run test_memcover kernel/tests/memcover.c kernel/mm/memmap.c kernel/lib/string.c   # K0.7-E820-FIX
 build_and_run test_pmm kernel/mm/pmm_core.c kernel/mm/memmap.c kernel/lib/string.c
 build_and_run test_frame
 build_and_run test_pmm_refs kernel/mm/pmm_core.c kernel/mm/memmap.c kernel/lib/string.c

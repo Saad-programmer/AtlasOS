@@ -702,22 +702,47 @@ MUT_CMDLINE=test=n3 mutant n3_scan_skips_last_pde kernel/arch/i386/paging.c \
     'n3_x10_last_pde_not_zeroed'
 
 # M86-M88 — K0.7-SCOPE-RESOLVE : cohérence de la carte mémoire avec Multiboot
-# (test_memmap, N2 de l'audit M2). Défauts de memmap.c (production) détectés à
-# toute taille de RAM ; le troisième (une page perdue par région) échappait à
-# l'ancien seuil fixe de 100 MiB à 128 MiB.
+# (test_memmap, N2 de l'audit M2). Défauts de memmap.c (production).
+# K0.7-E820-FIX : cibles recalées sur les vérifications PAR PLAGE
+# (memcover.c) ; la première n'est plus vue que par la vérification du banc
+# (128 MiB), car les plages ne dépendent plus du total.
 mutant memmap_total_first_region_only kernel/mm/memmap.c \
     '            t += m->r[i].length;' \
     '            t += m->r[i].length; return t;' \
     35 \
-    'memmap_covers_multiboot_mem'
+    'memmap_bench_total_over_100mib'
 mutant memmap_parse_halves_length kernel/mm/memmap.c \
     '        add_region(m, base, length, type);' \
     '        add_region(m, base, length / 2u, type);' \
     35 \
-    'memmap_upper_region_available'
+    'memmap_upper_range_usable'
 mutant memmap_parse_loses_one_page kernel/mm/memmap.c \
     '        add_region(m, base, length, type);' \
     '        add_region(m, base, length - (type == MULTIBOOT_MEMORY_AVAILABLE ? 0x1000u : 0u), type);' \
     35 \
-    'memmap_covers_multiboot_mem' \
-    'memmap_upper_region_available'
+    'memmap_lower_range_usable' \
+    'memmap_upper_range_usable'
+
+# M89-M91 — K0.7-E820-FIX (F1, F2).
+# F2 : région basse supprimée (le total diminue : l'ancien test la voyait).
+mutant memmap_drops_low_region kernel/mm/memmap.c \
+    '        add_region(m, base, length, type);' \
+    '        if (base != 0) { add_region(m, base, length, type); }' \
+    35 \
+    'memmap_lower_range_usable'
+# F2 : région basse remplacée par une COPIE recouvrant la région haute : total
+# inchangé, aucune couverture supplémentaire. L'ancien test (58feb25, totaux)
+# la déclarait réussie ; non équivalente à la précédente (cartes différentes).
+mutant memmap_low_region_duplicated_high kernel/mm/memmap.c \
+    '        add_region(m, base, length, type);' \
+    '        add_region(m, base == 0 ? 0x100000u : base, length, type);' \
+    35 \
+    'memmap_lower_range_usable'
+# F1 : fin de région calculée par base + length (débordement pour une région
+# finissant à 2^64). Invisible sous QEMU (aucune telle région) : détectée par
+# le test hébergé, par son assertion nommée.
+mutant_tool memcover_naive_region_end kernel/tests/memcover.c \
+    'if (m->r[i].base <= pos && pos <= rl && (!found || rl > reach)) {' \
+    'if (m->r[i].base <= pos && pos < m->r[i].base + m->r[i].length && (!found || rl > reach)) {' \
+    'tests/host/run.sh' \
+    'f1_region_ending_at_2_64_covers'

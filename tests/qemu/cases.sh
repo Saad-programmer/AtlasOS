@@ -529,10 +529,21 @@ QEMU_MEM=512M TIMEOUT=30 run_case selftest_512M "test" 33 "[TEST] ALL TESTS PASS
 # (« plus de 100 MiB », configuration -m 128M) est SAUTÉE, et le banc exige
 # que ce saut soit annoncé, unique et motivé : un SKIP n'est jamais un succès.
 QEMU_MEM=16M TIMEOUT=30 run_case selftest_16M "test" 33 "[TEST] ALL TESTS PASSED" "![FAIL]" \
-    "serial:[PASS] memmap_covers_multiboot_mem" \
-    "serial:[PASS] memmap_upper_region_available" \
+    "serial:[PASS] memmap_lower_range_usable" \
+    "serial:[PASS] memmap_upper_range_usable" \
     "serial:[SKIP] memmap_bench_total_over_100mib: precondition not met: Multiboot reports < 100 MiB above 1 MiB" \
     "serial:[TEST] skipped=1"
+# K0.7-E820-FIX — Autotests complets à 4 GiB : la carte E820 contient 1 GiB
+# disponible AU-DELÀ de 4 GiB, que mem_upper ne compte pas. C'est la
+# configuration où l'ancienne vérification par totaux (58feb25) pouvait
+# compenser une plage manquante (F2) : chaque plage doit être vérifiée, aucune
+# vérification sautée.
+QEMU_MEM=4G TIMEOUT=60 run_case selftest_4G "test" 33 "[TEST] ALL TESTS PASSED" "![FAIL]" \
+    "mm: 0x100000000-0x13fffffff available" \
+    "serial:[PASS] memmap_lower_range_usable" \
+    "serial:[PASS] memmap_upper_range_usable" \
+    "serial:[PASS] memmap_bench_total_over_100mib" \
+    "serial:[TEST] skipped=0" "![SKIP]"
 
 # K0.7 — Faute imbriquée : #UD dans un gestionnaire de #BP. La garde d'imbrication
 # arrête le noyau dès le second niveau, avec un rapport explicite.

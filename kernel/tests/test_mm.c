@@ -17,6 +17,7 @@
 #include <samos/multiboot.h>
 #include <samos/pit.h>
 #include <samos/pmm.h>
+#include "memcover.h"
 
 static volatile uint32_t g_rw_var = 0x11111111u;          /* .data : RW */
 static const uint32_t g_ro_var = 0x22222222u;             /* .rodata : R */
@@ -45,29 +46,28 @@ static void test_memmap(void)
      *
      * Multiboot (spécification 0.6.96, §3.3) : mem_lower = mémoire basse à
      * partir de 0 ; mem_upper = mémoire à partir de 1 MiB, au plus jusqu'au
-     * premier trou. La carte E820 doit donc contenir AU MOINS ces quantités, et
-     * [1 MiB, 1 MiB + mem_upper) doit tenir dans UNE région disponible.
-     * Égalité constatée sous QEMU de 16 MiB à 1500 MiB ; à 4 GiB, E820 ajoute
-     * la mémoire au-dessus de 4 GiB, que mem_upper ne compte pas : d'où >=.
+     * premier trou. Chacune de ces deux PLAGES doit donc être utilisable dans
+     * la carte E820 (bloc K0.7-E820-FIX ci-dessous). Les totaux ne sont pas
+     * comparés : à 4 GiB, E820 contient en plus la mémoire au-delà de 4 GiB,
+     * que mem_upper ne compte pas.
      * Sans carte E820 (MBI_FLAG_MMAP absent), mm.c construit la carte à partir
      * de mem_lower/mem_upper (memmap_from_basic) : la comparaison serait une
      * tautologie, elle est donc sautée.
      */
     const struct bootinfo *bi = bootinfo_get();
     uint64_t avail = memmap_total(m, MULTIBOOT_MEMORY_AVAILABLE);
-    if ((bi->flags & MBI_FLAG_MEM) && (bi->flags & MBI_FLAG_MMAP)) {
-        uint64_t mb = ((uint64_t)bi->mem_lower_kib + bi->mem_upper_kib) * 1024u;
-        bool memmap_covers_multiboot_mem = avail >= mb;
-        KTEST_CHECK(memmap_covers_multiboot_mem);
-        uint64_t up_end = 0x100000u + (uint64_t)bi->mem_upper_kib * 1024u;
-        bool memmap_upper_region_available = false;
-        for (unsigned i = 0; i < m->count; i++) {
-            if (m->r[i].type == MULTIBOOT_MEMORY_AVAILABLE && m->r[i].base <= 0x100000u &&
-                m->r[i].base + m->r[i].length >= up_end) {
-                memmap_upper_region_available = true;
-            }
-        }
-        KTEST_CHECK(memmap_upper_region_available);
+    /* K0.7-E820-FIX (F1, F2) — La version du 2026-11-20 (58feb25) comparait le
+     * TOTAL disponible à mem_lower + mem_upper : une région dupliquée ou située
+     * au-delà de 4 GiB compensait une plage manquante (faux succès, F2), et
+     * base + length débordait pour une région finissant à 2^64 (F1). Chaque
+     * plage annoncée par Multiboot est désormais vérifiée SÉPARÉMENT
+     * (memcover.c : union des entrées disponibles, aucune entrée d'un autre
+     * type, bornes inclusives). */
+    if (memcover_sources_independent(bi->flags)) {
+        bool memmap_lower_range_usable = memcover_range_usable(m, 0, (uint64_t)bi->mem_lower_kib * 1024u);
+        KTEST_CHECK(memmap_lower_range_usable);
+        bool memmap_upper_range_usable = memcover_range_usable(m, 0x100000u, (uint64_t)bi->mem_upper_kib * 1024u);
+        KTEST_CHECK(memmap_upper_range_usable);
     } else {
         ktest_skip("memmap_vs_multiboot_mem", "loader gave no E820 map or no mem_lower/mem_upper");
     }
