@@ -2133,4 +2133,5 @@ tests/tools/repro_selftest.sh
 - **Validation :**
   - local, sur `d5a4c0f` : 194 `[PASS]`, 0 `[FAIL]` ; 85 cas QEMU sur 85 ; 88 mutations sur 88 ; reproductibilité, `-j8` et `check_elf.sh` (31 / 29) réussis ;
   - auto-test du moteur : 15 situations conformes après correction (1 échec avant, §10.2 du rapport).
+- **CI sur le commit de documentation `a349042` :** exécution GitHub n° 2 (`44644534288`), conclusion **`success`** (tâche principale) ; mutations `skipped` (manuelles). Le présent ajout déclenche une exécution n° 3, dont le résultat n'est pas consigné ici.
 - **Statut :** K0.7 **non clôturé** ; en attente de la décision du développeur sur les points B1 à B4 (§12 du rapport).
