@@ -1956,17 +1956,22 @@ Le passage au mode long (M64-2) mêlera du code 32 bits et 64 bits, un nouveau f
 
 ### 42.4 Ce que prouvent les contrôles statiques, et ce qu'ils ne prouvent pas
 
-`tools/check_elf64.sh` (règles X1 à X12) vérifie :
+`tools/check_elf64.sh` (règles X1 à X13) vérifie :
 - l'en-tête : ELF64, x86-64, EXEC, entrée `_start` ;
 - l'**absence** de magic Multiboot, car l'image ne doit pas se présenter comme amorçable ;
 - les sections, alignées sur 4 KiB et ordonnées ;
 - les segments : trois PT_LOAD R E / R / RW, aucun W+X, aucune page partagée ;
 - l'absence de symbole indéfini et de section dynamique ;
 - les bornes de l'image, et la séparation production/test ;
-- le **périmètre** : aucune instruction de registre de contrôle, de MSR, de table de descripteurs, ni de registre SIMD ;
+- le **périmètre** : la mnémonique de chaque instruction et ses registres sont comparés à des listes d'interdits. Sont refusés les registres de contrôle et de débogage, les MSR, les tables de descripteurs, LMSW/CLTS, INVLPG, IRET, SYSCALL/SYSRET, ainsi que toute instruction x87, MMX, SSE ou AVX ;
+- la correspondance exacte des sections avec les segments (`.text`, `.rodata`, `.data .bss`) et leurs drapeaux (X13) ;
 - la compatibilité des adresses avec le modèle `small`.
 
 **Limite constatée.** GNU ld résout un symbole **faible** indéfini, ou un symbole forcé par `--unresolved-symbols=ignore-all`, à l'adresse 0, et **le retire** de la table des symboles de l'exécutable statique. Aucune lecture de l'image ne peut alors le révéler. Ce cas est donc contrôlé **en amont**, sur les objets d'entrée (règles L0 à L2) et sur les options de `ld` (F7).
+
+**Leçon de l'audit (M64-1-AUDIT).** La première version de X11 ne cherchait que quelques mnémoniques et noms de registres. Des tests sur des images volontairement fausses ont montré qu'elle acceptait FNINIT, FLDZ, EMMS, LDMXCSR, FXSAVE, VZEROUPPER, LMSW, CLTS, INVLPG, IRETD et les registres de débogage : c'étaient des faux PASS. Un vérificateur se juge donc par ses **tests négatifs**, et chaque test négatif doit lui-même prouver que le défaut est bien présent dans l'image (sonde indépendante du vérificateur).
+
+**Reproductibilité.** Elle est démontrée sur une même machine, dans un même répertoire source. Entre deux répertoires, les images diffèrent **seulement** par `.debug_info` : NASM y écrit le répertoire de compilation absolu (`DW_AT_comp_dir`). Les images sans débogage sont identiques, et une construction locale dans le chemin de la CI reproduit exactement l'empreinte de la CI. C'est la même limite que pour l'i386.
 
 **Ce que ces contrôles ne prouvent pas :** que du code 64 bits s'exécute correctement, qu'une protection mémoire est appliquée (aucune table de pages n'existe), ou que l'image est chargeable. Ce sont les objets de M64-2 et des jalons suivants.
 

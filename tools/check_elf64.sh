@@ -36,12 +36,30 @@
 #       __kernel_end <= 4 MiB
 #   X10 séparation production/test : --production refuse tout symbole
 #       « ktest_* » ou « test_* » ; --test exige ktest_m64_skeleton_marker
-#   X11 périmètre M64-1 : le code ne contient aucune instruction de
-#       transition ou de configuration du processeur (écriture ou lecture de
-#       CR0..CR8, RDMSR/WRMSR, LGDT/LIDT/LTR/LLDT, IRETQ, SWAPGS, SYSCALL,
-#       SYSRET) ni aucun registre x87/MMX/SSE/AVX (%st, %mm, %xmm, %ymm, %zmm)
+#   X11 périmètre M64-1, sur le code désassemblé (.text) : chaque MNÉMONIQUE
+#       et chaque PRÉFIXE est comparé à une liste d'interdits, et chaque
+#       opérande à une liste de registres interdits :
+#         - transition ou configuration du processeur : RDMSR/WRMSR, LGDT,
+#           LIDT, LLDT, LTR, LMSW et CLTS (modifient CR0), INVLPG, INVPCID,
+#           INVD/WBINVD, IRET (toutes tailles), SYSCALL, SYSRET, SYSENTER,
+#           SYSEXIT, SWAPGS, WRFSBASE/WRGSBASE, XSETBV ;
+#         - x87 (toute mnémonique « f… », sauf le préfixe de segment « fs »),
+#           MMX (EMMS, FEMMS), état SSE/AVX (LDMXCSR, STMXCSR, FXSAVE,
+#           FXRSTOR, XSAVE*, XRSTOR*), toute mnémonique VEX/EVEX « v… » ;
+#         - registres %crN, %drN/%dbN, %trN, %st, %mmN, %xmm, %ymm, %zmm.
+#       Le désassemblage doit réussir et contenir au moins une instruction ;
+#       un octet non décodable « (bad) » est refusé.
+#       Révision M64-1-AUDIT : la première version ne cherchait que quelques
+#       mnémoniques et noms de registres ; x87 sans opérande (FNINIT, FLDZ),
+#       EMMS, LDMXCSR, FXSAVE, VZEROUPPER, LMSW, CLTS, INVLPG, IRETD et les
+#       registres de débogage passaient (faux PASS constatés).
 #   X12 aucune section ALLOC à adresse nulle ni au-delà de 2 GiB
 #       (cohérence avec -mcmodel=small, hypothèse locale)
+#   X13 correspondance sections → segments exacte : PT_LOAD n°1 = .text,
+#       n°2 = .rodata, n°3 = .data .bss ; aucun autre segment ne contient de
+#       section ; drapeaux de section exacts (.text AX, .rodata A, .data et
+#       .bss WA). Sans X13, .rodata placée dans le segment RW (constantes
+#       inscriptibles) n'était refusée qu'indirectement (ajout M64-1-AUDIT).
 # =============================================================================
 set -u
 ELF="${1:?usage: check_elf64.sh IMAGE --production|--test}"
@@ -81,7 +99,7 @@ mb=$(od -An -v -tx4 -N 32768 "$ELF" | tr -s ' ' '\n' | grep -ciE '^(1badb002|e85
 # readelf -SW, après le numéro : Name Type Address Off Size ES Flg Lk Inf Al
 # ($7 = Flg ; vide pour les sections sans drapeau, d'où un décalage sans
 # effet : Lk est numérique et ne contient jamais « A »).
-secs=$(readelf -SW "$ELF" | sed -n 's/^ *\[ *[0-9]*\] //p' | awk '$1 != "" && $7 ~ /A/ {print $1, $2, $3, $5}')
+secs=$(readelf -SW "$ELF" | sed -n 's/^ *\[ *[0-9]*\] //p' | awk '$1 != "" && $7 ~ /A/ {print $1, $2, $3, $5, $7}')
 names=$(awk '{print $1}' <<<"$secs" | tr '\n' ' ')
 if [ "$names" = ".text .rodata .data .bss " ]; then
     pass "X6: sections ALLOC = .text .rodata .data .bss"
@@ -89,7 +107,7 @@ else
     bad "X6: sections ALLOC inattendues : $names"
 fi
 prev=-1; order_ok=1; align_ok=1
-while read -r n typ addr size; do
+while read -r n typ addr size flg; do
     [ -n "$n" ] || continue
     a=$((0x$addr))
     [ $((a % 4096)) -eq 0 ] || { align_ok=0; bad "X6: $n non alignee sur 4 KiB (0x$addr)"; }
@@ -150,21 +168,55 @@ else
 fi
 
 # ---- X11 : périmètre M64-1 (aucune instruction de transition, aucun SIMD) --
-dis=$(objdump -d -M att --no-show-raw-insn "$ELF" 2>/dev/null | awk -F'\t' 'NF >= 2 {print $2}')
-forb=$(grep -nE '%cr[0-9]|\b(rdmsr|wrmsr|lgdt[a-z]*|lidt[a-z]*|ltr|lldt|iretq|swapgs|syscall|sysretq?|sysenter|sysexit)\b|%(st|mm[0-7]|xmm|ymm|zmm)' <<<"$dis")
-if [ -z "$forb" ]; then
-    pass "X11: aucune instruction de transition ni registre x87/SSE/AVX ($(grep -c . <<<"$dis") instructions)"
+dis_raw=$(objdump -d -M att --no-show-raw-insn "$ELF" 2>&1); drc=$?
+# Lignes d'instruction : « adresse:<TAB>texte » ; $2 = texte de l'instruction.
+ins=$(awk -F'\t' 'NF >= 2 && $1 ~ /^ *[0-9a-f]+:$/ {print $2}' <<<"$dis_raw")
+nins=$(grep -c . <<<"$ins")
+if [ "$drc" -ne 0 ] || [ "$nins" -eq 0 ]; then
+    bad "X11: desassemblage impossible ou vide (objdump statut $drc, $nins instructions)"
 else
-    bad "X11: instruction hors perimetre M64-1 : $(head -3 <<<"$forb" | tr '\n' ';')"
+    # Mots d'instruction = préfixes et mnémonique : jetons initiaux commençant
+    # par une lettre, après retrait des commentaires (#...) et des noms de
+    # symboles (<...>). Le premier opérande (%, $, chiffre, parenthèse) arrête
+    # la lecture.
+    words=$(awk '{ sub(/#.*/, ""); gsub(/<[^>]*>/, ""); for (i = 1; i <= NF; i++) { if ($i ~ /^[a-z]/) print NR ":" $i; else break } }' <<<"$ins")
+    fmn=$(grep -E ':(rdmsr|wrmsr|lgdt[lqw]?|lidt[lqw]?|lldt|ltr|lmsw|clts|invlpg[a-z]*|invpcid|invd|wbinvd|iret[lqw]?|syscall|sysret[lq]?|sysenter|sysexit[lq]?|swapgs|wr[fg]sbase|xsetbv|emms|femms|ldmxcsr|stmxcsr|fxsave(64)?|fxrstor(64)?|xsave[a-z0-9]*|xrstor[a-z0-9]*|f[a-z0-9]+|v[a-z0-9]+)$' <<<"$words" | grep -vE ':fs$')
+    freg=$(grep -nE '%(cr|dr|db|tr)[0-9]|%(st|mm[0-7]|xmm|ymm|zmm)' <<<"$ins")
+    fbad=$(grep -nF '(bad)' <<<"$ins")
+    if [ -z "$fmn$freg$fbad" ]; then
+        pass "X11: aucune instruction de transition, x87, MMX, SSE ou AVX ($nins instructions)"
+    else
+        bad "X11: instruction hors perimetre M64-1 : $(printf '%s\n%s\n%s\n' "$fmn" "$freg" "$fbad" | grep . | head -3 | tr '\n' ';')"
+    fi
 fi
 
 # ---- X12 : adresses compatibles avec -mcmodel=small ------------------------
 x12=1
-while read -r n typ addr size; do
+while read -r n typ addr size flg; do
     [ -n "$n" ] || continue
     a=$((0x$addr)); s=$((0x$size))
     { [ "$a" -gt 0 ] && [ $((a + s)) -le $((0x80000000)) ]; } || { x12=0; bad "X12: $n hors de ]0, 2 GiB] (0x$addr+0x$size)"; }
 done <<<"$secs"
 [ "$x12" -eq 1 ] && pass "X12: sections ALLOC dans ]0, 2 GiB] (-mcmodel=small, hypothese locale)"
+
+# ---- X13 : correspondance sections -> segments, drapeaux de section -------
+types=$(awk '/^Program Headers:/ {f = 1; next} f && /^ *$/ {f = 0} f && $1 ~ /^[A-Z_]+$/ && $1 != "Type" {print $1}' <<<"$ph")
+mapping=$(awk '/Section to Segment mapping/ {f = 1; next} f && /^ +[0-9][0-9]/ {l = $0; sub(/^ +[0-9][0-9] */, "", l); sub(/ +$/, "", l); print (l == "" ? "-" : l)}' <<<"$ph")
+x13=1
+if [ "$(grep -c . <<<"$types")" -ne "$(grep -c . <<<"$mapping")" ]; then
+    x13=0; bad "X13: table de correspondance illisible ($(grep -c . <<<"$types") segments, $(grep -c . <<<"$mapping") lignes)"
+else
+    got=$(paste -d'|' <(printf '%s\n' "$types") <(printf '%s\n' "$mapping"))
+    loadmap=$(awk -F'|' '$1 == "LOAD" {print $2}' <<<"$got" | tr '\n' '/')
+    [ "$loadmap" = ".text/.rodata/.data .bss/" ] || { x13=0; bad "X13: sections des PT_LOAD = $loadmap (attendu .text/.rodata/.data .bss/)"; }
+    other=$(awk -F'|' '$1 != "LOAD" && $2 != "-" {print $1 ":" $2}' <<<"$got")
+    [ -z "$other" ] || { x13=0; bad "X13: section(s) hors PT_LOAD : $other"; }
+fi
+while read -r n typ addr size flg; do
+    [ -n "$n" ] || continue
+    case "$n" in .text) want=AX ;; .rodata) want=A ;; .data|.bss) want=WA ;; *) want="?" ;; esac
+    [ "$flg" = "$want" ] || { x13=0; bad "X13: drapeaux de $n = $flg (attendu $want)"; }
+done <<<"$secs"
+[ "$x13" -eq 1 ] && pass "X13: .text, .rodata, .data .bss dans leurs PT_LOAD ; drapeaux AX / A / WA"
 
 exit $fail

@@ -2304,3 +2304,32 @@ tests/tools/repro_selftest.sh
   - auto-test du moteur de mutations 15/15 ; 91/91 mutations.
 - **Expérience jetable, hors dépôt :** compilation LP64 de 7 modules portables. Résultat : 0 erreur, et 0 avertissement `-Wconversion`/`-Wshorten-64-to-32` sur 4 d'entre eux. Elle n'est **pas** ajoutée au dépôt (pas de portage anticipé).
 - **Statut :** en attente de l'audit du développeur. Aucune intégration dans `main`. M64-2 n'est pas commencé.
+
+### K1.1-M64-1-AUDIT — Audit du candidat `8792fd4`
+
+- **Méthode :** images falsifiées liées hors dépôt, soumises au vérificateur de `8792fd4`.
+- **Défauts constatés :**
+  - **D1 (HIGH) :** X11 acceptait des instructions x87 sans opérande, EMMS, LDMXCSR, FXSAVE, VZEROUPPER, LMSW, CLTS, INVLPG, IRETD et les registres de débogage ;
+  - **D2 :** aucune règle sur la correspondance sections → segments ;
+  - **D3 :** une option `-mcmodel=large` ajoutée après `-mcmodel=small` était acceptée ;
+  - **D4 :** les tests négatifs ne prouvaient pas l'injection et n'exigeaient pas le statut 1 ;
+  - **D5 :** images et objets éventuellement périmés.
+- **Corrections :**
+  - X11 réécrite (mnémoniques, préfixes, registres, `(bad)`, désassemblage non vide) ; X13 ajoutée ;
+  - options interdites par motif ;
+  - sondes d'injection, statut 1 exigé, ensemble borné de règles en échec ;
+  - méta-tests M1 à M4 ;
+  - constructions neuves et listes d'objets issues du Makefile ;
+  - fraîcheur (E0, E2) et reproductibilité (E1).
+- **Incidents de l'audit lui-même :**
+  - deux sondes analysaient mal `readelf -S` (champ décalé par `[10]`) et échouaient : défaut **non prouvé**, donc test en échec, comme prévu. Corrigé ;
+  - T1 échouait avec le statut 127 (`bash` introuvable dans le `PATH` réduit). Corrigé en lançant `bash` par son chemin absolu.
+- **Empreintes :** la différence entre l'environnement local et la CI vient de `.debug_info` (répertoire absolu écrit par NASM). Preuve : une construction locale dans le chemin de la CI reproduit exactement l'empreinte de la CI, et les images sans débogage sont identiques dans les trois répertoires. La reproductibilité inter-environnements des ELF64 complets n'est **pas** revendiquée.
+- **Validation :**
+  - 55/55 contrôles x86-64 (44 tests négatifs, 4 méta-tests) ;
+  - `make test` : 282 `[PASS]`, 0 `[FAIL]` sous chaque émulateur ;
+  - matrice et reproductibilité i386 réussies ;
+  - images i386 identiques à `main`.
+  - Mutations non relancées (fichiers non concernés), justifié dans le rapport, §10.6.
+- **Statut :** en attente de l'autorisation d'intégration.
+

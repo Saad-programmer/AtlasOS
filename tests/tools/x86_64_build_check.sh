@@ -22,12 +22,21 @@
 #      peut donc pas le voir dans l'image (constaté en M64-1).
 #   C. Contrôles ELF64 (tools/check_elf64.sh) sur les deux images, dans leur
 #      mode, puis contre-épreuves croisées.
-#   D. Tests négatifs N1 à N16 du vérificateur : chaque image falsifiée doit
-#      échouer sur la RÈGLE NOMMÉE attendue (« [FAIL] elf64 Xn »), pas sur
-#      n'importe quel échec ; une liaison refusée par une assertion R4 compte
-#      seulement si le message attendu apparaît.
-#   E. Reproductibilité : seconde construction dans un autre répertoire de
-#      sortie ; images identiques octet pour octet.
+#   D. Tests négatifs du vérificateur. Pour chacun (révision M64-1-AUDIT) :
+#      1. une SONDE indépendante du vérificateur (readelf, objdump, od)
+#         prouve que le défaut est réellement présent dans l'image falsifiée ;
+#      2. le vérificateur doit sortir avec le statut 1 (règle en échec), et
+#         non 0 (accepté) ni 2 (prérequis manquant, plantage) ;
+#      3. la règle PRINCIPALE attendue doit échouer, et l'ensemble des règles
+#         en échec doit rester dans l'ensemble déclaré pour ce défaut ;
+#         toute autre règle en échec signale un refus étranger au défaut.
+#      Une liaison refusée par une assertion R4 compte seulement si le
+#      message attendu apparaît.
+#   E. Fraîcheur et reproductibilité : deux constructions neuves dans deux
+#      répertoires ; les contrôles C portent sur la première ; les images de
+#      build/x86_64 doivent lui être identiques (sinon : images PÉRIMÉES, par
+#      exemple construites avec d'autres drapeaux, que Make ne détecte pas) ;
+#      les deux constructions neuves doivent être identiques entre elles.
 # Sortie : 0 si tout est conforme, 1 sinon.
 # =============================================================================
 set -u
@@ -45,10 +54,32 @@ ko()  { echo "[FAIL] x86_64-build $1"; fail=1; }
 for f in "$PROD" "$TEST" build/samos.elf build/samos-test.elf; do
     [ -f "$f" ] || { echo "[FAIL] x86_64-build: image absente $f (make all x86_64)"; exit 1; }
 done
+# Deux constructions neuves (indépendantes de tout fichier généré antérieur).
+FRESH1="$W/fresh1"; FRESH2="$W/fresh2"
+for d in "$FRESH1" "$FRESH2"; do
+    make -s --no-print-directory X64_BUILD="$d" "$d/samos64.elf" "$d/samos64-test.elf" > "$d.log" 2>&1 \
+        || { echo "[FAIL] x86_64-build: construction neuve impossible dans $d (voir $d.log)"; exit 1; }
+done
+# Objets d'entrée réels, tels que le Makefile les définit (pas de « find »
+# susceptible de compter des objets périmés).
+mkvar() { make -s --no-print-directory X64_BUILD="$FRESH1" --eval "print-var: ; @echo \$($1)" print-var; }
+P_OBJS=$(mkvar X64_PROD_OBJS); T_OBJS=$(mkvar X64_TEST_OBJS)
+[ -n "$P_OBJS" ] && [ -n "$T_OBJS" ] || { echo "[FAIL] x86_64-build: listes d'objets vides"; exit 1; }
+FPROD="$FRESH1/samos64.elf"; FTEST="$FRESH1/samos64-test.elf"
 
 # ---- A. Drapeaux ------------------------------------------------------------
 REQ_C="--target=x86_64-unknown-none-elf -march=x86-64 -ffreestanding -nostdlibinc -fno-pic -fno-pie -mno-red-zone -mgeneral-regs-only -mcmodel=small -fstack-protector-strong -fcf-protection=none -Werror"
-FORBID_C="-fpic -fPIC -fpie -fPIE -mred-zone -m32 -march=i686 --target=i686-unknown-none-elf -mstack-alignment=4 -msse -mavx"
+# Interdits par MOTIF (Clang applique la dernière occurrence d'une option :
+# une option contraire ajoutée après une option requise l'annulerait).
+forbidden_token() {
+    case "$1" in
+        -fpic|-fPIC|-fpie|-fPIE|-mred-zone|-m32|-m16|-mx32) return 0 ;;
+        -march=x86-64|--target=x86_64-unknown-none-elf|-mcmodel=small) return 1 ;;
+        -march=*|--target=*|-target|-mcmodel=*|-mstack-alignment=*) return 0 ;;
+        -msse*|-mavx*|-mmmx|-m3dnow*|-m80387|-mx87|-mfpmath=*|-mno-general-regs-only) return 0 ;;
+    esac
+    return 1
+}
 # flags_ok [SURCHARGES make...] : 0 si toutes les commandes x86-64 sont conformes.
 flags_ok() {
     local log; log="$(make -n -B x86_64 "$@" 2>&1)" || { echo "    make -n en echec"; return 1; }
@@ -59,7 +90,7 @@ flags_ok() {
         || { echo "    commandes x86-64 manquantes"; return 1; }
     while IFS= read -r line; do
         for f in $REQ_C; do grep -qF -- " $f " <<<" $line " || { echo "    option requise absente : $f"; r=1; }; done
-        for f in $FORBID_C; do grep -qF -- " $f " <<<" $line " && { echo "    option interdite : $f"; r=1; }; done
+        for f in $line; do forbidden_token "$f" && { echo "    option interdite : $f"; r=1; }; done
     done <<<"$cc"
     while IFS= read -r line; do grep -qF -- " -f elf64 " <<<" $line " || { echo "    NASM sans -f elf64"; r=1; }; done <<<"$as"
     while IFS= read -r line; do
@@ -76,9 +107,14 @@ flags_ok() {
     return $r
 }
 cur=$(make -s --no-print-directory --eval 'print-x64-cflags: ; @echo $(X64_CFLAGS)' print-x64-cflags)
+[ -n "$cur" ] || { echo "[FAIL] x86_64-build: X64_CFLAGS illisible"; exit 1; }
 if flags_ok > "$W/F0.log"; then ok "A/F0: drapeaux x86-64 conformes (C, NASM, ld)"; else ko "A/F0: drapeaux non conformes"; cat "$W/F0.log"; fi
 neg_flags() {   # neg_flags NOM MOTIF_ATTENDU SURCHARGE...
     local n="$1" want="$2"; shift 2
+    # Injection réelle : la surcharge doit différer de la valeur courante.
+    local var="${1%%=*}" val="${1#*=}" orig
+    orig=$(make -s --no-print-directory --eval "print-var: ; @echo \$($var)" print-var)
+    if [ -z "$orig" ] || [ "$val" = "$orig" ]; then ko "A/$n: injection impossible ($var inchangee ou vide)"; return; fi
     if flags_ok "$@" > "$W/$n.log"; then ko "A/$n: drapeaux falsifies ACCEPTES"
     elif grep -qF -- "$want" "$W/$n.log"; then ok "A/$n: refuse ($want)"
     else ko "A/$n: refuse pour une autre raison (voir $W/$n.log)"; fi
@@ -89,6 +125,8 @@ neg_flags F3_i686_target "option requise absente : --target=x86_64-unknown-none-
 neg_flags F4_sse_regs "option requise absente : -mgeneral-regs-only" "X64_CFLAGS=${cur/-mgeneral-regs-only/}"
 neg_flags F5_nasm_elf32 "NASM sans -f elf64" "X64_ASFLAGS=-f elf32 -g -F dwarf -w+all -w+error"
 neg_flags F6_ld_not_fatal "ld sans --fatal-warnings" "X64_LDFLAGS=-m elf_x86_64 -T kernel/arch/x86_64/linker.ld -nostdlib -z max-page-size=0x1000 -z noexecstack --build-id=none"
+neg_flags F8_mcmodel_large "option interdite : -mcmodel=large" "X64_CFLAGS=$cur -mcmodel=large"
+neg_flags F9_sse42 "option interdite : -msse4.2" "X64_CFLAGS=$cur -msse4.2"
 neg_flags F7_ld_ignore_unresolved "option ld interdite" "X64_LDFLAGS=-m elf_x86_64 -T kernel/arch/x86_64/linker.ld -nostdlib -z max-page-size=0x1000 -z noexecstack --build-id=none --fatal-warnings --unresolved-symbols=ignore-all"
 
 # ---- B. Séparation des objets ------------------------------------------------
@@ -100,7 +138,7 @@ sep_ok() {
         h=$(readelf -h "$o" 2>/dev/null)
         { grep -q 'Class:[[:space:]]*ELF64' <<<"$h" && grep -q 'X86-64' <<<"$h"; } || { echo "    $o n'est pas ELF64 x86-64"; r=1; }
         nx=$((nx + 1))
-    done < <(find "$x" -name '*.o' -not -path "$X64/repro/*")
+    done < <(find "$x" -name '*.o')
     for d in "$@"; do
         while IFS= read -r o; do
             h=$(readelf -h "$o" 2>/dev/null)
@@ -112,7 +150,7 @@ sep_ok() {
     echo "    objets : $nx x86-64, $ni i386"
     return $r
 }
-if sep_ok "$X64" build/prod build/test > "$W/S0.log"; then ok "B/S0: separation des objets ($(grep -o 'objets.*' "$W/S0.log"))"; else ko "B/S0: contamination croisee"; cat "$W/S0.log"; fi
+if sep_ok "$X64" build/prod build/test > "$W/S0.log" && sep_ok "$FRESH1" build/prod > "$W/S0f.log"; then ok "B/S0: separation des objets ($(grep -o 'objets.*' "$W/S0.log"))"; else ko "B/S0: contamination croisee"; cat "$W/S0.log"; fi
 mkdir -p "$W/S1/x64" "$W/S1/i386"
 cp "$(find build/prod -name '*.o' | head -1)" "$W/S1/x64/intrus.o"
 cp "$(find "$X64/prod" -name '*.o' | head -1)" "$W/S1/i386/intrus64.o"
@@ -132,8 +170,6 @@ syms_ok() {
     for s in $weak; do echo "    symbole faible indefini (resolu a 0 en silence) : $s"; r=1; done
     return $r
 }
-mkdir -p "$W"
-P_OBJS=$(find "$X64/prod" -name '*.o' | sort); T_OBJS=$(find "$X64/test" -name '*.o' | sort)
 # shellcheck disable=SC2086
 if syms_ok $P_OBJS > "$W/L0p.log" && syms_ok $T_OBJS > "$W/L0t.log"; then
     ok "B'/L0: entrees de liaison production et test : tout symbole reference est defini"
@@ -151,31 +187,54 @@ elif grep -q 'faible indefini.*samos64_missing_weak' "$W/L2.log"; then ok "B'/L2
 else ko "B'/L2: refus sans le diagnostic attendu (voir $W/L2.log)"; fi
 
 # ---- C. Contrôles ELF64 sur les images réelles -------------------------------
-if "$CHK" "$PROD" --production > "$W/C0.log"; then ok "C/C0: image de production conforme ($(grep -c '^\[PASS\]' "$W/C0.log") regles)"; else ko "C/C0: production non conforme"; grep FAIL "$W/C0.log"; fi
-if "$CHK" "$TEST" --test > "$W/C1.log"; then ok "C/C1: image de test conforme ($(grep -c '^\[PASS\]' "$W/C1.log") regles)"; else ko "C/C1: test non conforme"; grep FAIL "$W/C1.log"; fi
+if "$CHK" "$FPROD" --production > "$W/C0.log"; then ok "C/C0: image de production conforme ($(grep -c '^\[PASS\]' "$W/C0.log") regles)"; else ko "C/C0: production non conforme"; grep FAIL "$W/C0.log"; fi
+if "$CHK" "$FTEST" --test > "$W/C1.log"; then ok "C/C1: image de test conforme ($(grep -c '^\[PASS\]' "$W/C1.log") regles)"; else ko "C/C1: test non conforme"; grep FAIL "$W/C1.log"; fi
 
 # ---- D. Tests négatifs du vérificateur ---------------------------------------
-# must_fail NOM REGLE IMAGE MODE : le vérificateur doit échouer SUR la règle.
+# must_fail NOM PRINCIPALE AUTORISEES IMAGE MODE SONDE... : SONDE (commande
+# indépendante du vérificateur) prouve l'injection ; puis statut 1, règle
+# PRINCIPALE en échec, règles en échec incluses dans AUTORISEES.
 must_fail() {
-    local n="$1" rule="$2" img="$3" mode="$4"
+    local n="$1" rule="$2" allowed="$3" img="$4" mode="$5"; shift 5
     if [ ! -f "$img" ]; then ko "D/$n: image falsifiee non produite (voir $W/$n.link.log)"; return; fi
-    if "$CHK" "$img" "$mode" > "$W/$n.log" 2>&1; then ko "D/$n: anomalie ACCEPTEE par check_elf64"
-    elif grep -q "^\[FAIL\] elf64 $rule" "$W/$n.log"; then ok "D/$n: refuse par $rule"
-    else ko "D/$n: refuse sans la regle $rule (voir $W/$n.log)"; fi
+    if ! "$@" > "$W/$n.probe.log" 2>&1; then ko "D/$n: defaut NON injecte (sonde en echec : $*)"; return; fi
+    "$CHK" "$img" "$mode" > "$W/$n.log" 2>&1; local rc=$?
+    local failed extra
+    failed=$(grep -oE '^\[FAIL\] elf64 X[0-9]+' "$W/$n.log" | awk '{print $3}' | sort -u | tr '\n' ' ')
+    extra=""; for r in $failed; do case " $allowed " in *" $r "*) ;; *) extra="$extra $r" ;; esac; done
+    if [ "$rc" -eq 0 ]; then ko "D/$n: anomalie ACCEPTEE par check_elf64"
+    elif [ "$rc" -ne 1 ]; then ko "D/$n: verificateur en echec de prerequis ou plantage (statut $rc, voir $W/$n.log)"
+    elif ! grep -qw "$rule" <<<"$failed"; then ko "D/$n: refuse sans la regle $rule (echecs : $failed)"
+    elif [ -n "$extra" ]; then ko "D/$n: refus etranger au defaut (regles$extra hors de {$allowed})"
+    else ok "D/$n: defaut injecte (sonde) puis refuse par $rule (echecs : ${failed% })"; fi
 }
 LDS=kernel/arch/x86_64/linker.ld
-POBJ="$(find "$X64/prod" -name '*.o' | sort | tr '\n' ' ')"
+POBJ="$P_OBJS"
 LDBASE="-m elf_x86_64 -nostdlib -z max-page-size=0x1000 -z noexecstack --build-id=none"
 asm() { printf '%s\n' "$2" > "$W/$1.asm" && nasm -f elf64 -w+all "$W/$1.asm" -o "$W/$1.o"; }
 link() { local n="$1" s="$2"; shift 2; ld $LDBASE -T "$s" -o "$W/$n.elf" "$@" > "$W/$n.link.log" 2>&1; }
 noassert() { sed '/^ASSERT/d' "$LDS" > "$W/$1.ld"; }
+# Sondes indépendantes du vérificateur.
+has_class32() { readelf -h "$1" | grep -q 'Class:[[:space:]]*ELF32'; }
+has_sym()     { nm "$1" | awk '{print $NF}' | grep -qx "$2"; }
+lacks_sym()   { ! has_sym "$@"; }
+has_rwx()     { readelf -lW "$1" | awk '$1 == "LOAD"' | grep -qE ' RWE '; }
+# Numéro de section retiré d'abord : « [ 1] » et « [10] » donnent un nombre
+# de champs différent (même normalisation que check_elf64.sh).
+sec_unaligned() { local a; a=$(readelf -SW "$1" | sed -n 's/^ *\[ *[0-9]*\] //p' | awk -v s="$2" '$1 == s {print $3}'); [ -n "$a" ] && [ $((0x$a % 4096)) -ne 0 ]; }
+has_magic()   { od -An -v -tx4 -N 32768 "$1" | tr -s ' ' '\n' | grep -qix "$2"; }
+has_insn()    { objdump -d -M att --no-show-raw-insn "$1" | grep -qE "$2"; }
+has_sec()     { readelf -SW "$1" | grep -qF " $2 "; }
+entry_not_start() { local e s; e=$(readelf -h "$1" | awk '/Entry point/ {print $4}'); s=$(nm "$1" | awk '$3 == "_start" {print "0x" $1}'); [ $((e)) -ne $((s)) ]; }
+first_load_below() { local v; v=$(readelf -lW "$1" | awk '$1 == "LOAD" {print $3; exit}'); [ $((v)) -lt $((0x100000)) ]; }
+rodata_in_rw() { readelf -lW "$1" | sed -n '/Section to Segment/,$p' | grep -qE '^ +02 +\.rodata'; }
 
-must_fail N1_i386_image X1 build/samos.elf --production
-must_fail N2_test_as_production X10 "$TEST" --production
-must_fail N3_production_as_test X10 "$PROD" --test
+must_fail N1_i386_image X1 "X1 X2 X5 X6 X7 X8 X9 X11 X12 X13" build/samos.elf --production has_class32 build/samos.elf
+must_fail N2_test_as_production X10 "X10" "$FTEST" --production has_sym "$FTEST" ktest_m64_skeleton_marker
+must_fail N3_production_as_test X10 "X10" "$FPROD" --test lacks_sym "$FPROD" ktest_m64_skeleton_marker
 # N4 : segment RWX (PHDRS text FLAGS(7)), lié sans --fatal-warnings.
 sed 's/text   PT_LOAD FLAGS(5)/text   PT_LOAD FLAGS(7)/' "$LDS" > "$W/N4.ld"; link N4_rwx_segment "$W/N4.ld" $POBJ
-must_fail N4_rwx_segment X7 "$W/N4_rwx_segment.elf" --production
+must_fail N4_rwx_segment X7 "X7" "$W/N4_rwx_segment.elf" --production has_rwx "$W/N4_rwx_segment.elf"
 # N5a : .rodata non alignée, script original : l'assertion R4 refuse la liaison.
 sed 's/^    \.rodata ALIGN(PAGE_SIZE) :/    .rodata :/' "$LDS" > "$W/N5a.ld"
 if link N5a_rodata_unaligned "$W/N5a.ld" $POBJ; then ko "D/N5a: liaison ACCEPTEE malgre .rodata non alignee"
@@ -183,7 +242,7 @@ elif grep -q "R4 : .rodata non alignee" "$W/N5a_rodata_unaligned.link.log"; then
 else ko "D/N5a: liaison refusee pour une autre raison (voir $W/N5a_rodata_unaligned.link.log)"; fi
 # N5b : même défaut sans assertions : check_elf64 doit le refuser seul.
 sed -e 's/^    \.rodata ALIGN(PAGE_SIZE) :/    .rodata :/' -e '/^ASSERT/d' "$LDS" > "$W/N5b.ld"; link N5b_rodata_unaligned "$W/N5b.ld" $POBJ
-must_fail N5b_rodata_unaligned X6 "$W/N5b_rodata_unaligned.elf" --production
+must_fail N5b_rodata_unaligned X6 "X6 X7" "$W/N5b_rodata_unaligned.elf" --production sec_unaligned "$W/N5b_rodata_unaligned.elf" .rodata
 # N6 : (supprimé de l'image) un symbole indéfini n'est pas visible dans un
 # exécutable statique lié par GNU ld : il est contrôlé sur les objets (B'/L1,
 # B'/L2) et par l'interdiction des options de ld qui le toléreraient (A/F7).
@@ -192,50 +251,91 @@ asm mb1 "bits 64
 section .rodata
 dd 0x1BADB002, 0, 0"
 link N7_multiboot_magic "$LDS" $POBJ "$W/mb1.o"
-must_fail N7_multiboot_magic X5 "$W/N7_multiboot_magic.elf" --production
+must_fail N7_multiboot_magic X5 "X5" "$W/N7_multiboot_magic.elf" --production has_magic "$W/N7_multiboot_magic.elf" 1badb002
 # N7b : magic Multiboot 2.
 asm mb2 "bits 64
 section .rodata
 dd 0xE85250D6, 0, 0, 0"
 link N7b_multiboot2_magic "$LDS" $POBJ "$W/mb2.o"
-must_fail N7b_multiboot2_magic X5 "$W/N7b_multiboot2_magic.elf" --production
+must_fail N7b_multiboot2_magic X5 "X5" "$W/N7b_multiboot2_magic.elf" --production has_magic "$W/N7b_multiboot2_magic.elf" e85250d6
 # N8 à N12 : instructions hors périmètre M64-1.
 i=0
-for spec in "N8_write_cr4|mov cr4, rax" "N9_wrmsr|wrmsr" "N10_lgdt|lgdt [rax]" "N11_sse|movaps xmm0, xmm1" "N12_read_cr3|mov rax, cr3"; do
-    n="${spec%%|*}" ins="${spec#*|}"; i=$((i + 1))
+for spec in "N8_write_cr4|mov cr4, rax|%cr4" "N9_wrmsr|wrmsr|wrmsr" "N10_lgdt|lgdt [rax]|lgdt" "N11_sse|movaps xmm0, xmm1|%xmm" "N12_read_cr3|mov rax, cr3|%cr3" \
+            "N18_x87_fninit|fninit|fninit" "N19_x87_fldz|fldz|fldz" "N20_mmx_emms|emms|emms" "N21_sse_ldmxcsr|ldmxcsr [rax]|ldmxcsr" \
+            "N22_fxsave|fxsave [rax]|fxsave" "N23_avx_vzeroupper|vzeroupper|vzeroupper" "N24_cr0_lmsw|lmsw ax|lmsw" "N25_cr0_clts|clts|clts" \
+            "N26_invlpg|invlpg [rax]|invlpg" "N27_iretd|iretd|iret" "N28_debug_reg|mov rax, dr7|%db7"; do
+    IFS='|' read -r n ins probe <<<"$spec"; i=$((i + 1))
     asm "ins$i" "bits 64
 section .text
 global forbidden_$i
 forbidden_$i: $ins
     ret"
     link "$n" "$LDS" $POBJ "$W/ins$i.o"
-    must_fail "$n" X11 "$W/$n.elf" --production
+    must_fail "$n" X11 "X11" "$W/$n.elf" --production has_insn "$W/$n.elf" "$probe"
 done
 # N13 : section ALLOC inattendue.
 asm extra "bits 64
 section .samos_extra progbits alloc noexec nowrite
 dd 1"
 noassert N13; link N13_extra_section "$W/N13.ld" $POBJ "$W/extra.o"
-must_fail N13_extra_section X6 "$W/N13_extra_section.elf" --production
+must_fail N13_extra_section X6 "X6 X7 X13" "$W/N13_extra_section.elf" --production has_sec "$W/N13_extra_section.elf" .samos_extra
 # N14 : point d'entrée autre que _start.
 link N14_entry "$LDS" $POBJ -e samos64_skeleton_probe
-must_fail N14_entry X4 "$W/N14_entry.elf" --production
+must_fail N14_entry X4 "X4" "$W/N14_entry.elf" --production entry_not_start "$W/N14_entry.elf"
 # N15 : image liée sous 1 MiB (assertions retirées).
 sed -e 's/^KERNEL_LOAD_ADDR = 0x00100000;/KERNEL_LOAD_ADDR = 0x00010000;/' -e '/^ASSERT/d' "$LDS" > "$W/N15.ld"; link N15_below_1mib "$W/N15.ld" $POBJ
-must_fail N15_below_1mib X7 "$W/N15_below_1mib.elf" --production
+must_fail N15_below_1mib X7 "X7 X9" "$W/N15_below_1mib.elf" --production first_load_below "$W/N15_below_1mib.elf"
 # N16 : image partageant une page entre .rodata et .data (ALIGN de .data retiré).
 sed -e 's/^    \.data ALIGN(PAGE_SIZE) :/    .data :/' -e '/^ASSERT/d' "$LDS" > "$W/N16.ld"; link N16_shared_page "$W/N16.ld" $POBJ
-must_fail N16_shared_page X6 "$W/N16_shared_page.elf" --production
+must_fail N16_shared_page X6 "X6 X7" "$W/N16_shared_page.elf" --production sec_unaligned "$W/N16_shared_page.elf" .data
 
-# ---- E. Reproductibilité -------------------------------------------------------
-R="$X64/repro"
-rm -rf "$R"
-if make -s --no-print-directory X64_BUILD="$R" "$R/samos64.elf" "$R/samos64-test.elf" > "$W/E.log" 2>&1 &&
-   cmp -s "$PROD" "$R/samos64.elf" && cmp -s "$TEST" "$R/samos64-test.elf"; then
-    ok "E: seconde construction ($R) identique octet pour octet ($(sha256sum "$PROD" | cut -c1-16)..., $(sha256sum "$TEST" | cut -c1-16)...)"
+# N17 : .rodata placée dans le segment RW (constantes inscriptibles).
+sed 's/^    } :rodata$/    } :data/' "$LDS" > "$W/N17.ld"; link N17_rodata_in_rw "$W/N17.ld" $POBJ
+must_fail N17_rodata_in_rw X13 "X7 X13" "$W/N17_rodata_in_rw.elf" --production rodata_in_rw "$W/N17_rodata_in_rw.elf"
+# N29 : fichier non ELF : refus X1 (statut 1), pas d'acceptation.
+printf 'not an ELF file\n' > "$W/N29.elf"
+must_fail N29_not_elf X1 "X1" "$W/N29.elf" --production test -f "$W/N29.elf"
+# T1 : outil absent (objdump masqué) : statut 2, jamais un PASS.
+mkdir -p "$W/nobin"; for t in readelf nm od; do ln -sf "$(command -v $t)" "$W/nobin/$t"; done
+# bash est lancé par son chemin absolu : seul objdump doit manquer (un PATH
+# réduit ferait sinon échouer « env bash » lui-même, statut 127).
+BASH_BIN="$(command -v bash)"
+PATH="$W/nobin:/nonexistent" "$BASH_BIN" "$CHK" "$FPROD" --production > "$W/T1.log" 2>&1; rc=$?
+if [ "$rc" -eq 2 ] && grep -q 'outil absent (objdump)' "$W/T1.log" && ! grep -q '^\[PASS\]' "$W/T1.log"; then ok "D/T1: objdump absent : statut 2, aucun PASS"
+else ko "D/T1: outil absent mal traite (statut $rc, voir $W/T1.log)"; fi
+
+# M1 à M4 : MÉTA-TESTS du mécanisme must_fail lui-même. Chacun appelle
+# must_fail dans un sous-shell sur un cas où il DOIT conclure à l'échec, et
+# exige le diagnostic correspondant ; sinon le banc pourrait accepter un
+# défaut, un plantage ou une injection ratée sans le signaler.
+meta() {   # meta NOM MOTIF_ATTENDU ARGS_must_fail...
+    local n="$1" want="$2"; shift 2
+    local out; out=$( fail=0; must_fail "$@" ; exit "$fail" ); local r=$?
+    if [ "$r" -ne 0 ] && grep -q "^\[FAIL\] x86_64-build D/.*$want" <<<"$out"; then ok "D/$n: must_fail conclut a l'echec ($want)"
+    else ko "D/$n: must_fail n'a pas detecte le cas (statut $r : $out)"; fi
+}
+meta M1_defect_accepted "ACCEPTEE" M1 X7 "X7" "$FPROD" --production true
+meta M2_not_injected "NON injecte" M2 X7 "X7" "$FPROD" --production has_rwx "$FPROD"
+meta M3_wrong_rule "refuse sans la regle X5" M3 X5 "X5 X7" "$W/N4_rwx_segment.elf" --production has_rwx "$W/N4_rwx_segment.elf"
+meta M4_checker_crash "plantage" M4 X7 "X7" "$W/N4_rwx_segment.elf" --bogus-mode has_rwx "$W/N4_rwx_segment.elf"
+
+# ---- E. Fraîcheur et reproductibilité ------------------------------------------
+if cmp -s "$PROD" "$FPROD" && cmp -s "$TEST" "$FTEST"; then
+    ok "E0: images de build/x86_64 identiques a une construction neuve (aucune image perimee)"
 else
-    ko "E: seconde construction differente ou en echec (voir $W/E.log)"
+    ko "E0: images de build/x86_64 PERIMEES ou differentes d'une construction neuve (make clean x86_64)"
 fi
-rm -rf "$R"
+# E2 : contre-test de E0. Une image construite avec d'autres drapeaux (-O0)
+# doit DIFFÉRER d'une construction neuve : la comparaison détecte bien une
+# image périmée.
+STALE="$W/stale"
+make -s --no-print-directory X64_BUILD="$STALE" "X64_CFLAGS=$cur -O0" "$STALE/samos64.elf" > "$STALE.log" 2>&1
+if [ -f "$STALE/samos64.elf" ] && ! cmp -s "$STALE/samos64.elf" "$FPROD"; then ok "E2: image construite avec d'autres drapeaux detectee comme differente (contre-test de E0)"
+else ko "E2: une image perimee ne serait pas detectee (voir $STALE.log)"; fi
+if cmp -s "$FPROD" "$FRESH2/samos64.elf" && cmp -s "$FTEST" "$FRESH2/samos64-test.elf"; then
+    ok "E1: deux constructions neuves identiques octet pour octet ($(sha256sum "$FPROD" | cut -c1-16)..., $(sha256sum "$FTEST" | cut -c1-16)...), meme machine et meme repertoire source"
+else
+    ko "E1: deux constructions neuves differentes"
+fi
 
 exit $fail
