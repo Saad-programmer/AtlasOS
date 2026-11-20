@@ -2272,7 +2272,7 @@ tests/tools/repro_selftest.sh
 - **Alignement local :** l'étiquette locale créée le 2026-11-20 à 15:49:59 UTC (objet `eace948bca10aac95f65b7087ba6a779305f2cfc`, même cible) a été alignée sur l'objet officiel. Opération : `git update-ref` conditionnée à l'ancienne valeur, sur autorisation du développeur. Aucune étiquette distante n'a été déplacée, aucun push forcé.
 - **Documentation :** les mentions « étiquette absente de GitHub » sont marquées historiques. Preuves et dates conservées.
 
-## Jalon K1.1-M64-1 — Construction double i386 / x86-64 (en attente d'audit)
+## Jalon K1.1-M64-1 — Construction double i386 / x86-64 (intégré dans `main`, `a21d1b4`)
 
 - **Objectif :** ajouter une chaîne de construction x86-64 contrôlée, à côté de l'i386. Elle produit un **squelette ELF64 lié et inspectable statiquement, non amorçable**. Aucun passage en mode long (M64-2). Conception : `docs/review/K1.1-M64-1-design.md` §11.1.
 - **Point de départ :** `main` = `5370fe5`. Branche : `claude/k1.1-m64-1-build`.
@@ -2303,7 +2303,7 @@ tests/tools/repro_selftest.sh
   - matrice des émulateurs identique ; reproductibilité réussie ;
   - auto-test du moteur de mutations 15/15 ; 91/91 mutations.
 - **Expérience jetable, hors dépôt :** compilation LP64 de 7 modules portables. Résultat : 0 erreur, et 0 avertissement `-Wconversion`/`-Wshorten-64-to-32` sur 4 d'entre eux. Elle n'est **pas** ajoutée au dépôt (pas de portage anticipé).
-- **Statut :** en attente de l'audit du développeur. Aucune intégration dans `main`. M64-2 n'est pas commencé.
+- **Statut à `8792fd4` (historique) :** en attente de l'audit du développeur. Aucune intégration dans `main`. M64-2 n'est pas commencé. Statut actuel : voir K1.1-M64-1-INTEGRATE ci-dessous.
 
 ### K1.1-M64-1-AUDIT — Audit du candidat `8792fd4`
 
@@ -2331,7 +2331,7 @@ tests/tools/repro_selftest.sh
   - matrice et reproductibilité i386 réussies ;
   - images i386 identiques à `main`.
   - Mutations non relancées (fichiers non concernés), justifié dans le rapport, §10.6.
-- **Statut :** en attente de l'autorisation d'intégration.
+- **Statut à `14c5173` (historique) :** en attente de l'autorisation d'intégration ; défaut D6 trouvé ensuite (validation finale ci-dessous).
 
 ### K1.1-M64-1-AUDIT — Validation finale de `14c5173`
 
@@ -2342,4 +2342,17 @@ tests/tools/repro_selftest.sh
   - Contre-tests F10 à F20.
 - **Incident :** la première version de la détection par famille ouvrait un sous-shell par option (plusieurs minutes). Elle a été réécrite en une passe sans sous-shell (8 s).
 - **Validation :** 66/66 contrôles x86-64 (55 tests négatifs, 4 méta-tests) ; voir le rapport, §11.
+
+### K1.1-M64-1-INTEGRATE — Intégration dans `main` (2026-11-20)
+
+- **Décision :** le développeur a autorisé l'intégration du seul commit `a21d1b4`.
+- **Préconditions vérifiées :** SHA locaux et distants ; avance rapide possible ; arbre propre ; 12 fichiers ; 10 sauvegardes, stash et étiquette intacts ; run 37 `success`, avec 66 contrôles dans chaque variante.
+- **Sauvegarde :** `backup/k1.1-pre-m64-1-integrate` → `5370fe5`, vérifiée à distance avant l'intégration.
+- **Intégration :** avance rapide seule `5370fe5..a21d1b4`, push sans force ; `main` = `origin/main` = `a21d1b4`.
+- **Après l'intégration :** images i386 identiques ; sources i386 inchangées ; squelette ELF64 non amorçable ; 11 sauvegardes, stash et étiquette intacts.
+- **CI de `main` :** run 39 (`44819526688`), `success` sur les deux variantes. Mutations `skipped` (manuelles) : dernier résultat mesuré 91/91, en local, sur `8792fd4`.
+- **Statut :**
+  - **K1.1-M64-1 — INTEGRATED** ;
+  - noyau de production i386 ; M64-2 et V2/V3 NOT STARTED ;
+  - licence NOT DECIDED ; release NOT AUTHORIZED.
 
