@@ -2333,3 +2333,13 @@ tests/tools/repro_selftest.sh
   - Mutations non relancées (fichiers non concernés), justifié dans le rapport, §10.6.
 - **Statut :** en attente de l'autorisation d'intégration.
 
+### K1.1-M64-1-AUDIT — Validation finale de `14c5173`
+
+- **CI :** run 36 (`44813959148`) au SHA exact `14c5173` : `success` (i386 et x86_64 ; mutations `skipped`).
+- **Défaut D6** (relecture indépendante) : une option contraire ajoutée **après** une option requise était acceptée, alors que le compilateur applique la dernière.
+  - Options en cause : `-fno-stack-protector`, `-Wno-error`, `-fcf-protection=full`, `-fhosted`, `-fomit-frame-pointer` ; `ld --no-fatal-warnings`, `-z execstack`, second `-m` ou `-T` ; NASM, second `-f`.
+  - Correction : familles d'options, avec contrôle de la dernière occurrence ; valeurs uniques pour `ld` et NASM.
+  - Contre-tests F10 à F20.
+- **Incident :** la première version de la détection par famille ouvrait un sous-shell par option (plusieurs minutes). Elle a été réécrite en une passe sans sous-shell (8 s).
+- **Validation :** 66/66 contrôles x86-64 (55 tests négatifs, 4 méta-tests) ; voir le rapport, §11.
+

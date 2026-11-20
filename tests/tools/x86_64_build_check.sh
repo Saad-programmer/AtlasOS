@@ -11,6 +11,12 @@
 #      --fatal-warnings. Tests négatifs F1 à F6 : drapeaux falsifiés par
 #      surcharge de variable (make -n : rien n'est construit).
 #      F7 : options de ld qui masqueraient un symbole indéfini interdites.
+#      F8 à F15 : options contraires ajoutées APRÈS les options requises
+#      (-mcmodel=large, -msse4.2, -fno-stack-protector, -Wno-error,
+#      -fcf-protection=full, -fhosted, -fomit-frame-pointer, -fstack-protector) ;
+#      pour chaque option requise, la dernière de sa famille doit être elle.
+#      F16 à F20 : idem pour ld et NASM (--no-fatal-warnings, -z execstack,
+#      second -m, second -T, second -f).
 #   B. Séparation : tout objet de build/x86_64 est ELF64 x86-64 ; tout objet
 #      i386 (build/prod, build/test) est ELF32 i386. Test négatif S1.
 #   B'. Symboles des entrées de liaison (L0 à L2) : tout symbole référencé
@@ -68,7 +74,40 @@ P_OBJS=$(mkvar X64_PROD_OBJS); T_OBJS=$(mkvar X64_TEST_OBJS)
 FPROD="$FRESH1/samos64.elf"; FTEST="$FRESH1/samos64-test.elf"
 
 # ---- A. Drapeaux ------------------------------------------------------------
-REQ_C="--target=x86_64-unknown-none-elf -march=x86-64 -ffreestanding -nostdlibinc -fno-pic -fno-pie -mno-red-zone -mgeneral-regs-only -mcmodel=small -fstack-protector-strong -fcf-protection=none -Werror"
+REQ_C="--target=x86_64-unknown-none-elf -march=x86-64 -ffreestanding -nostdlibinc -fno-pic -fno-pie -mno-red-zone -mgeneral-regs-only -mcmodel=small -fstack-protector-strong -fcf-protection=none -fno-omit-frame-pointer -Werror"
+# Famille d'une option (révision M64-1-AUDIT, défaut D6) : deux options de la
+# même famille se contredisent, et Clang applique la DERNIÈRE. Pour chaque
+# option requise, la dernière option de sa famille sur la ligne doit être
+# exactement l'option requise ; sinon elle est annulée (ex. -fno-stack-protector
+# après -fstack-protector-strong, -Wno-error après -Werror, -fhosted après
+# -ffreestanding, -fcf-protection=full après -fcf-protection=none).
+# opt_values OPTION MOTS... : valeurs (mot suivant) de chaque occurrence de
+# OPTION, séparées par des espaces.
+opt_values() {
+    local o="$1" out="" prev=""; shift
+    for t in "$@"; do [ "$prev" = "$o" ] && out="$out $t"; prev="$t"; done
+    echo "${out# }"
+}
+opt_family() {   # résultat dans REPLY (sans sous-shell : appelée pour chaque option)
+    case "$1" in
+        --target=*|-target) REPLY=target ;;
+        -march=*) REPLY=march ;;
+        -mcmodel=*) REPLY=mcmodel ;;
+        -fcf-protection|-fcf-protection=*) REPLY=cf-protection ;;
+        -fstack-protector*|-fno-stack-protector*) REPLY=stack-protector ;;
+        -ffreestanding|-fhosted|-fno-freestanding|-fno-hosted) REPLY=freestanding ;;
+        -fpic|-fPIC|-fno-pic|-fno-PIC) REPLY=pic ;;
+        -fpie|-fPIE|-fno-pie|-fno-PIE) REPLY=pie ;;
+        -Werror|-Wno-error|-Werror=*|-Wno-error=*) REPLY=werror ;;
+        -fno-*) REPLY="f:${1#-fno-}" ;;
+        -f*) REPLY="f:${1#-f}" ;;
+        -mno-*) REPLY="m:${1#-mno-}" ;;
+        -m*) REPLY="m:${1#-m}" ;;
+        -Wno-*) REPLY="W:${1#-Wno-}" ;;
+        -W*) REPLY="W:${1#-W}" ;;
+        *) REPLY="=$1" ;;
+    esac
+}
 # Interdits par MOTIF (Clang applique la dernière occurrence d'une option :
 # une option contraire ajoutée après une option requise l'annulerait).
 forbidden_token() {
@@ -89,14 +128,31 @@ flags_ok() {
     [ "$(grep -c . <<<"$cc")" -ge 2 ] && [ "$(grep -c . <<<"$as")" -ge 2 ] && [ "$(grep -c . <<<"$ld")" -eq 2 ] \
         || { echo "    commandes x86-64 manquantes"; return 1; }
     while IFS= read -r line; do
-        for f in $REQ_C; do grep -qF -- " $f " <<<" $line " || { echo "    option requise absente : $f"; r=1; }; done
+        # Une passe : dernière option de chaque famille sur la ligne.
+        local -A lastof=(); local t
+        for t in $line; do opt_family "$t"; lastof[$REPLY]="$t"; done
+        for f in $REQ_C; do
+            grep -qF -- " $f " <<<" $line " || { echo "    option requise absente : $f"; r=1; continue; }
+            opt_family "$f"
+            [ "${lastof[$REPLY]}" = "$f" ] || { echo "    option requise annulee : $f (par ${lastof[$REPLY]})"; r=1; }
+        done
         for f in $line; do forbidden_token "$f" && { echo "    option interdite : $f"; r=1; }; done
     done <<<"$cc"
-    while IFS= read -r line; do grep -qF -- " -f elf64 " <<<" $line " || { echo "    NASM sans -f elf64"; r=1; }; done <<<"$as"
+    while IFS= read -r line; do
+        grep -qF -- " -f elf64 " <<<" $line " || { echo "    NASM sans -f elf64"; r=1; }
+        # Un seul format de sortie : un second « -f » annulerait le premier.
+        [ "$(opt_values -f $line)" = "elf64" ] || { echo "    NASM : format multiple ou autre que elf64 ($(opt_values -f $line))"; r=1; }
+    done <<<"$as"
     while IFS= read -r line; do
         for f in "-m elf_x86_64" "--fatal-warnings" "-T kernel/arch/x86_64/linker.ld" "-nostdlib" "-z noexecstack"; do
             grep -qF -- " $f " <<<" $line " || { echo "    ld sans $f"; r=1; }
         done
+        # Options à valeur : une seule occurrence, avec la valeur attendue (une
+        # seconde occurrence de -m ou -T remplacerait la première).
+        [ "$(opt_values -m $line)" = "elf_x86_64" ] || { echo "    ld : emulation multiple ou autre que elf_x86_64 ($(opt_values -m $line))"; r=1; }
+        [ "$(opt_values -T $line)" = "kernel/arch/x86_64/linker.ld" ] || { echo "    ld : script de liaison multiple ou autre ($(opt_values -T $line))"; r=1; }
+        grep -qE -- ' -z execstack( |$)' <<<" $line " && { echo "    ld : -z execstack"; r=1; }
+        grep -qE -- ' --no-fatal-warnings( |$)' <<<" $line " && { echo "    ld : --no-fatal-warnings annule --fatal-warnings"; r=1; }
         # Options qui laisseraient un symbole indéfini produire une image.
         grep -qE -- ' (--unresolved-symbols|--noinhibit-exec|--warn-unresolved-symbols|-pie|--pie|-shared|-r)([= ]|$)' <<<" $line " \
             && { echo "    option ld interdite"; r=1; }
@@ -127,6 +183,19 @@ neg_flags F5_nasm_elf32 "NASM sans -f elf64" "X64_ASFLAGS=-f elf32 -g -F dwarf -
 neg_flags F6_ld_not_fatal "ld sans --fatal-warnings" "X64_LDFLAGS=-m elf_x86_64 -T kernel/arch/x86_64/linker.ld -nostdlib -z max-page-size=0x1000 -z noexecstack --build-id=none"
 neg_flags F8_mcmodel_large "option interdite : -mcmodel=large" "X64_CFLAGS=$cur -mcmodel=large"
 neg_flags F9_sse42 "option interdite : -msse4.2" "X64_CFLAGS=$cur -msse4.2"
+neg_flags F10_no_stack_protector "option requise annulee : -fstack-protector-strong (par -fno-stack-protector)" "X64_CFLAGS=$cur -fno-stack-protector"
+neg_flags F11_wno_error "option requise annulee : -Werror (par -Wno-error)" "X64_CFLAGS=$cur -Wno-error"
+neg_flags F12_cf_protection_full "option requise annulee : -fcf-protection=none (par -fcf-protection=full)" "X64_CFLAGS=$cur -fcf-protection=full"
+neg_flags F13_hosted "option requise annulee : -ffreestanding (par -fhosted)" "X64_CFLAGS=$cur -fhosted"
+neg_flags F14_omit_frame_pointer "option requise annulee : -fno-omit-frame-pointer (par -fomit-frame-pointer)" "X64_CFLAGS=$cur -fomit-frame-pointer"
+neg_flags F15_weaker_stack_protector "option requise annulee : -fstack-protector-strong (par -fstack-protector)" "X64_CFLAGS=$cur -fstack-protector"
+LD0=$(make -s --no-print-directory --eval 'print-x64-ld: ; @echo $(X64_LDFLAGS)' print-x64-ld)
+AS0=$(make -s --no-print-directory --eval 'print-x64-as: ; @echo $(X64_ASFLAGS)' print-x64-as)
+neg_flags F16_ld_no_fatal "ld : --no-fatal-warnings annule --fatal-warnings" "X64_LDFLAGS=$LD0 --no-fatal-warnings"
+neg_flags F17_ld_execstack "ld : -z execstack" "X64_LDFLAGS=$LD0 -z execstack"
+neg_flags F18_ld_second_emulation "ld : emulation multiple ou autre que elf_x86_64" "X64_LDFLAGS=$LD0 -m elf_i386"
+neg_flags F19_ld_second_script "ld : script de liaison multiple ou autre" "X64_LDFLAGS=$LD0 -T /dev/null"
+neg_flags F20_nasm_second_format "NASM : format multiple ou autre que elf64" "X64_ASFLAGS=$AS0 -f elf32"
 neg_flags F7_ld_ignore_unresolved "option ld interdite" "X64_LDFLAGS=-m elf_x86_64 -T kernel/arch/x86_64/linker.ld -nostdlib -z max-page-size=0x1000 -z noexecstack --build-id=none --fatal-warnings --unresolved-symbols=ignore-all"
 
 # ---- B. Séparation des objets ------------------------------------------------
