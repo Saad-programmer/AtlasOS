@@ -2356,3 +2356,62 @@ tests/tools/repro_selftest.sh
   - noyau de production i386 ; M64-2 et V2/V3 NOT STARTED ;
   - licence NOT DECIDED ; release NOT AUTHORIZED.
 
+
+### K1.1-M64-2-L1-1 — Échec fermé du vérificateur ELF64 (2026-11-21)
+
+- **Autorisation :** le développeur a autorisé **le seul lot L1-1** de la revue `K1.1-M64-2-DESIGN-REVIEW` : corriger les erreurs d'outils susceptibles de produire des faux PASS dans `tools/check_elf64.sh`. **Aucun** code de démarrage, aucune modification de X4, X5, X11 ou X13 pour M64-2, aucun autre lot.
+- **Préconditions vérifiées :** `main` = `origin/main` = `5f07d21` ; arbre propre ; 12 sauvegardes identiques en local et sur `origin` ; stash et étiquette `ref/i386-k0.7` intacts.
+- **Sauvegarde :** `backup/k1.1-pre-m64-2-l1-1` → `5f07d21`, poussée et vérifiée sur `origin` **avant** toute modification. Branche de travail : `claude/k1.1-m64-2-l1-1`.
+- **Reproduction (copie `git archive` de `5f07d21`, hors dépôt) :**
+  - le cas normal donne 19 PASS, statut 0 ; `nm -u` réel : statut 0, sortie vide ;
+  - trois outils factices, chacun prouvant sa panne par un **marqueur** :
+    - `nm -u` en échec ;
+    - `od` en sortie partielle puis statut 1 ;
+    - `readelf -S` donnant une adresse `.rodata` illisible.
+  - Chacun donne le même résultat : **19 PASS, statut 0**, c'est-à-dire **faux PASS**.
+  - Dans le troisième cas, bash signale `value too great for base` aux lignes de X6 et X12, saute ces boucles, puis continue.
+- **Cause :** dans une substitution de commande contenant un pipeline, le statut est celui de la **dernière** commande. `2>/dev/null` cachait de plus le message de l'outil. Une erreur arithmétique de bash interrompt la boucle mais **pas** le script.
+- **Audit de tous les appels externes :** même faiblesse pour X5 (`od`), X7 (INTERP, GNU_STACK : `readelf -l`), X8 (sections dynamiques : `readelf -S`), X10 en production (`nm`) et X12 ; X4, X6, X9 et X11 échouaient « fermés » par effet de bord, avec un diagnostic trompeur.
+- **Correction** (`tools/check_elf64.sh`) :
+  - phase de **collecte** : chaque outil s'exécute une fois, avant toute règle ;
+  - contrat par outil : statut non nul = erreur d'outil ; sortie vide = erreur pour `od`, `readelf -S` et `readelf -l`, mais **légitime** pour `nm -u` et `nm` ;
+  - champs numériques validés avant tout calcul (erreur interne d'analyse) ;
+  - statut 2 sans aucun PASS ;
+  - utilitaires de texte (`awk`, `sed`, `grep`, `tr`, `paste`, `head`) ajoutés au contrôle de présence ;
+  - `readelf -h` garde sa politique (refus X1, statut 1 : fichier non ELF, test N29).
+- **Contre-tests** (`tests/tools/x86_64_build_check.sh`, section D) : 19 nouveaux contrôles.
+  - T2 et T2b : `nm -u` en échec, en production et en test ;
+  - T3 : `nm` partiel puis statut 1 ;
+  - T4 : `od` partiel ;
+  - T5 : `readelf -S` partiel (l'ancien pipeline) ;
+  - T6 : `readelf -l` en échec ;
+  - T7 : `objdump` partiel ;
+  - T8 : `od` vide ;
+  - T9 à T11 : sorties illisibles (sections, segments, symbole) ;
+  - T12 : sortie vide **légitime** acceptée ;
+  - T13 à T16 : `nm`, `od`, `readelf` et `awk` absents ;
+  - T17 : erreur interne du vérificateur ;
+  - M5 et M6 : méta-tests du mécanisme `must_error` (injection ratée ; vérificateur qui accepte).
+- **Preuve que les contre-tests détectent le défaut :** les nouveaux tests ont été exécutés contre l'**ancien** vérificateur, dans une copie isolée. **12 sur 19 échouent :**
+  - 7 erreurs d'outil acceptées avec le statut 0 (T2, T2b, T4, T8, T9, T10, T11). T11 révèle de plus un X4 **sauté** en silence ;
+  - 5 statuts 1 au lieu de 2 (T3, T5, T6, T7, T16).
+  - Les 7 autres passent aussi contre l'ancien vérificateur, car ils couvrent des comportements déjà corrects : sortie vide légitime, outils absents, erreur interne, méta-tests.
+- **Erreurs commises pendant l'écriture des tests, corrigées avant validation :**
+  - méta-test M6 d'abord écrit en « fabriquant » le marqueur, remplacé par un vérificateur de substitution qui appelle réellement l'outil factice ;
+  - substitution `sed` de T11 simplifiée.
+- **Non-régression :**
+  - comparaison différentielle de l'ancien et du nouveau vérificateur sur **64** couples (image, mode) : 26 images du banc, constructions neuves, images de production et de test, images i386, fichier non ELF. **0 divergence** de statut ou de lignes PASS/FAIL ;
+  - `make test` : 312 PASS, 0 FAIL, 0 SKIP (QEMU 86/86 ; contrôles x86-64 85/85) ;
+  - `make test-x86_64-emu` : verdicts identiques sous les deux émulateurs ;
+  - `make test-mutation` : **91/91 mutations détectées**, exécuté en local sur ce candidat ;
+  - `make test-repro` : 2 images reproductibles ;
+  - `make check-elf64` : conforme ;
+  - images i386 identiques aux références (`33374384…` et `646c5933…`) ;
+  - `make -n -B all` ne mentionne aucun élément x86-64 ;
+  - le squelette ELF64 est toujours refusé par `qemu-system-x86_64` et `qemu-system-i386` (`-kernel`).
+- **Limites :**
+  - `readelf -h` en panne sur un ELF valide est refusé, mais diagnostiqué « non ELF » ;
+  - la liste noire de X11 n'est **pas** modifiée (hors périmètre de L1-1) ;
+  - `tests/tools/x86_64_build_check.sh` lui-même contient des sondes en `2>/dev/null`, non auditées par ce lot ;
+  - aucun tremplin.
+- **Statut :** en attente d'audit indépendant ; **non intégré** dans `main`.

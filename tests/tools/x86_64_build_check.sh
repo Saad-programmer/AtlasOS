@@ -38,6 +38,12 @@
 #         toute autre règle en échec signale un refus étranger au défaut.
 #      Une liaison refusée par une assertion R4 compte seulement si le
 #      message attendu apparaît.
+#      T1 à T17 (T2 et suivants : K1.1-M64-2-L1-1) : ÉCHEC FERMÉ du
+#      vérificateur. Outil absent, outil en échec (statut non nul, sortie
+#      partielle, sortie vide hors contrat), sortie illisible, erreur interne :
+#      statut 2 (non nul pour T17), diagnostic nommé, aucun PASS ; chaque panne
+#      est prouvée par un marqueur de l'outil factice. T12 : sortie vide
+#      LÉGITIME (nm -u) acceptée. M5, M6 : méta-tests de ce mécanisme.
 #   E. Fraîcheur et reproductibilité : deux constructions neuves dans deux
 #      répertoires ; les contrôles C portent sur la première ; les images de
 #      build/x86_64 doivent lui être identiques (sinon : images PÉRIMÉES, par
@@ -372,6 +378,147 @@ BASH_BIN="$(command -v bash)"
 PATH="$W/nobin:/nonexistent" "$BASH_BIN" "$CHK" "$FPROD" --production > "$W/T1.log" 2>&1; rc=$?
 if [ "$rc" -eq 2 ] && grep -q 'outil absent (objdump)' "$W/T1.log" && ! grep -q '^\[PASS\]' "$W/T1.log"; then ok "D/T1: objdump absent : statut 2, aucun PASS"
 else ko "D/T1: outil absent mal traite (statut $rc, voir $W/T1.log)"; fi
+
+# T2 à T17 (K1.1-M64-2-L1-1) : ÉCHEC FERMÉ sur erreur d'outil ou d'analyse.
+# Avant L1-1, un « nm -u » en échec donnait X8 PASS et le statut 0 (le statut
+# d'un pipeline est celui de sa dernière commande, et 2>/dev/null cachait
+# l'erreur) ; od, readelf et nm en échec, ou une sortie illisible, rendaient
+# de même X5, X7, X8, X10 ou X12 PASS. Chaque cas place UN outil factice en
+# tête du PATH (les autres outils restent les vrais). L'outil factice écrit un
+# MARQUEUR quand il injecte sa panne : sans marqueur, l'injection n'a pas eu
+# lieu et le cas échoue, car il ne prouverait rien. Attendu : statut 2, le
+# message nommé du vérificateur, et AUCUNE ligne [PASS] (aucune règle n'est
+# évaluée après une erreur d'outil ou d'analyse).
+FK="$W/fake"; rm -rf "$FK"; mkdir -p "$FK"
+REAL_NM=$(command -v nm); REAL_OD=$(command -v od); REAL_READELF=$(command -v readelf); REAL_OBJDUMP=$(command -v objdump)
+# fake CAS OUTIL : crée $FK/CAS/OUTIL à partir du corps lu sur l'entrée
+# standard (script sh ; MARK désigne le fichier marqueur, REAL l'outil réel).
+fake() {
+    local d="$FK/$1"; mkdir -p "$d"
+    { printf '#!/bin/sh\nMARK=%s\nREAL=%s\n' "$W/$1.marker" "$(command -v "$2")"; cat; } > "$d/$2"
+    chmod +x "$d/$2"; rm -f "$W/$1.marker"
+}
+# must_error CAS MOTIF IMAGE MODE : vérificateur lancé avec l'outil factice du
+# CAS ; exige marqueur présent, statut 2, MOTIF dans le journal, aucun PASS.
+must_error() {
+    local n="$1" want="$2" img="$3" mode="$4"
+    PATH="$FK/$n:$PATH" "$CHK" "$img" "$mode" > "$W/$n.log" 2>&1; local rc=$?
+    local npass; npass=$(grep -c '^\[PASS\]' "$W/$n.log")
+    if [ ! -s "$W/$n.marker" ]; then ko "D/$n: panne NON injectee (aucun marqueur : l'outil factice n'a pas agi)"
+    elif [ "$rc" -eq 0 ]; then ko "D/$n: erreur d'outil ACCEPTEE (statut 0, $npass PASS)"
+    elif [ "$rc" -ne 2 ]; then ko "D/$n: statut $rc au lieu de 2 (voir $W/$n.log)"
+    elif ! grep -qE "$want" "$W/$n.log"; then ko "D/$n: statut 2 sans le diagnostic attendu ($want)"
+    elif [ "$npass" -ne 0 ]; then ko "D/$n: $npass ligne(s) PASS emise(s) malgre l'erreur"
+    else ok "D/$n: panne injectee (marqueur) puis refus nomme, statut 2, aucun PASS"; fi
+}
+# T2 : nm -u en échec silencieux (le défaut d'origine), production puis test.
+for n in T2_nm_u_fails T2b_nm_u_fails_test; do fake "$n" nm <<'EOF'
+for a in "$@"; do [ "$a" = "-u" ] && { echo "$*" >> "$MARK"; echo "nm: panne simulee" >&2; exit 1; }; done
+exec "$REAL" "$@"
+EOF
+done
+must_error T2_nm_u_fails "erreur d'outil : nm -u .*\(statut 1\)" "$FPROD" --production
+must_error T2b_nm_u_fails_test "erreur d'outil : nm -u .*\(statut 1\)" "$FTEST" --test
+# T3 : nm (liste complète) : sortie PARTIELLE puis statut non nul (X4, X9 et
+# X10 en dépendaient ; en production, X10 passait sur une liste vide).
+fake T3_nm_partial nm <<'EOF'
+case " $* " in *" -u "*) exec "$REAL" "$@" ;; esac
+echo "$*" >> "$MARK"; "$REAL" "$@" | head -n 2; exit 1
+EOF
+must_error T3_nm_partial "erreur d'outil : nm .*samos64\.elf \(statut 1\)" "$FPROD" --production
+# T4 : od : sortie partielle puis statut 1 (X5 passait : aucun magic dans la partie lue).
+fake T4_od_partial od <<'EOF'
+echo "$*" >> "$MARK"; "$REAL" "$@" | head -n 4; exit 1
+EOF
+must_error T4_od_partial "erreur d'outil : od .*\(statut 1\)" "$FPROD" --production
+# T5 : readelf -S en échec au milieu de sa sortie (l'ancien code le lisait dans
+# un pipeline « readelf | sed | awk » : X8 « dynamique » et X12 passaient).
+fake T5_readelf_S_partial readelf <<'EOF'
+case " $* " in *" -SW "*) echo "$*" >> "$MARK"; "$REAL" "$@" | head -n 6; exit 1 ;; esac
+exec "$REAL" "$@"
+EOF
+must_error T5_readelf_S_partial "erreur d'outil : readelf -SW .*\(statut 1\)" "$FPROD" --production
+# T6 : readelf -l en échec (X7 INTERP/GNU_STACK passaient sur une sortie vide).
+fake T6_readelf_l_fails readelf <<'EOF'
+case " $* " in *" -lW "*) echo "$*" >> "$MARK"; exit 3 ;; esac
+exec "$REAL" "$@"
+EOF
+must_error T6_readelf_l_fails "erreur d'outil : readelf -lW .*\(statut 3\)" "$FPROD" --production
+# T7 : objdump : sortie partielle puis statut 1 (désormais erreur d'outil, statut 2).
+fake T7_objdump_partial objdump <<'EOF'
+echo "$*" >> "$MARK"; "$REAL" "$@" | head -n 20; exit 1
+EOF
+must_error T7_objdump_partial "erreur d'outil : objdump .*\(statut 1\)" "$FPROD" --production
+# T8 : od réussit mais ne produit RIEN : contrat « sortie non vide » violé.
+fake T8_od_empty od <<'EOF'
+echo "$*" >> "$MARK"; exit 0
+EOF
+must_error T8_od_empty "erreur d'outil : od .*sortie vide" "$FPROD" --production
+# T9 : erreurs INTERNES d'analyse (sortie d'outil illisible, statut 0) : sans
+# L1-1, bash abandonnait la boucle de X6, X7 ou X12 et la règle passait.
+fake T9_readelf_S_garbage readelf <<'EOF'
+case " $* " in *" -SW "*) echo "$*" >> "$MARK"; "$REAL" "$@" | sed 's/\(\] \.rodata *PROGBITS *\)[0-9a-f]\{16\}/\1zzzzzzzzzzzzzzzz/'; exit 0 ;; esac
+exec "$REAL" "$@"
+EOF
+must_error T9_readelf_S_garbage "erreur interne d'analyse : section \.rodata" "$FPROD" --production
+fake T10_readelf_l_garbage readelf <<'EOF'
+case " $* " in *" -lW "*) echo "$*" >> "$MARK"; "$REAL" "$@" | sed '0,/^  LOAD  *0x[0-9a-f]* 0x[0-9a-f]*/s//  LOAD           0x001000 0xZZZZ/'; exit 0 ;; esac
+exec "$REAL" "$@"
+EOF
+must_error T10_readelf_l_garbage "erreur interne d'analyse : segment PT_LOAD" "$FPROD" --production
+fake T11_nm_garbage nm <<'EOF'
+case " $* " in *" -u "*) exec "$REAL" "$@" ;; esac
+echo "$*" >> "$MARK"; "$REAL" "$@" | sed 's/^[0-9a-f]\{16\} T _start$/zzzzzzzzzzzzzzzz T _start/'; exit 0
+EOF
+must_error T11_nm_garbage "erreur interne d'analyse : valeur de symbole" "$FPROD" --production
+# T12 : sortie vide LÉGITIME. Sonde indépendante : nm -u réussit (statut 0)
+# sans aucune ligne sur l'image de production ; le vérificateur doit alors
+# passer X8 (contrat « any » : le vide est le cas normal, pas une erreur).
+nmu=$(nm -u "$FPROD"); nrc=$?
+if [ "$nrc" -ne 0 ] || [ -n "$nmu" ]; then ko "D/T12: sonde : nm -u en echec ou non vide (statut $nrc) : cas legitime non etabli"
+elif "$CHK" "$FPROD" --production > "$W/T12.log" 2>&1 && grep -q '^\[PASS\] elf64 X8: aucun symbole indefini' "$W/T12.log"; then ok "D/T12: nm -u vide (statut 0) : X8 PASS, statut 0"
+else ko "D/T12: sortie vide legitime refusee (voir $W/T12.log)"; fi
+# T13 à T16 : outils absents (statut 2, outil nommé, aucun PASS), comme T1.
+for spec in "T13_nm_absent|nm" "T14_od_absent|od" "T15_readelf_absent|readelf" "T16_awk_absent|awk"; do
+    IFS='|' read -r n miss <<<"$spec"
+    d="$W/nobin_$n"; rm -rf "$d"; mkdir -p "$d"
+    for t in readelf nm objdump od awk sed grep tr paste head; do [ "$t" = "$miss" ] || ln -sf "$(command -v "$t")" "$d/$t"; done
+    PATH="$d:/nonexistent" "$BASH_BIN" "$CHK" "$FPROD" --production > "$W/$n.log" 2>&1; rc=$?
+    if [ "$rc" -eq 2 ] && grep -q "outil absent ($miss)" "$W/$n.log" && ! grep -q '^\[PASS\]' "$W/$n.log"; then ok "D/$n: $miss absent : statut 2, aucun PASS"
+    else ko "D/$n: outil absent mal traite (statut $rc, voir $W/$n.log)"; fi
+done
+# T17 : erreur interne du vérificateur lui-même (bash) : statut non nul. Le
+# vérificateur est copié et une variable non définie y est introduite (set -u) :
+# la copie doit échouer, jamais sortir avec le statut 0.
+sed 's/^fail=0$/fail=0; : "$__l1_1_variable_non_definie"/' "$CHK" > "$W/T17_check_elf64.sh"
+if ! grep -q '__l1_1_variable_non_definie' "$W/T17_check_elf64.sh"; then ko "D/T17: erreur interne NON injectee"
+else "$BASH_BIN" "$W/T17_check_elf64.sh" "$FPROD" --production > "$W/T17.log" 2>&1; rc=$?
+    if [ "$rc" -ne 0 ] && ! grep -q '^\[PASS\]' "$W/T17.log"; then ok "D/T17: erreur interne du verificateur : statut $rc (non nul), aucun PASS"
+    else ko "D/T17: erreur interne du verificateur masquee (statut $rc)"; fi
+fi
+# M5, M6 : MÉTA-TESTS de must_error, sans quoi le banc pourrait accepter une
+# injection ratée ou une erreur acceptée sans le signaler.
+#   M5 : outil factice dont le déclencheur n'est jamais atteint (aucun marqueur) ;
+#   M6 : « vérificateur » de substitution qui appelle nm (l'outil factice
+#        injecte, d'où le marqueur) puis sort avec le statut 0, comme un
+#        vérificateur qui accepterait l'erreur d'outil.
+# must_error doit conclure à l'échec, avec le diagnostic correspondant.
+fake M5_no_injection nm <<'EOF'
+case " $* " in *" --option-jamais-utilisee "*) echo "$*" >> "$MARK"; exit 1 ;; esac
+exec "$REAL" "$@"
+EOF
+fake M6_checker_accepts nm <<'EOF'
+echo "$*" >> "$MARK"; exit 1
+EOF
+printf '#!/bin/sh\nnm "$1" > /dev/null 2>&1\nexit 0\n' > "$W/M6_accepting_checker.sh"; chmod +x "$W/M6_accepting_checker.sh"
+meta_err() {   # meta_err NOM MOTIF_ATTENDU CAS VERIFICATEUR
+    local n="$1" want="$2" cas="$3" chk="$4"
+    local out; out=$( fail=0; CHK="$chk"; must_error "$cas" "motif-sans-objet" "$FPROD" --production; exit "$fail" ); local r=$?
+    if [ "$r" -ne 0 ] && grep -q "^\[FAIL\] x86_64-build D/$cas: .*$want" <<<"$out"; then ok "D/$n: must_error conclut a l'echec ($want)"
+    else ko "D/$n: must_error n'a pas detecte le cas (statut $r : $out)"; fi
+}
+meta_err M5_meta_no_injection "NON injectee" M5_no_injection "$CHK"
+meta_err M6_meta_checker_accepts "ACCEPTEE" M6_checker_accepts "$W/M6_accepting_checker.sh"
 
 # M1 à M4 : MÉTA-TESTS du mécanisme must_fail lui-même. Chacun appelle
 # must_fail dans un sous-shell sur un cas où il DOIT conclure à l'échec, et

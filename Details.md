@@ -1971,6 +1971,24 @@ Le passage au mode long (M64-2) mêlera du code 32 bits et 64 bits, un nouveau f
 
 **Leçon de l'audit (M64-1-AUDIT).** La première version de X11 ne cherchait que quelques mnémoniques et noms de registres. Des tests sur des images volontairement fausses ont montré qu'elle acceptait FNINIT, FLDZ, EMMS, LDMXCSR, FXSAVE, VZEROUPPER, LMSW, CLTS, INVLPG, IRETD et les registres de débogage : c'étaient des faux PASS. Un vérificateur se juge donc par ses **tests négatifs**, et chaque test négatif doit lui-même prouver que le défaut est bien présent dans l'image (sonde indépendante du vérificateur).
 
+**Échec fermé des outils (K1.1-M64-2-L1-1).** Un vérificateur peut produire un faux PASS sans que la **règle** soit fausse : il suffit que l'**outil** qu'il interroge échoue sans que l'erreur se propage. Trois mécanismes du shell en sont responsables, et tous trois étaient présents :
+
+| Mécanisme | Exemple (avant L1-1) | Effet |
+|---|---|---|
+| Statut d'un pipeline | `und=$(nm -u "$ELF" 2>/dev/null \| grep -c .)` | le statut est celui de **la dernière commande** (`grep`, qui réussit) : un `nm -u` en échec donne « 0 symbole indéfini », donc X8 PASS |
+| Erreur jetée | `2>/dev/null` | le message de l'outil disparaît : rien ne signale la panne |
+| Erreur arithmétique de bash | `a=$((0x$addr))` sur un champ illisible | bash **abandonne la boucle entière** puis **continue** le script ; les drapeaux `align_ok`, `seg_ok`, `x12` restent à 1, la règle passe, et le statut final est 0 |
+
+Les mêmes motifs rendaient PASS X5 (`od`), X7 (`readelf -l`), X8 (sections dynamiques), X10 en production (`nm`), X12 et X4 (champ de symbole illisible). Chaque cas a été **démontré** par un outil factice, qui écrit un marqueur prouvant que la panne a réellement eu lieu.
+
+**Correction :**
+1. **Collecte.** Chaque outil externe s'exécute **une seule fois**, avant toute règle.
+2. **Contrat par outil.** Un statut non nul est une erreur d'outil. Une sortie vide l'est aussi quand le contrat en exige une : `od`, `readelf -S` et `readelf -l` produisent toujours du texte sur un ELF. En revanche, la sortie vide est **légitime** pour `nm -u` (aucun symbole indéfini : c'est le cas normal) et pour `nm` (image sans symboles : X4 et X9 échouent alors normalement).
+3. **Validation des champs numériques.** Chaque champ est validé avant tout calcul. Un champ illisible est une **erreur interne d'analyse**.
+4. **Statut.** Ces erreurs donnent le statut **2**, avant toute règle, donc **sans aucun PASS**. Les critères des règles X1 à X13 ne changent pas : sur les 64 couples (image, mode) du banc, l'ancien et le nouveau vérificateur rendent des statuts et des lignes PASS/FAIL identiques.
+
+**Limite.** `readelf -h` garde sa politique historique : un échec y est un refus X1 (statut 1), car il couvre aussi le fichier non ELF. Un `readelf -h` en panne sur un ELF valide est donc refusé (échec fermé), mais avec un diagnostic « non ELF » imprécis.
+
 **Reproductibilité.** Elle est démontrée sur une même machine, dans un même répertoire source. Entre deux répertoires, les images diffèrent **seulement** par `.debug_info` : NASM y écrit le répertoire de compilation absolu (`DW_AT_comp_dir`). Les images sans débogage sont identiques, et une construction locale dans le chemin de la CI reproduit exactement l'empreinte de la CI. C'est la même limite que pour l'i386.
 
 **Ce que ces contrôles ne prouvent pas :** que du code 64 bits s'exécute correctement, qu'une protection mémoire est appliquée (aucune table de pages n'existe), ou que l'image est chargeable. Ce sont les objets de M64-2 et des jalons suivants.
