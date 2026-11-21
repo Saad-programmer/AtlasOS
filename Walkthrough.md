@@ -2492,3 +2492,42 @@ tests/tools/repro_selftest.sh
   - la liste noire de X11 est inchangée ;
   - aucun tremplin.
 - **Statut :** en attente d'audit indépendant ; **non intégré** dans `main`.
+
+### K1.1-M64-2-L1-1-R2 — Cohérence des octets exécutables et couverture des vérificateurs (2026-11-21)
+
+- **Autorisation :** révision R2 sur `claude/k1.1-m64-2-l1-1`, avec exceptionnellement le **renforcement des critères X7 et X13** (constats B-1 et B-2 de l'audit `K1.1-M64-2-L1-1-R1-AUDIT`). Ni tremplin, ni politique X11 pour le mode 32 bits, ni L1-2. B-3 reste un constat ouvert : il est analysé, pas corrigé.
+- **Préconditions vérifiées :**
+  - `HEAD` = branche distante = `01c16f7` ; `main` = `origin/main` = `5f07d21` ; arbre propre ;
+  - 13 sauvegardes, stash et étiquette intacts ;
+  - preuves de R1-AUDIT intègres (536 fichiers).
+- **Reproduction avant correction** (`01c16f7`) : A1 (instruction chevauchante), A2 (`p_offset` décalé) et A3 (code hors section) donnent tous le **statut 0, 19 PASS**.
+- **Correction** (`tools/check_elf64.sh`, théorie dans `Details.md` §42.4) :
+  - **B-1** (X7, X13) :
+    - FileSiz ≤ MemSiz ; congruence `p_offset ≡ p_vaddr (mod p_align)` ;
+    - contenus fichier des PT_LOAD disjoints ;
+    - chaque section ALLOC dans **un seul** PT_LOAD, à sa place exacte (`sh_offset = p_offset + sh_addr − p_vaddr`), et NOBITS dans la partie remplie de zéros ;
+    - correspondance calculée = correspondance de readelf ;
+    - octets chargés (od) = octets analysés (objdump).
+  - **B-2** (X7) : politique des segments exécutables. Les octets sont soit du code de section exécutable, soit un remplissage nul **entre** deux sections ; MemSiz = FileSiz ; pages du segment hors de son contenu nulles.
+  - **M-2** : `od -Ad`, avec décalages consécutifs, nombre de mots par ligne, mots validés et ligne de fin exacte.
+  - **M-3** : `e_phentsize`/`e_shentsize` faux → X1 ; `_start` ambigu → X4 ; sections exécutables homonymes → X6 et X11 ; données d'un symbole OBJECT dans du code → X11. Tous en statut 1.
+  - **M-4** : aucune PASS si les données manquent (X6, X7, X8, X10, X12).
+  - Définition FAIL / ERROR dans l'en-tête des règles.
+- **Contre-tests** (`tests/tools/x86_64_build_check.sh`) : **54 contrôles de plus, soit 167** :
+  - T41 à T51 : B-1 ;
+  - T43 à T46, T78 à T80 : B-2 ;
+  - T52 à T70 : M-1, un test par mécanisme N01–N19 ;
+  - T71, T72 : M-2 ;
+  - T74 à T76 : M-3 ;
+  - T77 et `nopass` : M-4 ;
+  - T81 : correspondance de readelf ;
+  - `must_msg` : diagnostic précis, pour les contrôles qui se recouvrent ;
+  - T30 et T39 mis à jour (nouveau diagnostic `od` ; règles X7, X8, X10 et X12 ajoutées aux refus attendus d'un ELF sans en-têtes de section).
+- **Qualification par mutation** (copie complète du dépôt) :
+  - **45 mutants**, dont 44 tués : 19 mécanismes N (N06 et N19 réécrits pour le nouveau `od`) et 25 mécanismes Q de R2. **N20 est équivalent** : avec le contrôle désactivé, le dépassement est toujours refusé (statut 2, message de fermeture de section) ;
+  - un premier passage avait laissé 8 survivants (Q01 à Q03, Q05 à Q07, Q10, Q24) : plusieurs contrôles de X7/X13 se recouvrent, et les tests ne vérifiaient que la règle. D'où `must_msg` et T78 à T81 ;
+  - deux mutants (Q04, Q09) étaient d'abord syntaxiquement invalides ; ils ont été réécrits puis tués ;
+  - le candidat `01c16f7` fait échouer 31 contrôles.
+- **Erreurs rencontrées :** les données d'un symbole OBJECT dans une section exécutable (T79) donnaient « ligne illisible » (statut 2). Elles sont désormais couvertes et comparées, puis refusées par X11.
+- **B-3** : analyse et proposition pour L1-2 dans `Details.md` (recherche d'octets interdits à toutes les positions, désassemblage récursif depuis les points d'entrée, liste blanche stricte pour `.boot32`/`.boot64`). Rien n'est implémenté ; aucune preuve de sûreté du flot de contrôle n'est revendiquée.
+- **Statut :** en attente d'audit indépendant ; **non intégré** dans `main`.

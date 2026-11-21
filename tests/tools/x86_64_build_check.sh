@@ -589,7 +589,7 @@ exec "\$REAL" "\$@"
 EOF
 }
 tfake T30_od_truncated od -tx4 "head -n 4"
-must_error T30_od_truncated "erreur interne d'analyse : od : [0-9]+ mots lus, [0-9]+ attendus" "$W/N7_multiboot_magic.elf" --production
+must_error T30_od_truncated "erreur interne d'analyse : od : ligne de fin absente" "$W/N7_multiboot_magic.elf" --production
 fake T31_nm_without_test_syms nm <<'EOF'
 case " $* " in *" -u "*) exec "$REAL" "$@" ;; esac
 echo "$*" >> "$MARK"; "$REAL" "$@" | grep -v 'test_'; exit 0
@@ -619,7 +619,9 @@ must_fail T37_truncated_image X1 "X1" "$W/T37_truncated.elf" --production shdr_o
 cp "$FPROD" "$W/T38_bad_shoff.elf"; put "$W/T38_bad_shoff.elf" '\377\377\377\177\000\000\000\000' 40   # e_shoff = 0x7fffffff
 must_fail T38_bad_shoff X1 "X1" "$W/T38_bad_shoff.elf" --production shdr_out_of_file "$W/T38_bad_shoff.elf"
 cp "$FPROD" "$W/T39_no_shdr.elf"; put "$W/T39_no_shdr.elf" '\000\000\000\000\000\000\000\000' 40; put "$W/T39_no_shdr.elf" '\000\000\000\000' 60   # e_shoff, e_shnum, e_shstrndx = 0
-must_fail T39_no_section_headers X6 "X4 X6 X9 X11 X13" "$W/T39_no_shdr.elf" --production no_shdr "$W/T39_no_shdr.elf"
+# R2 (M-4) : sans en-têtes de section, X7 (contenu exécutable non couvert par
+# du code analysé), X8, X10 et X12 (données absentes) échouent aussi.
+must_fail T39_no_section_headers X6 "X4 X6 X7 X8 X9 X10 X11 X12 X13" "$W/T39_no_shdr.elf" --production no_shdr "$W/T39_no_shdr.elf"
 # T40 : erreur d'expression rationnelle (statut 2 de [[ =~ ]]) : jamais
 # confondue avec une absence de correspondance. Copie du vérificateur dont une
 # expression est rendue invalide.
@@ -629,6 +631,203 @@ else "$BASH_BIN" "$W/T40_check_elf64.sh" "$FPROD" --production > "$W/T40.log" 2>
     if [ "$rc" -eq 2 ] && grep -q "expression rationnelle invalide" "$W/T40.log" && ! grep -q '^\[PASS\]' "$W/T40.log"; then ok "D/T40: expression rationnelle invalide : statut 2, diagnostic nomme, aucun PASS"
     else ko "D/T40: erreur d'expression rationnelle masquee (statut $rc, voir $W/T40.log)"; fi
 fi
+# ---- T41 à T77 (K1.1-M64-2-L1-1-R2) : constats B-1, B-2, M-1 à M-4 de l'audit
+# R1-AUDIT. Images falsifiées par écriture directe des en-têtes (put64) ; chaque
+# défaut est prouvé par une sonde readelf/od indépendante du vérificateur.
+put64() { local i b=""; for ((i = 0; i < 8; i++)); do b+=$(printf '\\x%02x' $(( ($3 >> (8 * i)) & 255 ))); done; put "$1" "$b" "$2"; }   # put64 IMAGE DECALAGE VALEUR
+putb()  { put "$1" "$(printf '%s' "$3" | sed 's/\(..\)/\\x\1/g')" "$2"; }   # putb IMAGE DECALAGE HEXA
+PH=64; PHE=56; SHO=$(hval "$FPROD" "Start of section headers")
+ph() { echo $((PH + PHE * $1 + $2)); }   # ph SEGMENT CHAMP (8 p_offset, 16 p_vaddr, 24 p_paddr, 32 p_filesz, 40 p_memsz)
+sh() { echo $((SHO + 64 * $1 + $2)); }   # sh SECTION CHAMP (16 sh_addr, 24 sh_offset, 32 sh_size)
+mk() { cp "$FPROD" "$W/$1.elf"; }
+# Sondes.
+load_field() { readelf -lW "$1" | awk -v n="$2" -v f="$3" '$1 == "LOAD" {k++; if (k == n) print $f}'; }   # load_field IMAGE N CHAMP(2 off, 3 va, 4 pa, 5 fs, 6 ms)
+sec_field()  { readelf -SW "$1" | sed -n 's/^ *\[ *[0-9]*\] //p' | awk -v s="$2" -v f="$3" '$1 == s {print $f}'; }   # 3 addr, 4 off, 5 size
+not_congruent() { local o v; o=$(load_field "$1" 1 2); v=$(load_field "$1" 1 3); [ $(( o % 4096 )) -ne $(( v % 4096 )) ]; }
+congruent_but_misplaced() { local o v a so; o=$(load_field "$1" 1 2); v=$(load_field "$1" 1 3); a=0x$(sec_field "$1" .text 3); so=0x$(sec_field "$1" .text 4)
+    [ $(( o % 4096 )) -eq $(( v % 4096 )) ] && [ $(( so )) -ne $(( o + a - v )) ]; }
+nonzero_at() { [ "$(od -An -v -tx1 -j "$2" -N "$3" "$1" | tr -d ' \n' | tr -d 0)" != "" ]; }   # nonzero_at IMAGE DECALAGE N
+seg_beyond_text() { local fs ts; fs=$(load_field "$1" 1 5); ts=0x$(sec_field "$1" .text 5); [ $(( fs )) -gt $(( ts )) ]; }
+seg_memsz_gt_filesz() { [ $(( $(load_field "$1" 1 6) )) -gt $(( $(load_field "$1" 1 5) )) ]; }
+bss_in_file_part() { local v fs b; v=$(load_field "$1" 3 3); fs=$(load_field "$1" 3 5); b=0x$(sec_field "$1" .bss 3); [ $(( b )) -lt $(( v + fs )) ]; }
+paddr_differs() { [ "$(load_field "$1" 1 3)" != "$(load_field "$1" 1 4)" ]; }
+two_loads_same_va() { [ "$(load_field "$1" 1 3)" = "$(load_field "$1" 2 3)" ]; }
+rodata_outside() { local a; a=0x$(sec_field "$1" .rodata 3); ! readelf -lW "$1" | awk -v a=$((a)) '$1 == "LOAD" && a >= strtonum($3) && a < strtonum($3) + strtonum($6) {f = 1} END {exit !f}'; }
+# B-1 : correspondance réelle segment/section.
+mk T41_poffset_not_congruent; putb "$W/T41_poffset_not_congruent.elf" $((0xff0)) 0f30ebfe
+put64 "$W/T41_poffset_not_congruent.elf" "$(ph 0 8)" $((0xff0)); put64 "$W/T41_poffset_not_congruent.elf" "$(ph 0 32)" $((0x3d)); put64 "$W/T41_poffset_not_congruent.elf" "$(ph 0 40)" $((0x3d))
+must_fail T41_poffset_not_congruent X7 "X7 X13" "$W/T41_poffset_not_congruent.elf" --production not_congruent "$W/T41_poffset_not_congruent.elf"
+# Congru (0x2000 ≡ 0x100000 mod 0x1000) mais à la mauvaise place : octets de .rodata chargés comme code.
+mk T42_poffset_congruent_misplaced; put64 "$W/T42_poffset_congruent_misplaced.elf" "$(ph 0 8)" $((0x2000))
+must_fail T42_poffset_congruent_misplaced X13 "X7 X13" "$W/T42_poffset_congruent_misplaced.elf" --production congruent_but_misplaced "$W/T42_poffset_congruent_misplaced.elf"
+mk T48_paddr_differs; put64 "$W/T48_paddr_differs.elf" "$(ph 0 24)" $((0x200000))
+must_fail T48_paddr_differs X7 "X7" "$W/T48_paddr_differs.elf" --production paddr_differs "$W/T48_paddr_differs.elf"
+# .bss ramenée au début du segment RW (0x102000), dans sa partie fichier ; X6
+# (ordre strict) échoue aussi.
+mk T47_bss_in_file_part; put64 "$W/T47_bss_in_file_part.elf" "$(sh 4 16)" $((0x102000))
+must_fail T47_bss_in_file_part X13 "X6 X13" "$W/T47_bss_in_file_part.elf" --production bss_in_file_part "$W/T47_bss_in_file_part.elf"
+mk T50_section_in_two_loads; put64 "$W/T50_section_in_two_loads.elf" "$(ph 1 16)" $((0x100000)); put64 "$W/T50_section_in_two_loads.elf" "$(ph 1 24)" $((0x100000))
+must_fail T50_section_in_two_loads X13 "X7 X13" "$W/T50_section_in_two_loads.elf" --production two_loads_same_va "$W/T50_section_in_two_loads.elf"
+mk T51_section_outside_loads; put64 "$W/T51_section_outside_loads.elf" "$(sh 2 16)" $((0x109000))
+must_fail T51_section_outside_loads X13 "X6 X13" "$W/T51_section_outside_loads.elf" --production rodata_outside "$W/T51_section_outside_loads.elf"
+# T49 : objdump falsifie UN octet brut (texte intact) : octets analysés != octets
+# du fichier alors que la correspondance est exacte : incohérence d'outil (statut 2).
+fake T49_objdump_byte_lie objdump <<'EOF'
+echo "$*" >> "$MARK"; "$REAL" "$@" | sed '0,/^ *100000:\tfa /s//  100000:\tfb /'; exit 0
+EOF
+must_error T49_objdump_byte_lie "erreur interne d'analyse : octets de \.text : objdump et od divergent" "$FPROD" --production
+# B-2 : couverture exécutable.
+mk T43_exec_gap_code; putb "$W/T43_exec_gap_code.elf" $((0x1030)) 0f30ebfe; putb "$W/T43_exec_gap_code.elf" $((0x1000)) eb2e
+put64 "$W/T43_exec_gap_code.elf" "$(ph 0 32)" $((0x40)); put64 "$W/T43_exec_gap_code.elf" "$(ph 0 40)" $((0x40))
+must_fail T43_exec_gap_code X7 "X7" "$W/T43_exec_gap_code.elf" --production seg_beyond_text "$W/T43_exec_gap_code.elf"
+mk T44_exec_trailing_zeros; put64 "$W/T44_exec_trailing_zeros.elf" "$(ph 0 32)" $((0x40)); put64 "$W/T44_exec_trailing_zeros.elf" "$(ph 0 40)" $((0x40))
+must_fail T44_exec_trailing_zeros X7 "X7" "$W/T44_exec_trailing_zeros.elf" --production seg_beyond_text "$W/T44_exec_trailing_zeros.elf"
+# Code dans la page du segment, HORS de son contenu (FileSiz inchangé) : _start y saute.
+mk T45_exec_page_tail_code; putb "$W/T45_exec_page_tail_code.elf" $((0x1030)) 0f30ebfe; putb "$W/T45_exec_page_tail_code.elf" $((0x1000)) eb2e
+must_fail T45_exec_page_tail_code X7 "X7" "$W/T45_exec_page_tail_code.elf" --production nonzero_at "$W/T45_exec_page_tail_code.elf" $((0x1030)) 4
+mk T46_exec_memsz_gt_filesz; put64 "$W/T46_exec_memsz_gt_filesz.elf" "$(ph 0 40)" $((0x40))
+must_fail T46_exec_memsz_gt_filesz X7 "X7" "$W/T46_exec_memsz_gt_filesz.elf" --production seg_memsz_gt_filesz "$W/T46_exec_memsz_gt_filesz.elf"
+# M-1 : un test par mécanisme jusque-là non couvert (mutants N01 à N19 ; N20 est
+# équivalent : le dépassement de fin est aussi refusé par la fermeture de section).
+rfake T52_secS_offset_lie -SW 's/^\(There are [0-9]* section headers, starting at offset \)0x[0-9a-f]*:/\10x10:/'
+must_error T52_secS_offset_lie "erreur interne d'analyse : readelf -SW : .* readelf -h annonce" "$FPROD" --production
+mk T53_section_content_outside; put64 "$W/T53_section_content_outside.elf" "$(sh 2 24)" $((0x100000))
+must_fail T53_section_content_outside X1 "X1" "$W/T53_section_content_outside.elf" --production test "$(( 0x$(sec_field "$W/T53_section_content_outside.elf" .rodata 4) ))" -gt "$(stat -c %s "$FPROD")"
+mk T54_segment_content_outside; put64 "$W/T54_segment_content_outside.elf" "$(ph 1 8)" $((0x101000))
+must_fail T54_segment_content_outside X1 "X1" "$W/T54_segment_content_outside.elf" --production test "$(( $(load_field "$W/T54_segment_content_outside.elf" 2 2) ))" -gt "$(stat -c %s "$FPROD")"
+rfake T55_l_entry_lie -lW 's/^Entry point 0x100000$/Entry point 0x100001/'
+must_error T55_l_entry_lie "erreur interne d'analyse : readelf -lW : point d'entree" "$FPROD" --production
+rfake T56_secS_extra_line -SW '/^  \[16\]/p'
+must_error T56_secS_extra_line "erreur interne d'analyse : readelf -SW : ligne inattendue apres la section" "$FPROD" --production
+fake T57_od_word_garbage od <<'EOF'
+case " $* " in *" -tx4 "*) echo "$*" >> "$MARK"; "$REAL" "$@" | sed '1s/ 464c457f/ zzzzzzzz/'; exit 0 ;; esac
+exec "$REAL" "$@"
+EOF
+must_error T57_od_word_garbage "erreur interne d'analyse : od : mot « zzzzzzzz »" "$FPROD" --production
+fake T58_nm_u_extra nm <<'EOF'
+case " $* " in *" -u "*) echo "$*" >> "$MARK"; "$REAL" "$@"; echo "                 U fantome"; exit 0 ;; esac
+exec "$REAL" "$@"
+EOF
+must_error T58_nm_u_extra "erreur interne d'analyse : nm -u et readelf -sW divergent" "$FPROD" --production
+fake T59_objdump_extra_section objdump <<'EOF'
+echo "$*" >> "$MARK"; "$REAL" "$@"; printf '\nDisassembly of section .rodata:\n'; exit 0
+EOF
+must_error T59_objdump_extra_section "erreur interne d'analyse : objdump : section \.rodata inattendue" "$FPROD" --production
+fake T60_objdump_two_headers objdump <<'EOF'
+echo "$*" >> "$MARK"; "$REAL" "$@" | sed '2p'; exit 0
+EOF
+must_error T60_objdump_two_headers "erreur interne d'analyse : objdump : en-tete « file format » vu 2 fois" "$FPROD" --production
+fake T61_objdump_section_dropped objdump <<'EOF'
+echo "$*" >> "$MARK"; "$REAL" "$@" | sed '/^Disassembly of section/,$d'; exit 0
+EOF
+must_error T61_objdump_section_dropped "erreur interne d'analyse : objdump : section executable \.text non desassemblee" "$FPROD" --production
+mk T62_undecodable_byte; putb "$W/T62_undecodable_byte.elf" $((0x1000)) 06
+must_fail T62_undecodable_byte X11 "X11" "$W/T62_undecodable_byte.elf" --production has_insn "$W/T62_undecodable_byte.elf" '\(bad\)'
+fake T63_symtab_count_lie readelf <<'EOF'
+case " $* " in *" -sW "*) echo "$*" >> "$MARK"; "$REAL" "$@" | sed -e 's/contains \([0-9]*\) entries/contains NM1 entries/' -e '$d' | awk -v n="$("$REAL" "$@" | sed -n 's/.*contains \([0-9]*\) entries.*/\1/p')" '{sub(/NM1/, n - 1); print}'; exit 0 ;; esac
+exec "$REAL" "$@"
+EOF
+must_error T63_symtab_count_lie "erreur interne d'analyse : readelf -sW : \.symtab annonce [0-9]+ entrees, la section en contient" "$FPROD" --production
+fake T64_symtab_absent readelf <<'EOF'
+case " $* " in *" -sW "*) echo "$*" >> "$MARK"; exit 0 ;; esac
+exec "$REAL" "$@"
+EOF
+must_error T64_symtab_absent "erreur interne d'analyse : readelf -sW : table \.symtab absente" "$FPROD" --production
+rfake T65_l_offset_lie -lW 's/^\(There are [0-9]* program headers, starting at offset \)64$/\165/'
+must_error T65_l_offset_lie "erreur interne d'analyse : readelf -lW : .* readelf -h annonce" "$FPROD" --production
+rfake T66_mapping_swapped -lW 's/^   00 /   0X /; s/^   01 /   00 /; s/^   0X /   01 /'
+must_error T66_mapping_swapped "erreur interne d'analyse : readelf -lW : correspondance numero" "$FPROD" --production
+rfake T67_hdr_duplicate_field -hW '/^  Class:/p'
+must_error T67_hdr_duplicate_field "erreur interne d'analyse : readelf -h : champ « Class » en double" "$FPROD" --production
+rfake T68_hdr_beyond_16bit -hW 's/^\(  Number of section headers: *\)[0-9]*$/\170000/'
+must_error T68_hdr_beyond_16bit "erreur interne d'analyse : readelf -h : e_shnum = 70000 \(champ ELF de 16 bits" "$FPROD" --production
+rfake T69_flags_garbage -SW 's/\(\] \.text .*\)  AX /\1  AZ /'
+must_error T69_flags_garbage "erreur interne d'analyse : section \.text : drapeaux « AZ »" "$FPROD" --production
+fake T70_od_extra_word od <<'EOF'
+case " $* " in *" -tx4 "*) echo "$*" >> "$MARK"; "$REAL" "$@" | sed '1s/$/ 00000000/'; exit 0 ;; esac
+exec "$REAL" "$@"
+EOF
+must_error T70_od_extra_word "erreur interne d'analyse : od : ligne a 0 : 5 mots au lieu de 4" "$FPROD" --production
+# M-2 : od avec décalages. T71 : la ligne du magic remplacée par une copie de la
+# précédente (nombre de mots conservé ; faux PASS X5 avant R2) ; T72 : ligne
+# substituée par une ligne d'ailleurs (son propre décalage).
+fake T71_od_dup_line od <<'EOF'
+case " $* " in *" -tx4 "*) echo "$*" >> "$MARK"; "$REAL" "$@" | awk '{ if ($0 ~ /1badb002/) print prev; else print; prev = $0 }'; exit 0 ;; esac
+exec "$REAL" "$@"
+EOF
+must_error T71_od_dup_line "erreur interne d'analyse : od : decalage [0-9]+ au lieu de [0-9]+" "$W/N7_multiboot_magic.elf" --production
+fake T72_od_line_substituted od <<'EOF'
+case " $* " in *" -tx4 "*) echo "$*" >> "$MARK"; "$REAL" "$@" | awk 'NR == 2 {print l1; next} {if (NR == 1) l1 = $0; print}'; exit 0 ;; esac
+exec "$REAL" "$@"
+EOF
+must_error T72_od_line_substituted "erreur interne d'analyse : od : decalage 0+ au lieu de 16" "$FPROD" --production
+# M-3 : refus NOMMÉS pour des défauts de l'image (statut 1, plus « erreur interne »).
+mk T74_phentsize_zero; put "$W/T74_phentsize_zero.elf" '\000\000' 54
+must_fail T74_phentsize_zero X1 "X1" "$W/T74_phentsize_zero.elf" --production test "$(hval "$W/T74_phentsize_zero.elf" "Size of program headers")" = 0
+mk T75_two_exec_text; n1=$(od -An -tu4 -j "$(sh 1 0)" -N 4 "$FPROD" | tr -d ' ')
+put "$W/T75_two_exec_text.elf" "$(printf '\\x%02x\\x%02x\\x%02x\\x%02x' $((n1 & 255)) $(((n1 >> 8) & 255)) $(((n1 >> 16) & 255)) $(((n1 >> 24) & 255)))" "$(sh 2 0)"
+put64 "$W/T75_two_exec_text.elf" "$(sh 2 8)" 6
+must_fail T75_two_exec_text X6 "X6 X11 X13" "$W/T75_two_exec_text.elf" --production test "$(readelf -SW "$W/T75_two_exec_text.elf" | grep -c ' \.text .* AX ')" -eq 2
+objcopy --add-symbol _start=.text:0x10,local "$FPROD" "$W/T76_two_start.elf" > "$W/T76.objcopy.log" 2>&1
+must_fail T76_ambiguous_start X4 "X4" "$W/T76_two_start.elf" --production test "$(nm "$W/T76_two_start.elf" | awk '$3 == "_start"' | wc -l)" -eq 2
+# M-4 : aucune PASS sans les données nécessaires. nopass CAS MOTIFS : aucune ligne
+# « [PASS] elf64 MOTIF » (MOTIFS séparés par « | ») dans le journal du cas.
+nopass() {
+    local n="$1" r bad_="" IFS='|'; for r in $2; do grep -qF "[PASS] elf64 $r" "$W/$n.log" && bad_="$bad_ $r"; done
+    if [ ! -s "$W/$n.log" ]; then ko "D/$n/nopass: journal absent"
+    elif [ -n "$bad_" ]; then ko "D/$n/nopass: PASS vacant pour$bad_ (donnees absentes)"
+    else ok "D/$n/nopass: aucune PASS pour $2 (donnees absentes)"; fi
+}
+nopass T39_no_section_headers "X6:|X8:|X10:|X12:"
+strip -o "$W/T77_test_stripped.elf" "$FTEST"
+must_fail T77_stripped_test_in_production X10 "X4 X8 X9 X10" "$W/T77_test_stripped.elf" --production test -z "$(nm "$W/T77_test_stripped.elf" 2>/dev/null)"
+nopass T77_stripped_test_in_production "X8: aucun symbole indefini|X10:"
+# must_msg CAS MOTIF : le journal du cas contient le diagnostic PRÉCIS du
+# mécanisme (plusieurs contrôles de X7 ou X13 se recouvrent : sans ce test, la
+# désactivation d'un seul resterait invisible, constaté par mutation en R2).
+must_msg() {
+    if [ ! -s "$W/$1.log" ]; then ko "D/$1/msg: journal absent"
+    elif grep -qE "^\[FAIL\] elf64 $2" "$W/$1.log"; then ok "D/$1/msg: diagnostic « $2 »"
+    else ko "D/$1/msg: diagnostic attendu absent (« $2 »)"; fi
+}
+must_msg T41_poffset_not_congruent "X7: segment 0x0+100000 : p_offset 0xff0 non congru"
+must_msg T42_poffset_congruent_misplaced "X7: segments .* : contenus fichier chevauchants"
+must_msg T42_poffset_congruent_misplaced "X13: section \.text : decalage fichier 0x1000 different du decalage charge 0x2000"
+must_msg T47_bss_in_file_part "X13: section NOBITS \.bss dans la partie fichier"
+must_msg T50_section_in_two_loads "X13: section \.text dans plusieurs PT_LOAD"
+must_msg T51_section_outside_loads "X13: section \.rodata hors de tout PT_LOAD"
+must_msg T43_exec_gap_code "X7: segment executable .* octet\(s\) non controles en fin de contenu"
+must_msg T45_exec_page_tail_code "X7: segment executable .* octets non nuls dans ses pages"
+# T78 : section NON exécutable dans le segment exécutable. Le PT_LOAD n°1 couvre
+# .text ET .rodata (décalages exacts) ; le PT_LOAD n°2 devient PT_NULL.
+mk T78_nonexec_in_exec_seg; put64 "$W/T78_nonexec_in_exec_seg.elf" "$(ph 0 32)" $((0x1037)); put64 "$W/T78_nonexec_in_exec_seg.elf" "$(ph 0 40)" $((0x1037)); put "$W/T78_nonexec_in_exec_seg.elf" '\000\000\000\000' "$(ph 1 0)"
+rodata_in_exec() { readelf -lW "$1" | sed -n '/Section to Segment/,$p' | grep -qE '^ +00 +\.text \.rodata'; }
+must_fail T78_nonexec_in_exec_seg X7 "X7 X13" "$W/T78_nonexec_in_exec_seg.elf" --production rodata_in_exec "$W/T78_nonexec_in_exec_seg.elf"
+must_msg T78_nonexec_in_exec_seg "X7: segment executable .* : section non executable \.rodata"
+# T79 : DEUX sections exécutables (.rodata marquée AX) dans le segment n°1, et un
+# octet NON NUL dans le remplissage qui les sépare (0x1100).
+cp "$W/T78_nonexec_in_exec_seg.elf" "$W/T79_exec_gap_nonzero.elf"; put64 "$W/T79_exec_gap_nonzero.elf" "$(sh 2 8)" 6; putb "$W/T79_exec_gap_nonzero.elf" $((0x1100)) cc
+must_fail T79_exec_gap_nonzero X7 "X6 X7 X11 X13" "$W/T79_exec_gap_nonzero.elf" --production nonzero_at "$W/T79_exec_gap_nonzero.elf" $((0x1100)) 1
+must_msg T79_exec_gap_nonzero "X7: segment executable .* : remplissage non nul entre sections"
+# .rodata (symbole OBJECT samos64_build_id) devenue exécutable : objdump en
+# affiche les octets en DONNÉES ; ils ne sont pas désassemblés, X11 échoue.
+must_msg T79_exec_gap_nonzero "X11: 55 octet\(s\) de section executable affiches en donnees"
+# T80 : octets non contrôlés en TÊTE du segment exécutable : PT_LOAD n°1 à
+# p_offset 0, p_vaddr 0xff000 (correspondance de .text exacte), donc l'en-tête
+# ELF est chargé exécutable devant .text.
+mk T80_exec_head_uncontrolled; put64 "$W/T80_exec_head_uncontrolled.elf" "$(ph 0 8)" 0; put64 "$W/T80_exec_head_uncontrolled.elf" "$(ph 0 16)" $((0xff000)); put64 "$W/T80_exec_head_uncontrolled.elf" "$(ph 0 24)" $((0xff000))
+put64 "$W/T80_exec_head_uncontrolled.elf" "$(ph 0 32)" $((0x102d)); put64 "$W/T80_exec_head_uncontrolled.elf" "$(ph 0 40)" $((0x102d))
+head_before_text() { [ $(( $(load_field "$1" 1 3) )) -lt $(( 0x$(sec_field "$1" .text 3) )) ]; }
+must_fail T80_exec_head_uncontrolled X7 "X7" "$W/T80_exec_head_uncontrolled.elf" --production head_before_text "$W/T80_exec_head_uncontrolled.elf"
+must_msg T80_exec_head_uncontrolled "X7: segment executable .* octet\(s\) non controles en tete"
+# T81 : correspondance CALCULÉE != correspondance de readelf : readelf -l factice
+# qui permute les noms des deux premières lignes de correspondance (refus X13 ;
+# la contradiction porte sur les données de l'image, aucune n'est retenue).
+rfake T81_mapping_names_swapped -lW 's/^   00     \.text $/   00     .rodata /; t; s/^   01     \.rodata $/   01     .text /'
+PATH="$FK/T81_mapping_names_swapped:$PATH" "$CHK" "$FPROD" --production > "$W/T81_mapping_names_swapped.log" 2>&1; rc=$?
+if [ ! -s "$W/T81_mapping_names_swapped.marker" ]; then ko "D/T81: panne NON injectee"
+elif [ "$rc" -ne 1 ]; then ko "D/T81: statut $rc au lieu de 1"
+else must_msg T81_mapping_names_swapped "X13: segment 0x0+100000 : sections calculees « \.text », readelf « \.rodata »"; fi
 # M5, M6 : MÉTA-TESTS de must_error, sans quoi le banc pourrait accepter une
 # injection ratée ou une erreur acceptée sans le signaler.
 #   M5 : outil factice dont le déclencheur n'est jamais atteint (aucun marqueur) ;

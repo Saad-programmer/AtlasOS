@@ -36,7 +36,13 @@
 #   X7  segments : exactement 3 PT_LOAD, droits R E / R / RW dans cet ordre ;
 #       aucun W+X ; vaddr = paddr >= 1 MiB ; vaddr aligné sur 4 KiB ;
 #       alignement 0x1000 ; deux segments ne partagent aucune page ; ni
-#       PT_INTERP ni PT_DYNAMIC ; PT_GNU_STACK éventuel non exécutable (R5)
+#       PT_INTERP ni PT_DYNAMIC ; PT_GNU_STACK éventuel non exécutable (R5).
+#       Renforcé L1-1-R2 (B-1, B-2) : FileSiz <= MemSiz ; p_offset ≡ p_vaddr
+#       (mod p_align) ; contenus fichier des PT_LOAD disjoints ; segment
+#       exécutable : MemSiz = FileSiz, chaque octet de son contenu fichier
+#       appartient à une section exécutable désassemblée ou à un remplissage
+#       nul ENTRE deux telles sections, et les octets du fichier qui partagent
+#       ses pages hors de son contenu sont nuls
 #   X8  aucun symbole indéfini ; aucune section de relogement ni dynamique
 #       (.rela*, .rel*, .dynamic, .got, .plt, .interp).
 #       LIMITE : GNU ld résout un symbole indéfini FAIBLE (ou forcé par
@@ -72,6 +78,17 @@
 #       section ; drapeaux de section exacts (.text AX, .rodata A, .data et
 #       .bss WA). Sans X13, .rodata placée dans le segment RW (constantes
 #       inscriptibles) n'était refusée qu'indirectement (ajout M64-1-AUDIT).
+#       Renforcé L1-1-R2 (B-1) : chaque section ALLOC non vide est dans
+#       exactement un PT_LOAD, avec sh_offset = p_offset + (sh_addr - p_vaddr),
+#       dans la partie fichier (NOBITS : dans la partie remplie de zéros) ; la
+#       correspondance ainsi CALCULÉE doit être celle de readelf ; les octets
+#       CHARGÉS d'une section exécutable (lus par od au décalage calculé depuis
+#       le PT_LOAD) doivent être ceux qu'objdump a analysés.
+# Révision L1-1-R2 (M-3, M-4) : une règle dont les données manquent échoue
+# (statut 1) au lieu d'annoncer PASS ; symbole ambigu, sections exécutables
+# homonymes et e_phentsize/e_shentsize faux sont des refus nommés (statut 1).
+# LIMITE OUVERTE (B-3) : X11 désassemble linéairement ; une instruction cachée
+# par chevauchement (saut au milieu d'une autre) n'est pas vue.
 # =============================================================================
 set -u
 # Garde de terminaison (L1-1-R1) : toute sortie NON prévue du script (variable
@@ -205,6 +222,14 @@ hfield e_shnum "Number of section headers" ''
 for v in e_phentsize e_shentsize e_phnum e_shnum; do
     [ "${!v}" -le 65535 ] || internal "readelf -h : $v = ${!v} (champ ELF de 16 bits ; numerotation etendue non prise en charge)"
 done
+# Taille d'entrée imposée par la classe (L1-1-R2, constat M-3) : e_phentsize = 0
+# avec des segments rendait readelf -l illisible (statut 2) ; c'est un défaut de
+# l'IMAGE, donc un refus X1 nommé (statut 1).
+case "${H[Class]}" in ELF64*) want_ph=56; want_sh=64 ;; ELF32*) want_ph=32; want_sh=40 ;; *) want_ph=0; want_sh=0 ;; esac
+[ "$want_ph" -eq 0 ] || [ "$e_phnum" -eq 0 ] || [ "$e_phentsize" -eq "$want_ph" ] \
+    || sfail "e_phentsize = $e_phentsize, attendu $want_ph pour ${H[Class]}"
+[ "$want_sh" -eq 0 ] || [ "$e_shnum" -eq 0 ] || [ "$e_shentsize" -eq "$want_sh" ] \
+    || sfail "e_shentsize = $e_shentsize, attendu $want_sh pour ${H[Class]}"
 
 # ---- Structure : chaque table et chaque contenu doit tenir dans le fichier ---
 # (constat M2) : une image tronquée ou un e_shoff hors du fichier est un ELF
@@ -225,7 +250,7 @@ num fsize dec "$fsize_s" "stat : taille du fichier" || big "stat : taille du fic
 # manquant décalait les colonnes sans être vu).
 collect sec_raw nonempty readelf -SW "$ELF"
 split_lines SL "$sec_raw"
-S_name=(); S_type=(); S_addr=(); S_addr_s=(); S_size=(); S_size_s=(); S_flg=(); S_es=(); S_es_s=()
+S_name=(); S_type=(); S_addr=(); S_addr_s=(); S_size=(); S_size_s=(); S_flg=(); S_es=(); S_es_s=(); S_off=()
 if [ "$e_shnum" -eq 0 ]; then
     [ "$sec_raw" = $'\nThere are no sections in this file.' ] || internal "readelf -SW : sortie inattendue pour e_shnum = 0"
 else
@@ -260,7 +285,7 @@ else
         [ "${F[0]}" = NOBITS ] || [ "$s_" -eq 0 ] || [ $((o_ + s_)) -le "$fsize" ] \
             || sfail "$q hors du fichier (decalage 0x${F[2]}, taille 0x${F[3]}, fichier $fsize octets)"
         S_name+=("$nm_"); S_type+=("${F[0]}"); S_addr+=("$a_"); S_addr_s+=("${F[1]}")
-        S_size+=("$s_"); S_size_s+=("${F[3]}"); S_flg+=("$fl_"); S_es+=("$e_"); S_es_s+=("${F[4]}")
+        S_size+=("$s_"); S_size_s+=("${F[3]}"); S_flg+=("$fl_"); S_es+=("$e_"); S_es_s+=("${F[4]}"); S_off+=("$o_")
     done
     [ "${SL[e_shnum + 4]-}" = "Key to Flags:" ] || internal "readelf -SW : ligne inattendue apres la section $((e_shnum - 1)) (« ${SL[e_shnum + 4]-} »)"
 fi
@@ -269,7 +294,7 @@ fi
 # Entrée : Type Offset VirtAddr PhysAddr FileSiz MemSiz Flg(0 à 2 mots) Align.
 collect ph nonempty readelf -lW "$ELF"
 split_lines PL "$ph"
-P_type=(); P_va=(); P_va_s=(); P_pa=(); P_pa_s=(); P_msz=(); P_fl=(); P_al_s=(); MAP=()
+P_type=(); P_va=(); P_va_s=(); P_pa=(); P_pa_s=(); P_msz=(); P_fl=(); P_al_s=(); MAP=(); P_off=(); P_fsz=(); P_al=()
 if [ "$e_phnum" -eq 0 ]; then
     [ "$ph" = $'\nThere are no program headers in this file.' ] || internal "readelf -lW : sortie inattendue pour e_phnum = 0"
 else
@@ -298,7 +323,7 @@ else
         num_a al_ hex0x "${T[${#T[@]} - 1]}" "$q : Align"
         [ $((o_ + fs_)) -le "$fsize" ] || sfail "segment numero $i hors du fichier (Offset ${T[1]}, FileSiz ${T[4]}, fichier $fsize octets)"
         P_type+=("${T[0]}"); P_va+=("$va_"); P_va_s+=("${T[2]}"); P_pa+=("$pa_"); P_pa_s+=("${T[3]}")
-        P_msz+=("$ms_"); P_fl+=("$fl_"); P_al_s+=("${T[${#T[@]} - 1]}")
+        P_msz+=("$ms_"); P_fl+=("$fl_"); P_al_s+=("${T[${#T[@]} - 1]}"); P_off+=("$o_"); P_fsz+=("$fs_"); P_al+=("$al_")
         if rx "${PL[j + 1]-}" '^      \[Requesting program interpreter: .*\]$'; then j=$((j + 1)); fi
     done
     if [ "$e_shnum" -gt 0 ]; then
@@ -331,7 +356,7 @@ fi
 collect nm_all any nm "$ELF"
 collect nm_und any nm -u "$ELF"
 collect sym_raw any readelf -sW "$ELF"
-declare -A EXPT=() SEEN=() SC=() UC=() SYMV=()
+declare -A EXPT=() SEEN=() SC=() UC=() SYMV=() SYMN=()
 key_add() { local -n __m=$1; __m["$2"]=$(( ${__m["$2"]:-0} + $3 )); }
 for ((i = 0; i < ${#S_name[@]}; i++)); do
     case "${S_type[i]}" in SYMTAB|DYNSYM) ;; *) continue ;; esac
@@ -374,9 +399,10 @@ for l in "${NL[@]}"; do
         v_=${BASH_REMATCH[1]}; n_=${BASH_REMATCH[3]}
         num_a x_ hex "$v_" "valeur de symbole $n_ (nm)"
         key_add SC "D|$v_|$n_" -1
+        # Symbole défini plusieurs fois : défaut de l'IMAGE (refus X4 ou X9,
+        # statut 1 ; L1-1-R2, constat M-3), et non une erreur d'analyse.
         case "$n_" in _start|__kernel_start|__kernel_end)
-            [ -z "${SYMV[$n_]+x}" ] || internal "valeur de symbole $n_ : symbole defini plusieurs fois dans nm"
-            SYMV[$n_]=$v_ ;;
+            SYMN[$n_]=$(( ${SYMN[$n_]:-0} + 1 )); SYMV[$n_]=$v_ ;;
         esac
     elif rx "$l" '^ +([A-Za-z]) ([^[:space:]]+)$'; then
         n_=${BASH_REMATCH[2]}; key_add SC "U|$n_" -1
@@ -393,27 +419,56 @@ done
 for k in "${!SC[@]}"; do [ "${SC["$k"]}" -eq 0 ] || internal "nm et readelf -sW divergent sur le symbole « $k » (sortie incomplete ?)"; done
 for k in "${!UC[@]}"; do [ "${UC["$k"]}" -eq 0 ] || internal "nm -u et readelf -sW divergent sur le symbole indefini « $k »"; done
 start=${SYMV[_start]:+0x${SYMV[_start]}}; ks=${SYMV[__kernel_start]:+0x${SYMV[__kernel_start]}}; ke=${SYMV[__kernel_end]:+0x${SYMV[__kernel_end]}}
+n_start=${SYMN[_start]:-0}; n_ks=${SYMN[__kernel_start]:-0}; n_ke=${SYMN[__kernel_end]:-0}
 [ -z "$start" ] || num_a start_v hex0x "$start" "valeur de symbole _start"
 [ -z "$ks" ] || num_a ks_v hex0x "$ks" "valeur de symbole __kernel_start"
 [ -z "$ke" ] || num_a ke_v hex0x "$ke" "valeur de symbole __kernel_end"
 
-# ---- od : 32 premiers KiB, COMPLETS (constat M1) ----------------------------
-# od -tx4 produit ceil(min(taille, 32768) / 4) mots de 8 chiffres (le dernier
-# mot partiel est complété par des zéros) : un nombre de mots différent est une
-# sortie incomplète ou excédentaire, statut 2.
-collect od_out nonempty od -An -v -tx4 -N 32768 "$ELF"
-lim=$fsize; [ "$lim" -le 32768 ] || lim=32768
-want=$(( (lim + 3) / 4 )); nw=0; mb=0
-split_lines OL "$od_out"
-for l in "${OL[@]}"; do
-    read -ra T <<<"$l"
-    [ "${#T[@]}" -ge 1 ] && [ "${#T[@]}" -le 4 ] || internal "od : ligne de ${#T[@]} mots"
-    for w in "${T[@]}"; do
-        rx "$w" '^[0-9a-f]{8}$' || internal "od : mot « $w » hors contrat (8 chiffres hexadecimaux minuscules)"
-        nw=$((nw + 1)); case "$w" in 1badb002|e85250d6) mb=$((mb + 1)) ;; esac
+# ---- od : lecteur d'octets du fichier, À DÉCALAGES VÉRIFIÉS (L1-1-R2, M-2) ---
+# od_read VARIABLE U DEBUT LONGUEUR : lit [DEBUT, DEBUT + LONGUEUR) avec
+# « od -Ad -v -txU -j DEBUT -N LONGUEUR » ; VARIABLE reçoit les mots séparés par
+# une espace. Format GNU (coreutils 9.4, celui de la CI ubuntu-24.04) : chaque
+# ligne commence par son décalage DÉCIMAL (au moins 7 chiffres) ; 16 octets par
+# ligne ; une dernière ligne ne contient que le décalage de fin. Contrôles :
+#   - chaque décalage vaut exactement le précédent + 16 (aucune ligne
+#     dupliquée, permutée, substituée par une autre ou manquante) ;
+#   - chaque ligne pleine a 16/U mots, la dernière ligne de données
+#     ceil(reste / U) mots ; chaque mot a 2U chiffres hexadécimaux minuscules ;
+#   - la ligne de fin existe et vaut DEBUT + LONGUEUR (couverture exacte ; od
+#     s'arrête en silence à la fin du fichier, d'où ce contrôle).
+# Ce qui reste indétectable : un od qui garde les décalages mais MENT sur le
+# contenu d'une ligne (aucune seconde source pour X5 ; voir Details.md).
+od_read() {
+    local __u=$2 __st=$3 __len=$4 __raw __a __end __w __nw __words="" __done=0 __l __i
+    __end=$((__st + __len))
+    [ "$__end" -le "$fsize" ] || internal "od_read : [$__st, $__end) hors du fichier ($fsize octets)"
+    collect __raw nonempty od -Ad -v -tx"$__u" -j "$__st" -N "$__len" "$ELF"
+    split_lines ODL "$__raw"
+    __a=$__st
+    for __l in "${ODL[@]}"; do
+        [ "$__done" -eq 0 ] || internal "od : ligne apres la ligne de fin (« $__l »)"
+        read -ra T <<<"$__l"
+        rx "${T[0]-}" '^[0-9]{7,19}$' || internal "od : decalage « ${T[0]-} » hors contrat (decimal, 7 a 19 chiffres)"
+        [ "$((10#${T[0]}))" -eq "$__a" ] || internal "od : decalage $((10#${T[0]})) au lieu de $__a (ligne dupliquee, permutee, substituee ou manquante)"
+        if [ "${#T[@]}" -eq 1 ]; then
+            [ "$__a" -eq "$__end" ] || internal "od : fin a $__a au lieu de $__end (sortie incomplete)"
+            __done=1; continue
+        fi
+        if [ $((__a + 16)) -le "$__end" ]; then __nw=$((16 / __u)); else __nw=$(( (__end - __a + __u - 1) / __u )); fi
+        [ $(( ${#T[@]} - 1 )) -eq "$__nw" ] || internal "od : ligne a $__a : $(( ${#T[@]} - 1 )) mots au lieu de $__nw"
+        for ((__i = 1; __i < ${#T[@]}; __i++)); do
+            rx "${T[__i]}" "^[0-9a-f]{$((2 * __u))}\$" || internal "od : mot « ${T[__i]} » hors contrat ($((2 * __u)) chiffres hexadecimaux minuscules)"
+            __words+="${T[__i]} "
+        done
+        if [ $((__a + 16)) -le "$__end" ]; then __a=$((__a + 16)); else __a=$__end; fi
     done
-done
-[ "$nw" -eq "$want" ] || internal "od : $nw mots lus, $want attendus pour $lim octets (sortie incomplete ou excedentaire)"
+    [ "$__done" -eq 1 ] || internal "od : ligne de fin absente (sortie incomplete)"
+    printf -v "$1" '%s' "$__words"
+}
+# X5 : 32 premiers KiB (le dernier mot partiel est complété par des zéros).
+lim=$fsize; [ "$lim" -le 32768 ] || lim=32768
+od_read od_words 4 0 "$lim"; mb=0
+for w in $od_words; do case "$w" in 1badb002|e85250d6) mb=$((mb + 1)) ;; esac; done
 
 # ---- objdump : UNE collection, avec octets bruts, COUVERTURE vérifiée --------
 # -w : une ligne par instruction ; -z : aucun bloc de zéros sauté (« ... »).
@@ -422,28 +477,53 @@ done
 # trou ni recouvrement (longueur = nombre d'octets affichés) ; sinon statut 2.
 # X11 analyse le texte de cette MÊME sortie (plus de second désassemblage).
 collect dis_raw any objdump -d -w -z -M att "$ELF"
-declare -A XS=() XD=()
+declare -A XS=() XD=() XBY=()
+# Sections exécutables HOMONYMES : objdump ne les distingue que par leur nom,
+# la couverture n'est donc pas attribuable. Défaut de l'IMAGE (L1-1-R2, M-3) :
+# X6 et X11 échouent (statut 1) au lieu d'une erreur d'analyse.
+xdup=""
 for ((i = 0; i < ${#S_name[@]}; i++)); do
     [[ ${S_flg[i]} == *X* ]] && [ "${S_type[i]}" != NOBITS ] || continue
-    [ -z "${XS[${S_name[i]}]+x}" ] || internal "deux sections executables nommees ${S_name[i]}"
+    if [ -n "${XS[${S_name[i]}]+x}" ]; then xdup+="${S_name[i]} "; continue; fi
     XS[${S_name[i]}]=$i
 done
 split_lines DL "$dis_raw"
-INS=(); cur=""; cpos=0; cend=0; nfmt=0
-close_sec() { [ -z "$cur" ] || [ "$cpos" -eq "$cend" ] || internal "objdump : section $cur couverte jusqu'a 0x$(printf %x "$cpos") au lieu de 0x$(printf %x "$cend") (sortie incomplete)"; }
+INS=(); cur=""; cpos=0; cend=0; nfmt=0; amb=0; ndata=0
+close_sec() { [ -z "$cur" ] || [ "$amb" -eq 1 ] || [ "$cpos" -eq "$cend" ] || internal "objdump : section $cur couverte jusqu'a 0x$(printf %x "$cpos") au lieu de 0x$(printf %x "$cend") (sortie incomplete)"; }
 TAB=$'\t'
 for l in "${DL[@]}"; do
     [ -n "$l" ] || continue
+    # Section homonyme (non attribuable) : ses lignes ne sont pas analysées ;
+    # X6 et X11 échouent plus bas.
+    if [ "$amb" -eq 1 ] && rx "$l" "^ *[0-9a-f]+:$TAB"; then continue; fi
     if rx "$l" "^ *([0-9a-f]+):$TAB([0-9a-f]{2}( [0-9a-f]{2})*) *$TAB(.*)\$"; then
         [ -n "$cur" ] || internal "objdump : instruction hors section"
         c1=${BASH_REMATCH[1]}; c2=${BASH_REMATCH[2]}; t_=${BASH_REMATCH[4]}
         num_a ad_ hex "$c1" "objdump : adresse"
+        if [ "$amb" -eq 1 ]; then INS+=("${t_%%"$TAB"*}"); continue; fi
+        XBY[$cur]+="$c2 "
         [ "$ad_" -eq "$cpos" ] || internal "objdump : section $cur : instruction a 0x$c1, attendue a 0x$(printf %x "$cpos") (trou ou recouvrement)"
         read -ra B <<<"$c2"; cpos=$((cpos + ${#B[@]}))
         [ "$cpos" -le "$cend" ] || internal "objdump : section $cur : instruction au-dela de la fin"
         INS+=("${t_%%"$TAB"*}")
+    elif rx "$l" "^ *([0-9a-f]+):$TAB([0-9a-f]{2}( [0-9a-f]{2})*)  +[^ ].*\$"; then
+        # Ligne de DONNÉES dans une section exécutable : objdump affiche ainsi
+        # (octets puis texte ASCII, sans instruction) la zone d'un symbole
+        # OBJECT placé dans du code. Ces octets sont couverts et comparés au
+        # fichier, mais NON désassemblés : X11 échoue (défaut de l'image,
+        # L1-1-R2). Les octets et l'ASCII sont séparés par au moins deux
+        # espaces, les octets entre eux par une seule : aucune confusion.
+        [ -n "$cur" ] || internal "objdump : donnees hors section"
+        c1=${BASH_REMATCH[1]}; c2=${BASH_REMATCH[2]}
+        num_a ad_ hex "$c1" "objdump : adresse"
+        XBY[$cur]+="$c2 "
+        [ "$ad_" -eq "$cpos" ] || internal "objdump : section $cur : donnees a 0x$c1, attendues a 0x$(printf %x "$cpos") (trou ou recouvrement)"
+        read -ra B <<<"$c2"; cpos=$((cpos + ${#B[@]})); ndata=$((ndata + ${#B[@]}))
+        [ "$cpos" -le "$cend" ] || internal "objdump : section $cur : donnees au-dela de la fin"
     elif rx "$l" '^Disassembly of section (.+):$'; then
         close_sec; cur=${BASH_REMATCH[1]}
+        if [[ " $xdup" == *" $cur "* ]]; then amb=1; continue; fi
+        amb=0
         [ -n "${XS[$cur]+x}" ] && [ -z "${XD[$cur]+x}" ] || internal "objdump : section $cur inattendue ou repetee"
         XD[$cur]=1; i=${XS[$cur]}; cpos=${S_addr[i]}; cend=$((S_addr[i] + S_size[i]))
     elif rx "$l" '^[0-9a-f]+ <.*>:$'; then
@@ -457,12 +537,133 @@ done
 close_sec
 [ "$nfmt" -eq 1 ] || internal "objdump : en-tete « file format » vu $nfmt fois"
 for s_ in "${!XS[@]}"; do
+    [[ " $xdup" == *" $s_ "* ]] && continue
     [ -n "${XD[$s_]+x}" ] || [ "${S_size[${XS[$s_]}]}" -eq 0 ] || internal "objdump : section executable $s_ non desassemblee (sortie incomplete)"
+done
+# ---- Segments et sections : cohérence des OCTETS (L1-1-R2, constats B-1, B-2) --
+# Avant R2, X7 et X13 lisaient les segments et la correspondance de readelf, et
+# X11 désassemblait les SECTIONS. Rien ne garantissait que les octets CHARGÉS
+# (fichier[p_offset + (adresse - p_vaddr)]) étaient ceux ANALYSÉS : un p_offset
+# décalé (A2) ou un FileSiz débordant de .text avec du code hors section (A3)
+# passaient (statut 0, 19 PASS). Les défauts trouvés ici sont des défauts de
+# l'IMAGE : ils sont rendus par X7 (segments) et X13 (sections -> segments),
+# statut 1. Une divergence entre objdump et od sur des octets dont la
+# correspondance est par ailleurs exacte est une incohérence d'OUTIL (statut 2).
+PAGE=4096
+X7R=(); X13R=(); L_all=()
+hx() { printf -v "$1" '0x%x' "$2"; }
+for ((i = 0; i < ${#P_type[@]}; i++)); do [ "${P_type[i]}" = LOAD ] && L_all+=("$i"); done
+# (a) Chaque PT_LOAD : FileSiz <= MemSiz ; congruence p_offset ≡ p_vaddr (mod
+# p_align), exigée par la spécification ELF dès que p_align > 1.
+for i in "${L_all[@]}"; do
+    [ "${P_fsz[i]}" -le "${P_msz[i]}" ] || X7R+=("segment ${P_va_s[i]} : FileSiz > MemSiz")
+    if [ "${P_al[i]}" -gt 1 ] && [ $(( P_off[i] % P_al[i] )) -ne $(( P_va[i] % P_al[i] )) ]; then
+        hx t1 "${P_off[i]}"; X7R+=("segment ${P_va_s[i]} : p_offset $t1 non congru a p_vaddr modulo p_align ${P_al_s[i]}")
+    fi
+done
+# (b) Contenus FICHIER des PT_LOAD deux à deux disjoints (aucun octet chargé à
+# deux adresses : correspondance non ambiguë).
+for ((x = 0; x < ${#L_all[@]}; x++)); do for ((y = x + 1; y < ${#L_all[@]}; y++)); do
+    i=${L_all[x]}; k=${L_all[y]}
+    [ "${P_fsz[i]}" -gt 0 ] && [ "${P_fsz[k]}" -gt 0 ] || continue
+    if [ "${P_off[i]}" -lt $(( P_off[k] + P_fsz[k] )) ] && [ "${P_off[k]}" -lt $(( P_off[i] + P_fsz[i] )) ]; then
+        X7R+=("segments ${P_va_s[i]} et ${P_va_s[k]} : contenus fichier chevauchants")
+    fi
+done; done
+# (c) Chaque section ALLOC non vide est dans EXACTEMENT un PT_LOAD (par adresse),
+# à sa place exacte : sh_offset = p_offset + (sh_addr - p_vaddr) et contenu dans
+# la partie fichier [p_vaddr, p_vaddr + FileSiz) ; une section NOBITS est dans
+# la partie remplie de zéros [p_vaddr + FileSiz, p_vaddr + MemSiz). La
+# congruence seule ne suffit pas : elle ne fixe le décalage qu'à p_align près.
+declare -A CMAP=() SEGOF=()
+for ((s = 0; s < ${#S_name[@]}; s++)); do
+    [[ ${S_flg[s]} == *A* ]] && [ "${S_size[s]}" -gt 0 ] || continue
+    a=${S_addr[s]}; z=${S_size[s]}; n=${S_name[s]}; hits=()
+    for i in "${L_all[@]}"; do
+        [ "$a" -ge "${P_va[i]}" ] && [ $((a + z)) -le $(( P_va[i] + P_msz[i] )) ] && hits+=("$i")
+    done
+    if [ "${#hits[@]}" -eq 0 ]; then X13R+=("section $n hors de tout PT_LOAD"); continue; fi
+    if [ "${#hits[@]}" -gt 1 ]; then X13R+=("section $n dans plusieurs PT_LOAD (correspondance ambigue)"); continue; fi
+    i=${hits[0]}; CMAP[$i]+="$n "; SEGOF[$s]=$i
+    if [ "${S_type[s]}" = NOBITS ]; then
+        [ "$a" -ge $(( P_va[i] + P_fsz[i] )) ] || X13R+=("section NOBITS $n dans la partie fichier du segment ${P_va_s[i]}")
+    else
+        [ $((a + z)) -le $(( P_va[i] + P_fsz[i] )) ] || X13R+=("section $n au-dela de la partie fichier du segment ${P_va_s[i]}")
+        if [ "${S_off[s]}" -ne $(( P_off[i] + a - P_va[i] )) ]; then
+            hx t1 "${S_off[s]}"; hx t2 $(( P_off[i] + a - P_va[i] ))
+            X13R+=("section $n : decalage fichier $t1 different du decalage charge $t2 (octets charges != octets de la section)")
+        fi
+    fi
+done
+# (d) Correspondance CALCULÉE ci-dessus = correspondance imprimée par readelf
+# (méthode indépendante : readelf ne vérifie que les intervalles).
+if [ "${#MAP[@]}" -eq "${#P_type[@]}" ]; then
+    for i in "${L_all[@]}"; do
+        c_=${CMAP[$i]-}; c_=${c_% }
+        [ "${c_:--}" = "${MAP[i]}" ] || X13R+=("segment ${P_va_s[i]} : sections calculees « ${c_:--} », readelf « ${MAP[i]} »")
+    done
+fi
+# (e) Segments EXÉCUTABLES (B-2). Politique : chaque octet du contenu fichier
+# [p_offset, p_offset + FileSiz) appartient à une section exécutable (code
+# désassemblé par X11), ou à un REMPLISSAGE de zéros situé ENTRE deux sections
+# exécutables. Refusés : octet avant la première ou après la dernière section
+# exécutable (même nul), octet non nul entre deux sections, section non
+# exécutable dans le segment, MemSiz != FileSiz (octets exécutables implicites,
+# remplis par le chargeur). Les octets du fichier qui partagent les PAGES du
+# segment sans en faire partie doivent être nuls (un chargeur qui projette des
+# pages les rendrait exécutables). Enfin les octets CHARGÉS, relus avec od à
+# p_offset + (sh_addr - p_vaddr), doivent être exactement les octets que X11 a
+# analysés (octets bruts d'objdump, lus par BFD à sh_offset).
+for i in "${L_all[@]}"; do
+    [[ ${P_fl[i]} == *E* ]] || continue
+    v=${P_va[i]}; o=${P_off[i]}; fs=${P_fsz[i]}; va=${P_va_s[i]}
+    [ "$fs" -eq "${P_msz[i]}" ] || X7R+=("segment executable $va : MemSiz != FileSiz (octets executables implicites)")
+    ps=$(( o / PAGE * PAGE )); pe=$(( (o + fs + PAGE - 1) / PAGE * PAGE )); [ "$pe" -le "$fsize" ] || pe=$fsize
+    od_read segw 1 "$ps" $((pe - ps)); read -ra BY <<<"$segw"
+    base=$((o - ps)); pos=0; first=1
+    for ((s = 0; s < ${#S_name[@]}; s++)); do
+        [ "${SEGOF[$s]-x}" = "$i" ] || continue
+        n=${S_name[s]}
+        if [[ ${S_flg[s]} != *X* ]]; then X7R+=("segment executable $va : section non executable $n"); continue; fi
+        r=$(( S_addr[s] - v )); z=${S_size[s]}
+        if [ "$r" -lt "$pos" ]; then X7R+=("segment executable $va : sections executables chevauchantes ou desordonnees ($n)"); continue; fi
+        if [ "$first" -eq 1 ] && [ "$r" -gt 0 ]; then
+            hx t1 "$v"; X7R+=("segment executable $va : $r octet(s) non controles en tete (a partir de $t1)")
+        elif [ "$r" -gt "$pos" ]; then
+            for b in "${BY[@]:base + pos:r - pos}"; do
+                [ "$b" = 00 ] || { hx t1 $((v + pos)); X7R+=("segment executable $va : remplissage non nul entre sections (a partir de $t1)"); break; }
+            done
+        fi
+        first=0
+        if [[ " $xdup" != *" $n "* ]]; then
+            printf -v loaded '%s ' "${BY[@]:base + r:z}"
+            if [ "$loaded" != "${XBY[$n]-}" ]; then
+                if [ "${S_off[s]}" -eq $((o + r)) ]; then
+                    internal "octets de $n : objdump et od divergent alors que la correspondance est exacte (incoherence d'outil)"
+                fi
+                X13R+=("section $n : octets charges a ${S_addr_s[s]} differents des octets analyses par X11")
+            fi
+        fi
+        pos=$((r + z))
+    done
+    if [ "$pos" -lt "$fs" ]; then
+        hx t1 $((v + pos)); X7R+=("segment executable $va : $((fs - pos)) octet(s) non controles en fin de contenu (a partir de $t1)")
+    fi
+    for b in "${BY[@]:0:base}" "${BY[@]:base + fs}"; do
+        [ "$b" = 00 ] || { X7R+=("segment executable $va : octets non nuls dans ses pages hors de son contenu (projection par pages)"); break; }
+    done
 done
 
 # ============================================================================
-# RÈGLES. Les critères X1 à X13 sont INCHANGÉS ; seules leurs données viennent
-# désormais des tableaux validés ci-dessus (aucune commande externe ici).
+# RÈGLES. Données : tableaux validés ci-dessus (aucune commande externe ici).
+# Révision L1-1-R2 : X7 et X13 sont RENFORCÉS (cohérence des octets, B-1, B-2) ;
+# aucune règle n'annonce PASS si les données nécessaires manquent (M-4) :
+#   FAIL  (statut 1) = l'IMAGE viole la règle, ou ne contient pas les données
+#                      qu'elle exige (symbole absent ou ambigu, aucune section,
+#                      aucune table de symboles) ;
+#   ERROR (statut 2) = outil en échec, sortie illisible, incomplète, hors
+#                      contrat ou incohérente, valeur hors domaine, erreur
+#                      interne (aucune règle n'est alors émise).
 # ============================================================================
 # ---- X1 à X4 : en-tête ----------------------------------------------------
 [[ ${H[Class]} == ELF64* ]] && [[ ${H[Data]} == *"little endian"* ]] \
@@ -470,7 +671,9 @@ done
 [[ ${H[Machine]} == "Advanced Micro Devices X86-64"* ]] \
     && pass "X2: machine x86-64" || bad "X2: machine != x86-64"
 [[ ${H[Type]} == EXEC* ]] && pass "X3: type EXEC" || bad "X3: type != EXEC"
-if [ -n "$start" ] && [ "$entry_v" -eq "$start_v" ]; then
+if [ "$n_start" -gt 1 ]; then
+    bad "X4: symbole _start ambigu (defini $n_start fois)"
+elif [ -n "$start" ] && [ "$entry_v" -eq "$start_v" ]; then
     pass "X4: point d'entree = _start ($entry)"
 else
     bad "X4: point d'entree ($entry) != _start (${start:-absent})"
@@ -496,8 +699,13 @@ for i in "${A_idx[@]}"; do
     prev=$a
     if [ "$n" = ".bss" ] && [ "${S_type[i]}" != NOBITS ]; then bad "X6: .bss n'est pas NOBITS"; fi
 done
-[ "$align_ok" -eq 1 ] && pass "X6: debut de chaque section ALLOC aligne sur 4 KiB"
-[ "$order_ok" -eq 1 ] && pass "X6: ordre croissant des sections ALLOC" || bad "X6: ordre des sections incorrect"
+if [ "${#A_idx[@]}" -eq 0 ]; then
+    bad "X6: aucune section ALLOC : alignement et ordre non evaluables"
+else
+    [ "$align_ok" -eq 1 ] && pass "X6: debut de chaque section ALLOC aligne sur 4 KiB"
+    [ "$order_ok" -eq 1 ] && pass "X6: ordre croissant des sections ALLOC" || bad "X6: ordre des sections incorrect"
+fi
+[ -z "$xdup" ] || bad "X6: sections executables homonymes : $xdup"
 
 # ---- X7 : segments ----------------------------------------------------------
 L_idx=(); flags_seq=""
@@ -517,7 +725,12 @@ for i in "${L_idx[@]}"; do
     [ "$v" -ge "$prev_end" ] || { seg_ok=0; bad "X7: segment $va partage une page avec le precedent (fin arrondie 0x$(printf %x "$prev_end"))"; }
     prev_end=$(( (v + m + 4095) / 4096 * 4096 ))
 done
-[ "$seg_ok" -eq 1 ] && pass "X7: aucun W+X, vaddr=paddr >= 1 MiB, alignes, aucune page partagee"
+[ "$seg_ok" -eq 1 ] && [ "$nload" -gt 0 ] && pass "X7: aucun W+X, vaddr=paddr >= 1 MiB, alignes, aucune page partagee"
+# Renforcement L1-1-R2 (B-1, B-2) : congruence, contenus disjoints, contenu des
+# segments exécutables entièrement contrôlé (voir le bloc « cohérence des octets »).
+for m in "${X7R[@]}"; do bad "X7: $m"; done
+[ "${#X7R[@]}" -eq 0 ] && [ "$nload" -gt 0 ] \
+    && pass "X7: p_offset congrus, contenus disjoints, segments executables entierement couverts par le code analyse"
 idyn=0; xstack=0
 for ((i = 0; i < ${#P_type[@]}; i++)); do
     case "${P_type[i]}" in INTERP|DYNAMIC) idyn=1 ;; GNU_STACK) [[ ${P_fl[i]} != *E* ]] || xstack=1 ;; esac
@@ -528,16 +741,22 @@ if [ "$xstack" -eq 1 ]; then bad "X7: pile GNU_STACK executable"; else pass "X7:
 # ---- X8 : symboles indéfinis, relogements, dynamique ----------------------
 und=0; und_list=""
 for l in "${UL[@]}"; do und=$((und + 1)); und_list+="$l "; done
-[ "$und" -eq 0 ] && pass "X8: aucun symbole indefini" || bad "X8: $und symbole(s) indefini(s) : $und_list"
+if [ -z "$symtab_name" ]; then bad "X8: aucune table .symtab : symboles indefinis non verifiables"
+elif [ "$und" -eq 0 ]; then pass "X8: aucun symbole indefini"
+else bad "X8: $und symbole(s) indefini(s) : $und_list"; fi
 # « \b » de l'ancienne expression grep : fin du nom ou caractère hors [A-Za-z0-9_].
 dyn=0
 for n in "${S_name[@]}"; do
     if rx "$n" '^\.(rela?($|[^A-Za-z0-9_])|rela?\.|dynamic|dynsym|dynstr|got|plt|interp)'; then dyn=$((dyn + 1)); fi
 done
-[ "$dyn" -eq 0 ] && pass "X8: aucune section de relogement ni dynamique" || bad "X8: $dyn section(s) de relogement ou dynamique(s)"
+if [ "$e_shnum" -eq 0 ]; then bad "X8: aucun en-tete de section : relogements et sections dynamiques non verifiables"
+elif [ "$dyn" -eq 0 ]; then pass "X8: aucune section de relogement ni dynamique"
+else bad "X8: $dyn section(s) de relogement ou dynamique(s)"; fi
 
 # ---- X9 : bornes de l'hypothèse locale ------------------------------------
-if [ -n "$ks" ] && [ -n "$ke" ] && [ "$ks_v" -eq $((0x100000)) ] && [ "$ke_v" -le $((0x400000)) ]; then
+if [ "$n_ks" -gt 1 ] || [ "$n_ke" -gt 1 ]; then
+    bad "X9: symboles de bornes ambigus (__kernel_start $n_ks fois, __kernel_end $n_ke fois)"
+elif [ -n "$ks" ] && [ -n "$ke" ] && [ "$ks_v" -eq $((0x100000)) ] && [ "$ke_v" -le $((0x400000)) ]; then
     pass "X9: __kernel_start = 1 MiB, __kernel_end <= 4 MiB (hypothese locale M64-1)"
 else
     bad "X9: bornes de l'image incorrectes (start=${ks:-absent}, end=${ke:-absent})"
@@ -547,7 +766,9 @@ fi
 tsyms=""
 for n in "${NM_names[@]}"; do case "$n" in ktest_*|test_*) tsyms+="$n " ;; esac; done
 if [ "$MODE" = --production ]; then
-    [ -z "$tsyms" ] && pass "X10: aucun symbole de test (production)" || bad "X10: symboles de test en production : $tsyms"
+    if [ -z "$symtab_name" ]; then bad "X10: aucune table .symtab : separation production/test non verifiable"
+    elif [ -z "$tsyms" ]; then pass "X10: aucun symbole de test (production)"
+    else bad "X10: symboles de test en production : $tsyms"; fi
 else
     # Équivalent de « grep -w » : le nom entouré de caractères hors [A-Za-z0-9_].
     rx "$tsyms" '(^|[^A-Za-z0-9_])ktest_m64_skeleton_marker($|[^A-Za-z0-9_])' && pass "X10: temoin de l'image de test present" \
@@ -557,7 +778,12 @@ fi
 # ---- X11 : périmètre M64-1 (aucune instruction de transition, aucun SIMD) --
 # INS : texte de chaque instruction (après l'adresse et les octets bruts).
 nins=0; for t_ in "${INS[@]}"; do [ -z "$t_" ] || nins=$((nins + 1)); done
-if [ "$nins" -eq 0 ]; then
+if [ "$ndata" -gt 0 ]; then
+    bad "X11: $ndata octet(s) de section executable affiches en donnees par objdump (symbole OBJECT dans du code) : non desassembles"
+fi
+if [ -n "$xdup" ]; then
+    bad "X11: sections executables homonymes ($xdup) : couverture du desassemblage non attribuable"
+elif [ "$nins" -eq 0 ]; then
     bad "X11: desassemblage impossible ou vide (objdump statut 0, $nins instructions)"
 else
     # Mots d'instruction = préfixes et mnémonique : jetons initiaux commençant
@@ -594,7 +820,8 @@ for i in "${A_idx[@]}"; do
     a=${S_addr[i]}; s=${S_size[i]}
     { [ "$a" -gt 0 ] && [ $((a + s)) -le $((0x80000000)) ]; } || { x12=0; bad "X12: ${S_name[i]} hors de ]0, 2 GiB] (0x${S_addr_s[i]}+0x${S_size_s[i]})"; }
 done
-[ "$x12" -eq 1 ] && pass "X12: sections ALLOC dans ]0, 2 GiB] (-mcmodel=small, hypothese locale)"
+if [ "${#A_idx[@]}" -eq 0 ]; then bad "X12: aucune section ALLOC : adresses non evaluables"
+elif [ "$x12" -eq 1 ]; then pass "X12: sections ALLOC dans ]0, 2 GiB] (-mcmodel=small, hypothese locale)"; fi
 
 # ---- X13 : correspondance sections -> segments, drapeaux de section -------
 TY=(); for t_ in "${P_type[@]}"; do if rx "$t_" '^[A-Z_]+$'; then TY+=("$t_"); fi; done
@@ -616,6 +843,11 @@ for i in "${A_idx[@]}"; do
     [ "$flg" = "$want" ] || { x13=0; bad "X13: drapeaux de $n = $flg (attendu $want)"; }
 done
 [ "$x13" -eq 1 ] && pass "X13: .text, .rodata, .data .bss dans leurs PT_LOAD ; drapeaux AX / A / WA"
+# Renforcement L1-1-R2 (B-1) : place exacte de chaque section dans son PT_LOAD,
+# correspondance calculée = readelf, octets chargés = octets analysés.
+for m in "${X13R[@]}"; do bad "X13: $m"; done
+[ "${#X13R[@]}" -eq 0 ] && [ "${#A_idx[@]}" -gt 0 ] \
+    && pass "X13: chaque section ALLOC a sa place exacte dans un seul PT_LOAD ; octets charges = octets analyses"
 
 printf '%s' "$OUTBUF"
 out "$fail"

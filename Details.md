@@ -2038,6 +2038,92 @@ Les mêmes motifs rendaient PASS X5 (`od`), X7 (`readelf -l`), X8 (sections dyna
 - Une image en moitié haute (adresses ≥ 2^61) n'est pas analysée (statut 2).
 - La complétude de `nm -u` n'est éprouvée que par le recoupement avec `readelf -s` : aucune image du banc n'a de symbole indéfini, car `ld` les refuse.
 
+**Audit de R1 et révision R2 (K1.1-M64-2-L1-1-R2).** L'audit contradictoire de `01c16f7` a construit des images volontairement fausses. Trois d'entre elles passaient **toutes** les règles (statut 0), dans les trois versions du vérificateur (`5f07d21`, `6a35a82`, `01c16f7`). Ce sont des lacunes des **critères**, pas de l'analyse :
+
+| Constat | Image | Pourquoi elle passait |
+|---|---|---|
+| **B-1** | le PT_LOAD exécutable a `p_offset = 0xff0` (au lieu de 0x1000), et `fichier[0xff0]` contient WRMSR | X11 analyse la **section** `.text`, lue à `sh_offset` ; le chargeur copie le **segment**, lu à `p_offset`. readelf range `.text` dans le segment, car il ne compare que des **intervalles** (adresse dans [p_vaddr, p_vaddr+MemSiz), décalage dans [p_offset, p_offset+FileSiz)), pas le décalage **relatif**. Les octets exécutés ne sont donc pas ceux analysés |
+| **B-2** | `FileSiz` du segment exécutable porté à 0x40 (`.text` en fait 0x2d), WRMSR placé à 0x100030, et `_start` qui y saute | aucune règle ne demandait que les octets d'un segment exécutable appartiennent à une section analysée |
+| **B-3** | `eb 01 b8 0f 30 90 90` : un saut par-dessus un octet, puis un `mov $imm32` dont l'immédiat contient `0f 30` (WRMSR) | le désassemblage **linéaire** lit `jmp` puis `mov` ; l'exécution saute au milieu et exécute WRMSR |
+
+**Correction de B-1 (X7, X13).** On calcule la correspondance segments/sections **soi-même**, puis on la compare à celle de readelf :
+1. `FileSiz ≤ MemSiz`, et `p_offset ≡ p_vaddr (mod p_align)` dès que `p_align > 1`. C'est une exigence de la spécification ELF pour le chargement par pages. La **congruence ne suffit pas** : elle ne fixe le décalage qu'à `p_align` près. Le test T42 le montre : avec `p_offset = 0x2000` (congru), le segment exécutable chargerait les octets de `.rodata`.
+2. Les contenus fichier des PT_LOAD sont deux à deux disjoints : aucun octet n'est chargé à deux adresses.
+3. Chaque section ALLOC non vide est dans **exactement un** PT_LOAD : aucun (T51) ou plusieurs (T50) est un refus X13. Elle doit aussi y avoir sa **place exacte** :
+   - `sh_offset = p_offset + (sh_addr − p_vaddr)` ;
+   - elle tient dans la partie fichier `[p_vaddr, p_vaddr + FileSiz)` ;
+   - une section NOBITS est dans la partie remplie de zéros `[p_vaddr + FileSiz, p_vaddr + MemSiz)` (T47).
+4. La correspondance ainsi calculée doit être celle qu'imprime readelf.
+5. **Comparaison d'octets indépendante.** Pour chaque section exécutable, les octets **chargés** (`od`, lus au décalage `p_offset + (sh_addr − p_vaddr)` calculé depuis l'en-tête de programme) doivent être exactement les octets **analysés** (octets bruts d'`objdump`, lus par BFD à `sh_offset`). Deux cas :
+   - si les décalages concordent et que les octets diffèrent, les **outils** se contredisent : statut 2 (T49) ;
+   - si les décalages diffèrent, c'est un défaut de l'**image** : refus X13.
+
+**Correction de B-2 : politique des segments exécutables (X7).** Chaque octet du contenu fichier `[p_offset, p_offset + FileSiz)` d'un segment exécutable doit être :
+- soit un octet d'une **section exécutable**, donc désassemblé et analysé par X11 ;
+- soit un **remplissage nul situé entre deux sections exécutables** (alignement d'un futur `.boot32` / `.text`).
+
+Sont refusés (statut 1) :
+
+| Cas refusé | Test |
+|---|---|
+| octet avant la première ou après la dernière section exécutable, **même nul** (aucun remplissage n'est attendu à ces places) | T43 (code), T44 (zéros) |
+| octet non nul entre deux sections exécutables | T79 |
+| section non exécutable dans un segment exécutable | T78 |
+| octet non contrôlé en tête du segment (l'en-tête ELF chargé exécutable devant `.text`) | T80 |
+| `MemSiz ≠ FileSiz` : octets exécutables implicites, remplis par le chargeur | T46 |
+| octet **non nul** du fichier qui partage les pages du segment sans en faire partie : un chargeur qui projette des pages entières (`mmap`) le rendrait exécutable | T45 : `_start` y saute |
+
+La politique ne suppose pas que tout octet est une instruction : elle distingue code (sections exécutables), remplissage autorisé (zéros entre sections) et tout le reste (refusé). T79 construit deux sections exécutables à partir du squelette, qui n'en a qu'une.
+
+**Données dans du code.** `objdump` affiche en **données** (octets puis texte ASCII, sans instruction) la zone d'un symbole OBJECT placé dans une section exécutable. R1 rendait cette ligne illisible (statut 2). En R2, ces octets sont couverts et comparés au fichier, mais ils ne sont **pas désassemblés** : X11 échoue (statut 1, T79).
+
+**Contrôles qui se recouvrent.** Plusieurs contrôles de X7 et de X13 se déclenchent sur la même image. Un test qui ne regarde que la règle en échec ne voit donc pas la désactivation de l'un d'eux : c'est ce qu'a montré la mutation, avec 8 mutants survivants à un premier passage. Chaque mécanisme a maintenant un test qui exige **son** diagnostic (`must_msg`, plus T81 pour la comparaison avec la correspondance de readelf).
+
+**M-1 : couverture des mécanismes.** Les 20 mutants N01 à N20 de l'audit survivaient au banc. R2 ajoute un test ciblé par mécanisme (T52 à T72), et chacun tue son mutant. N20 (« instruction au-delà de la fin de section ») est **équivalent** : le dépassement est aussi refusé à la fermeture de la section (`close_sec`), seul le message change. N06 et N19 portaient sur l'ancien `od -An` ; leurs équivalents sur le nouveau lecteur (N06b, N19b) sont tués par T57 et T70.
+
+**M-2 : `od` à décalages.** `od -Ad` imprime le décalage décimal de chaque ligne de 16 octets, puis une ligne finale qui ne contient que le décalage de fin. Le lecteur `od_read` exige :
+- des décalages consécutifs, d'un pas de 16 ;
+- le nombre exact de mots par ligne, et des mots au format attendu ;
+- une ligne finale égale au décalage de fin demandé (`od` s'arrête en silence à la fin du fichier, d'où ce contrôle).
+
+Il refuse donc une ligne dupliquée à la place d'une autre (T71, l'ancien faux PASS X5), substituée (T72), excédentaire (T70) ou manquante (T30). Format vérifié avec GNU coreutils 9.4, la version de la CI ubuntu-24.04. **Reste indétectable :** un `od` qui garde les décalages mais ment sur le contenu d'une ligne. Pour les octets exécutables, la comparaison avec `objdump` est une seconde source ; pour X5, il n'y en a pas.
+
+**M-3 et M-4 : FAIL ou ERROR.**
+- **FAIL** (statut 1) : l'image viole une règle, **ou** ne contient pas les données que la règle exige.
+- **ERROR** (statut 2) : un outil échoue, ou sa sortie est illisible, incomplète, hors contrat ou incohérente ; une valeur est hors domaine ; erreur interne. Aucune règle n'est alors émise.
+
+Cas reclassés de ERROR en FAIL :
+
+| Cas | Refus |
+|---|---|
+| `e_phentsize` ou `e_shentsize` différent de 56 et 64 (ELF64), ou de 32 et 40 (ELF32) | X1 (T74) |
+| `_start` défini plusieurs fois | X4 (T76) ; idem X9 pour `__kernel_start` et `__kernel_end` |
+| sections exécutables homonymes : `objdump` ne les distingue que par leur nom, la couverture n'est pas attribuable | X6 et X11 (T75) |
+
+Une règle n'annonce plus PASS sur des données absentes (T39 et T77 vérifient l'absence de ces PASS) :
+- X6 (alignement, ordre) et X12, sans section ALLOC ;
+- X8 (symboles indéfinis) et X10 (production), sans `.symtab` ;
+- X8 (sections), sans en-têtes de section ;
+- X7, sans PT_LOAD.
+
+Une image dépouillée de ses symboles est désormais refusée aussi par X8 et X10, et plus seulement par X4 et X9.
+
+**B-3 : analyse, pas de correction dans R2.** X11 lit le code par un désassemblage **linéaire** : une instruction commence là où finit la précédente. Pistes étudiées pour L1-2 :
+
+1. **Recherche d'octets** des séquences interdites (`0f 30` WRMSR, `0f 32` RDMSR, `0f 01 /2 /3` LGDT/LIDT, `0f 22` MOV vers CRn, `0f 00 /2 /3` LLDT/LTR, `cf` IRET, …) à **toutes** les positions des octets exécutables, chevauchements compris. Contrôle simple, mais qui produit des faux positifs : `0f 30` peut figurer dans un immédiat légitime. Il faudrait donc une **liste blanche explicite** des adresses tolérées, justifiée une par une.
+2. **Désassemblage à partir de chaque point d'entrée possible** : le point d'entrée, les symboles FUNC, et les cibles des branches **directes** (`jmp`, `call`, `jcc`), suivies de proche en proche (désassemblage récursif). Il couvre A1 (cible `jmp` +1), mais pas les branches **indirectes** (`jmp *%rax`, `ret`), dont la cible n'est pas connue statiquement.
+3. **Limites de toute analyse statique.** Les cibles indirectes, le code auto-modifiant ou écrit à l'exécution, et les sauts calculés ne sont pas décidables en général. Aucune analyse de ce type ne **prouve** la sûreté du flot de contrôle. W^X (X7) empêche l'écriture de code dans l'image chargée, pas l'exécution d'octets mal alignés.
+4. **Proposition pour L1-2.** Pour les futures sections `.boot32` et `.boot64` : une liste blanche **stricte** des mnémoniques permis (et non une liste noire), un désassemblage récursif depuis les points d'entrée déclarés, et la recherche d'octets interdits sur toutes les positions. Une occurrence n'est tolérée qu'à une adresse que le désassemblage récursif ne peut atteindre **et** qui est inscrite dans une liste d'exceptions revue. Les instructions de transition légitimes du tremplin (LGDT, écriture de CR0, CR3 et CR4, WRMSR d'EFER) seraient permises **uniquement** dans `.boot32` / `.boot64`, à des adresses listées.
+
+Cette proposition ne sera pas implémentée sans ton autorisation.
+
+**Limites restantes de R2.**
+- B-3 reste ouvert.
+- Un outil qui ment de façon **cohérente** n'est pas détecté : le texte d'`objdump` réécrit sur des octets justes, ou `readelf -l` qui duplique une LOAD.
+- Adresses ≥ 2^61 : statut 2.
+- Un nom de section contenant une espace donne le statut 2.
+- X8 ne reconnaît les sections de relogement que par leur nom.
+
 **Reproductibilité.** Elle est démontrée sur une même machine, dans un même répertoire source. Entre deux répertoires, les images diffèrent **seulement** par `.debug_info` : NASM y écrit le répertoire de compilation absolu (`DW_AT_comp_dir`). Les images sans débogage sont identiques, et une construction locale dans le chemin de la CI reproduit exactement l'empreinte de la CI. C'est la même limite que pour l'i386.
 
 **Ce que ces contrôles ne prouvent pas :** que du code 64 bits s'exécute correctement, qu'une protection mémoire est appliquée (aucune table de pages n'existe), ou que l'image est chargeable. Ce sont les objets de M64-2 et des jalons suivants.
