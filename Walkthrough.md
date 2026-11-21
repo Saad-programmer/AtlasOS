@@ -2415,3 +2415,80 @@ tests/tools/repro_selftest.sh
   - `tests/tools/x86_64_build_check.sh` lui-même contient des sondes en `2>/dev/null`, non auditées par ce lot ;
   - aucun tremplin.
 - **Statut :** en attente d'audit indépendant ; **non intégré** dans `main`.
+
+### K1.1-M64-2-L1-1-R1 — Correction des constats de l'audit contradictoire (2026-11-21)
+
+- **Autorisation :** corriger les constats B1, B2 et M1 à M4 de l'audit `K1.1-M64-2-L1-1-AUDIT`, sur la branche existante `claude/k1.1-m64-2-l1-1`. Le commit `6a35a82` reste la référence du candidat initial. Aucune fusion dans `main`.
+- **Préconditions vérifiées :**
+  - `HEAD` = `6a35a82` ; `main` = `origin/main` = `5f07d21` ; arbre propre ;
+  - 13 sauvegardes, stash et étiquette `ref/i386-k0.7` intacts ;
+  - preuves brutes de l'audit présentes et intègres (84 fichiers, empreintes vérifiées).
+- **Reproduction avant correction** (copie `git archive` de `6a35a82`, hors dépôt). Elle utilise 17 cas, chacun avec son image, sa preuve, son marqueur, son journal et son statut relevé immédiatement :
+  - **12 faux PASS** (statut 0) :
+    - B1 : `tr -s` en panne sur N7 et N7b ; `grep` en panne sur N8, N9 et sur l'image de test en production ; `awk` en panne sur N9 et N10 ;
+    - B2 : adresse `.rodata` préfixée `0x` et non alignée ; segment sans préfixe avec un chiffre 8 ; `.bss` en `0x7ffffffffffff000` (débordement de `a + s` dans X12) ;
+    - M1 : `od` tronqué sur N7 ; `objdump` tronqué sur N9 ;
+  - **M3** (mauvais diagnostics) :
+    - N5b avec préfixe : X6 perdu ;
+    - segment sans préfixe lu en octal : image valide refusée par X7 ;
+    - 17 chiffres et colonne manquante : statut 1 au lieu de 2 ;
+  - **M2** : différentiel `5f07d21` / `6a35a82` sur les 82 couples de l'audit (41 images × 2 modes), **10 divergences** retrouvées (statut 1 → 2 sur les images tronquées, `e_shoff` corrompu et sans en-têtes de section).
+- **Correction** (`tools/check_elf64.sh`, détail et théorie dans `Details.md` §42.4) :
+  - analyse en bash pur après la collecte : plus aucun `awk`, `sed`, `grep`, `tr`, `paste` ni `head` ;
+  - `rx` distingue correspondance, absence légitime et erreur d'expression ;
+  - contrat numérique par origine de champ (`num`), avec conversion explicite et domaine < 2^61, ce qui exclut tout débordement ;
+  - lignes de `readelf` tokenisées et entièrement validées ;
+  - complétude :
+    - `readelf -S` : `e_shnum` lignes ;
+    - `readelf -l` : `e_phnum` entrées et la correspondance ;
+    - `od` : nombre de mots ;
+    - `objdump` : couverture exacte de chaque section exécutable ;
+    - `nm` et `nm -u` : recoupés avec `readelf -sW` ;
+  - contrôle de structure (refus X1, statut 1) ;
+  - garde de terminaison (statut 2) et verdicts mis en tampon ;
+  - `LC_ALL=C` ;
+  - outils requis : `readelf`, `nm`, `objdump`, `od`, `stat`.
+- **Contre-tests** (`tests/tools/x86_64_build_check.sh`, section D, 28 contrôles de plus, soit **113**) :
+  - T16 (révisé), T16b, T16c : aucun utilitaire de texte dans le `PATH` ; verdict identique à la référence ;
+  - T18 : `stat` absent ;
+  - T19 à T19d : utilitaires de texte en panne en tête du `PATH` ; verdict identique, et marqueur **absent** (jamais appelés) ;
+  - T20 à T29 : contrat numérique. Cas couverts :
+    - préfixe en trop sur une section ;
+    - segment sans préfixe, avec un chiffre 8 ou d'apparence octale ;
+    - 17 chiffres ;
+    - colonne manquante ;
+    - valeur ≥ 2^61 ;
+    - `nm` préfixé ;
+    - entrée sans préfixe ;
+    - zéro initial décimal ;
+    - champ vide ;
+  - T30 à T36 : sorties tronquées avec le statut 0 (`od`, `nm` sans les symboles de test, `objdump`, `readelf -S`, `-l`, `-s`, `-h`) ;
+  - T37 à T39 : image tronquée et `e_shoff` corrompu (refus X1, statut 1), ELF sans en-têtes de section (refus X6, statut 1) ;
+  - T40 : expression rationnelle invalide (statut 2) ;
+  - T17 durci : statut 2 et diagnostic exigés ;
+  - `must_error` refuse désormais un compteur de PASS non numérique, qui faisait conclure au succès dans la dernière branche.
+- **Qualification des contre-tests** (copie complète du dépôt, hors dépôt) :
+  - avec le vérificateur du candidat `6a35a82`, **les 30 contrôles nouveaux ou durcis échouent** ;
+  - 20 mutants du vérificateur corrigé désactivent chacun **un** mécanisme, par exemple : préfixe toléré, 17 chiffres, zéro initial, domaine, comptage `od`, recoupement `nm`, couverture `objdump`, complétude `readelf`, structure, piège `EXIT`, statut de `rx`, retour de `tr | grep` dans X5, contrat ES, tampon des verdicts. **Chacun fait échouer son test cible** ;
+  - dans cette copie, E0 échoue pour tous, y compris le vérificateur non modifié : les images y sont construites dans un autre répertoire source, et `.debug_info` en contient le chemin (limite connue, voir la reproductibilité).
+- **Après correction :**
+  - les 17 cas de reproduction sont conformes, **0 faux PASS** ;
+  - différentiel sur les mêmes 82 couples : **12 divergences avec `5f07d21`, toutes expliquées**, et 0 avec un statut 0 :
+    - 6 voulues (M2), refus X1 « structure invalide », statut 1 des deux côtés ;
+    - 2 numéros de ligne X11 décalés sur l'image E6 (`-z`) ;
+    - 4 espaces en moins dans un message X6 ;
+  - les images i386 et la reconnaissance de l'ELF32 ne divergent pas.
+- **Non-régression :** voir le rapport L1-1-R1 (commandes et résultats exacts).
+- **Erreurs commises pendant la correction, corrigées avant validation :**
+  - `BASH_REMATCH` écrasé par les appels imbriqués de `rx` (captures copiées avant tout appel) ;
+  - en-tête ELF32 de `readelf -S` (« Addr » et non « Address ») d'abord refusé ;
+  - T40 émettait des PASS avant l'erreur, d'où la mise en tampon des verdicts ;
+  - deux mutants initiaux ne désactivaient rien (MA5, MO) ; ils ont été réécrits.
+- **Limites :**
+  - format de sortie non reconnu (autre binutils, numérotation étendue) : statut 2 ;
+  - image en moitié haute : statut 2 ;
+  - aucune détection universelle des troncatures (sorties tronquées de façon cohérente) ;
+  - `nm -u` non éprouvé sur une image réelle à symboles indéfinis ;
+  - la liste noire de X11 est inchangée ;
+  - aucun tremplin.
+- **Statut :** en attente d'audit indépendant ; **non intégré** dans `main`.

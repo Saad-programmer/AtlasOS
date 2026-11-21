@@ -404,7 +404,11 @@ must_error() {
     local n="$1" want="$2" img="$3" mode="$4"
     PATH="$FK/$n:$PATH" "$CHK" "$img" "$mode" > "$W/$n.log" 2>&1; local rc=$?
     local npass; npass=$(grep -c '^\[PASS\]' "$W/$n.log")
-    if [ ! -s "$W/$n.marker" ]; then ko "D/$n: panne NON injectee (aucun marqueur : l'outil factice n'a pas agi)"
+    # L1-1-R1 : un compteur non numérique (journal illisible) ferait échouer
+    # « [ "$npass" -ne 0 ] » avec le statut 2, donc conclure au succès dans la
+    # dernière branche : il est refusé explicitement.
+    if ! [[ $npass =~ ^[0-9]+$ ]]; then ko "D/$n: compteur de PASS illisible (« $npass »)"
+    elif [ ! -s "$W/$n.marker" ]; then ko "D/$n: panne NON injectee (aucun marqueur : l'outil factice n'a pas agi)"
     elif [ "$rc" -eq 0 ]; then ko "D/$n: erreur d'outil ACCEPTEE (statut 0, $npass PASS)"
     elif [ "$rc" -ne 2 ]; then ko "D/$n: statut $rc au lieu de 2 (voir $W/$n.log)"
     elif ! grep -qE "$want" "$W/$n.log"; then ko "D/$n: statut 2 sans le diagnostic attendu ($want)"
@@ -478,23 +482,152 @@ nmu=$(nm -u "$FPROD"); nrc=$?
 if [ "$nrc" -ne 0 ] || [ -n "$nmu" ]; then ko "D/T12: sonde : nm -u en echec ou non vide (statut $nrc) : cas legitime non etabli"
 elif "$CHK" "$FPROD" --production > "$W/T12.log" 2>&1 && grep -q '^\[PASS\] elf64 X8: aucun symbole indefini' "$W/T12.log"; then ok "D/T12: nm -u vide (statut 0) : X8 PASS, statut 0"
 else ko "D/T12: sortie vide legitime refusee (voir $W/T12.log)"; fi
-# T13 à T16 : outils absents (statut 2, outil nommé, aucun PASS), comme T1.
-for spec in "T13_nm_absent|nm" "T14_od_absent|od" "T15_readelf_absent|readelf" "T16_awk_absent|awk"; do
+# T13 à T15, T18 : outils absents (statut 2, outil nommé, aucun PASS), comme
+# T1. Depuis L1-1-R1, le vérificateur n'exécute QUE readelf, nm, objdump, od
+# et stat (T18 : stat, qui donne la taille du fichier aux contrôles de
+# structure et de complétude).
+CHK_TOOLS="readelf nm objdump od stat"
+for spec in "T13_nm_absent|nm" "T14_od_absent|od" "T15_readelf_absent|readelf" "T18_stat_absent|stat"; do
     IFS='|' read -r n miss <<<"$spec"
     d="$W/nobin_$n"; rm -rf "$d"; mkdir -p "$d"
-    for t in readelf nm objdump od awk sed grep tr paste head; do [ "$t" = "$miss" ] || ln -sf "$(command -v "$t")" "$d/$t"; done
+    for t in $CHK_TOOLS; do [ "$t" = "$miss" ] || ln -sf "$(command -v "$t")" "$d/$t"; done
     PATH="$d:/nonexistent" "$BASH_BIN" "$CHK" "$FPROD" --production > "$W/$n.log" 2>&1; rc=$?
     if [ "$rc" -eq 2 ] && grep -q "outil absent ($miss)" "$W/$n.log" && ! grep -q '^\[PASS\]' "$W/$n.log"; then ok "D/$n: $miss absent : statut 2, aucun PASS"
     else ko "D/$n: outil absent mal traite (statut $rc, voir $W/$n.log)"; fi
 done
-# T17 : erreur interne du vérificateur lui-même (bash) : statut non nul. Le
-# vérificateur est copié et une variable non définie y est introduite (set -u) :
-# la copie doit échouer, jamais sortir avec le statut 0.
+# T17 : erreur interne du vérificateur lui-même (bash). Le vérificateur est
+# copié et une variable non définie y est introduite (set -u). Révision
+# L1-1-R1 : la garde de terminaison doit donner le statut 2 et son diagnostic
+# (avant elle, set -u sortait avec le statut 1, confondu avec un refus).
 sed 's/^fail=0$/fail=0; : "$__l1_1_variable_non_definie"/' "$CHK" > "$W/T17_check_elf64.sh"
 if ! grep -q '__l1_1_variable_non_definie' "$W/T17_check_elf64.sh"; then ko "D/T17: erreur interne NON injectee"
 else "$BASH_BIN" "$W/T17_check_elf64.sh" "$FPROD" --production > "$W/T17.log" 2>&1; rc=$?
-    if [ "$rc" -ne 0 ] && ! grep -q '^\[PASS\]' "$W/T17.log"; then ok "D/T17: erreur interne du verificateur : statut $rc (non nul), aucun PASS"
+    if [ "$rc" -eq 2 ] && grep -q 'terminaison imprevue' "$W/T17.log" && ! grep -q '^\[PASS\]' "$W/T17.log"; then ok "D/T17: erreur interne du verificateur : statut 2, diagnostic nomme, aucun PASS"
     else ko "D/T17: erreur interne du verificateur masquee (statut $rc)"; fi
+fi
+# ---- T16, T19 à T40 (K1.1-M64-2-L1-1-R1) : constats B1, B2, M1, M2, M3 de
+# l'audit contradictoire de L1-1. Chaque cas est QUALIFIÉ hors dépôt : il
+# échoue contre le candidat 6a35a82 et contre un vérificateur dont le
+# mécanisme de détection correspondant est désactivé (rapport L1-1-R1).
+# same_verdict CAS REPERTOIRE_PATH IMAGE MODE [MARQUEUR] : le vérificateur
+# lancé avec le PATH réduit à REPERTOIRE_PATH (plus /nonexistent) donne le
+# MÊME statut et les MÊMES lignes PASS/FAIL qu'avec les vrais outils ; si
+# MARQUEUR est donné, il doit rester ABSENT (l'outil factice n'a pas été
+# appelé).
+same_verdict() {
+    local n="$1" d="$2" img="$3" mode="$4" mk="${5:-}" rr rc
+    "$BASH_BIN" "$CHK" "$img" "$mode" > "$W/$n.ref.log" 2>&1; rr=$?
+    PATH="$d:/nonexistent" "$BASH_BIN" "$CHK" "$img" "$mode" > "$W/$n.log" 2>&1; rc=$?
+    if [ "$rr" -eq 2 ]; then ko "D/$n: reference en erreur (statut 2, voir $W/$n.ref.log)"
+    elif [ "$rc" -ne "$rr" ]; then ko "D/$n: statut $rc au lieu de $rr (voir $W/$n.log)"
+    elif ! cmp -s <(grep -E '^\[(PASS|FAIL)\]' "$W/$n.ref.log") <(grep -E '^\[(PASS|FAIL)\]' "$W/$n.log"); then ko "D/$n: verdict different de la reference (voir $W/$n.log)"
+    elif [ -n "$mk" ] && [ -e "$mk" ]; then ko "D/$n: utilitaire de texte appele par le verificateur ($mk)"
+    else ok "D/$n: verdict identique a la reference (statut $rc$( [ -n "$mk" ] && echo ', utilitaires factices jamais appeles'))"; fi
+}
+# T16 (révisé) : AUCUN utilitaire de texte dans le PATH (awk, sed, grep, tr,
+# paste, head) : seuls les cinq outils d'analyse. Constat B1 : l'analyse ne
+# dépend plus d'aucun utilitaire dont le statut pourrait être perdu.
+d="$W/nobin_T16"; rm -rf "$d"; mkdir -p "$d"
+for t in $CHK_TOOLS; do ln -sf "$(command -v "$t")" "$d/$t"; done
+same_verdict T16_text_utils_absent_prod "$d" "$FPROD" --production
+same_verdict T16b_text_utils_absent_N7 "$d" "$W/N7_multiboot_magic.elf" --production
+same_verdict T16c_text_utils_absent_N9 "$W/nobin_T16" "$W/N9_wrmsr.elf" --production
+# T19 : utilitaires de texte EN PANNE (statut 2, marqueur) en tête du PATH.
+# Sur 6a35a82, « tr -s » ou « grep » en panne rendaient X5, X10 ou X11 PASS
+# (statut 0) sur des images défectueuses (audit, I1 à I4).
+d="$W/broken_T19"; rm -rf "$d"; mkdir -p "$d"
+for t in $CHK_TOOLS; do ln -sf "$(command -v "$t")" "$d/$t"; done
+for t in awk sed grep tr paste head; do
+    printf '#!/bin/sh\necho "%s $*" >> %s\necho "%s: panne simulee" >&2\nexit 2\n' "$t" "$W/T19.marker" "$t" > "$d/$t"; chmod +x "$d/$t"
+done
+rm -f "$W/T19.marker"
+same_verdict T19_text_utils_broken_N7 "$d" "$W/N7_multiboot_magic.elf" --production "$W/T19.marker"
+same_verdict T19b_text_utils_broken_N9 "$d" "$W/N9_wrmsr.elf" --production "$W/T19.marker"
+same_verdict T19c_text_utils_broken_testimg "$d" "$FTEST" --production "$W/T19.marker"
+same_verdict T19d_text_utils_broken_prod "$d" "$FPROD" --production "$W/T19.marker"
+# rfake CAS OPTION SED : readelf factice qui réécrit la sortie de « readelf
+# OPTION » par l'expression SED, statut 0 (sortie falsifiée mais « réussie »).
+rfake() { fake "$1" readelf <<EOF
+case " \$* " in *" $2 "*) echo "\$*" >> "\$MARK"; "\$REAL" "\$@" | sed '$3'; exit 0 ;; esac
+exec "\$REAL" "\$@"
+EOF
+}
+# T20 à T29 : CONTRAT NUMÉRIQUE par origine de champ (constats B2, M3).
+# Avant R1 : préfixe 0x accepté sur une section (« 0x0x… » abandonnait la
+# boucle de X6 : PASS), segment sans préfixe lu en OCTAL ou rejeté (chiffre
+# 8), 17 chiffres acceptés, colonne manquante non vue, a + s débordant 2^63.
+rfake T20_sec_addr_0x -SW 's/\(\] \.rodata *PROGBITS *\)[0-9a-f]\{16\}/\10x0000000000101010/'
+must_error T20_sec_addr_0x "erreur interne d'analyse : section \.rodata : adresse .*hors contrat" "$FPROD" --production
+rfake T21_load_noprefix_digit8 -lW '0,/^  LOAD  *\(0x[0-9a-f]*\) 0x[0-9a-f]* 0x[0-9a-f]*/s//  LOAD           \1 0000000000180000 0000000000180000/'
+must_error T21_load_noprefix_digit8 "erreur interne d'analyse : segment PT_LOAD .*VirtAddr .*hors contrat" "$FPROD" --production
+rfake T22_load_noprefix_octal -lW '0,/^  LOAD  *\(0x[0-9a-f]*\) 0x\([0-9a-f]*\) 0x\([0-9a-f]*\)/s//  LOAD           \1 \2 \3/'
+must_error T22_load_noprefix_octal "erreur interne d'analyse : segment PT_LOAD .*VirtAddr .*hors contrat" "$FPROD" --production
+rfake T23_load_17_digits -lW '0,/^  LOAD  *\(0x[0-9a-f]*\) 0x[0-9a-f]* 0x[0-9a-f]*/s//  LOAD           \1 0x10000000000100000 0x10000000000100000/'
+must_error T23_load_17_digits "erreur interne d'analyse : segment PT_LOAD .*VirtAddr .*hors contrat" "$FPROD" --production
+rfake T24_sec_size_missing -SW 's/\(\] \.rodata *PROGBITS *[0-9a-f]\{16\} [0-9a-f]\{6\}\) [0-9a-f]\{6\}/\1/'
+must_error T24_sec_size_missing "erreur interne d'analyse : section \.rodata : " "$FPROD" --production
+rfake T25_sec_beyond_domain -SW 's/\(\] \.bss *NOBITS *\)[0-9a-f]\{16\} \([0-9a-f]\{6\}\) [0-9a-f]\{6\}/\17ffffffffffff000 \2 002000/'
+must_error T25_sec_beyond_domain "erreur interne d'analyse : section \.bss : adresse .*hors du domaine" "$FPROD" --production
+fake T26_nm_value_0x nm <<'EOF'
+case " $* " in *" -u "*) exec "$REAL" "$@" ;; esac
+echo "$*" >> "$MARK"; "$REAL" "$@" | sed 's/^\([0-9a-f]\{16\}\) T _start$/0x\1 T _start/'; exit 0
+EOF
+must_error T26_nm_value_0x "erreur interne d'analyse : valeur de symbole _start .*hors contrat" "$FPROD" --production
+rfake T27_entry_noprefix -hW 's/^\(  Entry point address: *\)0x/\1/'
+must_error T27_entry_noprefix "erreur interne d'analyse : point d'entree .*hors contrat" "$FPROD" --production
+rfake T28_dec_leading_zero -hW 's/^\(  Number of program headers: *\)3$/\103/'
+must_error T28_dec_leading_zero "erreur interne d'analyse : readelf -h : Number of program headers : « 03 » hors contrat" "$FPROD" --production
+rfake T29_hdr_value_empty -hW 's/^\(  Start of section headers: *\)[0-9]* /\1/'
+must_error T29_hdr_value_empty "erreur interne d'analyse : readelf -h : « Start of section headers » illisible" "$FPROD" --production
+# T30 à T36 : COMPLÉTUDE (constat M1) : sortie TRONQUÉE mais statut 0. Avant
+# R1 : od tronqué cachait le magic (X5 PASS), nm sans les symboles de test
+# rendait X10 PASS en production, objdump tronqué cachait WRMSR (X11 PASS).
+tfake() {   # tfake CAS OUTIL OPTION FILTRE : OUTIL OPTION ... | FILTRE, statut 0
+    fake "$1" "$2" <<EOF
+case " \$* " in *" $3 "*) echo "\$*" >> "\$MARK"; "\$REAL" "\$@" | $4; exit 0 ;; esac
+exec "\$REAL" "\$@"
+EOF
+}
+tfake T30_od_truncated od -tx4 "head -n 4"
+must_error T30_od_truncated "erreur interne d'analyse : od : [0-9]+ mots lus, [0-9]+ attendus" "$W/N7_multiboot_magic.elf" --production
+fake T31_nm_without_test_syms nm <<'EOF'
+case " $* " in *" -u "*) exec "$REAL" "$@" ;; esac
+echo "$*" >> "$MARK"; "$REAL" "$@" | grep -v 'test_'; exit 0
+EOF
+must_error T31_nm_without_test_syms "erreur interne d'analyse : nm et readelf -sW divergent" "$FTEST" --production
+tfake T32_objdump_truncated objdump -d "head -n 10"
+must_error T32_objdump_truncated "erreur interne d'analyse : objdump : section \.text couverte" "$W/N9_wrmsr.elf" --production
+tfake T33_readelf_S_truncated readelf -SW "head -n 8"
+must_error T33_readelf_S_truncated "erreur interne d'analyse : readelf -SW : section [0-9]+ absente" "$FPROD" --production
+rfake T34_readelf_l_no_mapping -lW '/Section to Segment/,$d'
+must_error T34_readelf_l_no_mapping "erreur interne d'analyse : readelf -lW : correspondance sections -> segments absente" "$W/N4_rwx_segment.elf" --production
+rfake T35_readelf_s_truncated -sW '10,$d'
+must_error T35_readelf_s_truncated "erreur interne d'analyse : readelf -sW : entree [0-9]+ de \.symtab absente" "$FPROD" --production
+rfake T36_readelf_h_truncated -hW '10,$d'
+must_error T36_readelf_h_truncated "erreur interne d'analyse : readelf -h : champ .* absent" "$FPROD" --production
+# T37 à T39 : IMAGES STRUCTURELLEMENT INVALIDES (constat M2) : refus NOMMÉ,
+# statut 1, comme avant L1-1, et non une « erreur d'outil » (statut 2).
+# Sondes : en-tête lu par readelf -h, taille par stat (indépendantes du
+# vérificateur).
+hval() { readelf -h "$1" | awk -F: -v k="$2" '$1 ~ k {gsub(/[^0-9]/, "", $2); print $2}'; }
+shdr_out_of_file() { local o n e; o=$(hval "$1" "Start of section headers"); n=$(hval "$1" "Number of section headers"); e=$(hval "$1" "Size of section headers")
+    [ -n "$o" ] && [ -n "$n" ] && [ -n "$e" ] && [ $((o + n * e)) -gt "$(stat -c %s "$1")" ]; }
+no_shdr() { [ "$(hval "$1" "Number of section headers")" = 0 ]; }
+put() { printf "$2" | dd of="$1" bs=1 seek="$3" conv=notrunc status=none; }   # put IMAGE OCTETS DECALAGE
+head -c 3000 "$FPROD" > "$W/T37_truncated.elf"
+must_fail T37_truncated_image X1 "X1" "$W/T37_truncated.elf" --production shdr_out_of_file "$W/T37_truncated.elf"
+cp "$FPROD" "$W/T38_bad_shoff.elf"; put "$W/T38_bad_shoff.elf" '\377\377\377\177\000\000\000\000' 40   # e_shoff = 0x7fffffff
+must_fail T38_bad_shoff X1 "X1" "$W/T38_bad_shoff.elf" --production shdr_out_of_file "$W/T38_bad_shoff.elf"
+cp "$FPROD" "$W/T39_no_shdr.elf"; put "$W/T39_no_shdr.elf" '\000\000\000\000\000\000\000\000' 40; put "$W/T39_no_shdr.elf" '\000\000\000\000' 60   # e_shoff, e_shnum, e_shstrndx = 0
+must_fail T39_no_section_headers X6 "X4 X6 X9 X11 X13" "$W/T39_no_shdr.elf" --production no_shdr "$W/T39_no_shdr.elf"
+# T40 : erreur d'expression rationnelle (statut 2 de [[ =~ ]]) : jamais
+# confondue avec une absence de correspondance. Copie du vérificateur dont une
+# expression est rendue invalide.
+sed "s/rx \"\$t_\" '^\[a-z\]' || break/rx \"\$t_\" '^[a-z' || break/" "$CHK" > "$W/T40_check_elf64.sh"
+if ! grep -qF "'^[a-z' || break" "$W/T40_check_elf64.sh"; then ko "D/T40: expression invalide NON injectee"
+else "$BASH_BIN" "$W/T40_check_elf64.sh" "$FPROD" --production > "$W/T40.log" 2>&1; rc=$?
+    if [ "$rc" -eq 2 ] && grep -q "expression rationnelle invalide" "$W/T40.log" && ! grep -q '^\[PASS\]' "$W/T40.log"; then ok "D/T40: expression rationnelle invalide : statut 2, diagnostic nomme, aucun PASS"
+    else ko "D/T40: erreur d'expression rationnelle masquee (statut $rc, voir $W/T40.log)"; fi
 fi
 # M5, M6 : MÉTA-TESTS de must_error, sans quoi le banc pourrait accepter une
 # injection ratée ou une erreur acceptée sans le signaler.

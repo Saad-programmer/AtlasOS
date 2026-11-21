@@ -1982,12 +1982,61 @@ Le passage au mode long (M64-2) mêlera du code 32 bits et 64 bits, un nouveau f
 Les mêmes motifs rendaient PASS X5 (`od`), X7 (`readelf -l`), X8 (sections dynamiques), X10 en production (`nm`), X12 et X4 (champ de symbole illisible). Chaque cas a été **démontré** par un outil factice, qui écrit un marqueur prouvant que la panne a réellement eu lieu.
 
 **Correction :**
-1. **Collecte.** Chaque outil externe s'exécute **une seule fois**, avant toute règle.
+1. **Collecte.** Chaque commande d'**analyse** (`readelf`, `nm`, `od`, `objdump`) s'exécute une seule fois, avant toute règle. *Correction R1 :* la version L1-1 affirmait que « chaque outil externe » ne s'exécutait qu'une fois. C'était faux : 32 appels à `awk`, `sed`, `grep`, `tr`, `paste` et `head` restaient **après** la collecte, sans contrôle de statut (constat B1 de l'audit, ci-dessous).
 2. **Contrat par outil.** Un statut non nul est une erreur d'outil. Une sortie vide l'est aussi quand le contrat en exige une : `od`, `readelf -S` et `readelf -l` produisent toujours du texte sur un ELF. En revanche, la sortie vide est **légitime** pour `nm -u` (aucun symbole indéfini : c'est le cas normal) et pour `nm` (image sans symboles : X4 et X9 échouent alors normalement).
 3. **Validation des champs numériques.** Chaque champ est validé avant tout calcul. Un champ illisible est une **erreur interne d'analyse**.
-4. **Statut.** Ces erreurs donnent le statut **2**, avant toute règle, donc **sans aucun PASS**. Les critères des règles X1 à X13 ne changent pas : sur les 64 couples (image, mode) du banc, l'ancien et le nouveau vérificateur rendent des statuts et des lignes PASS/FAIL identiques.
+4. **Statut.** Ces erreurs donnent le statut **2**, avant toute règle, donc **sans aucun PASS**. Les critères des règles X1 à X13 ne changent pas. *Correction R1 :* l'absence de divergence n'était vraie que sur les 64 couples (image, mode) **du banc**. L'audit a trouvé 10 divergences sur 82 couples, avec des images invalides ordinaires (constat M2, ci-dessous).
 
 **Limite.** `readelf -h` garde sa politique historique : un échec y est un refus X1 (statut 1), car il couvre aussi le fichier non ELF. Un `readelf -h` en panne sur un ELF valide est donc refusé (échec fermé), mais avec un diagnostic « non ELF » imprécis.
+
+**Audit contradictoire de L1-1 et correction R1 (K1.1-M64-2-L1-1-R1).** L'audit du candidat `6a35a82` a trouvé **12 faux PASS** : le statut 0 était rendu sur des images défectueuses ou sur des sorties d'outils falsifiées. Ils viennent de quatre constats, reproduits avant correction (outil factice, marqueur, journal et statut relevé immédiatement) :
+
+| Constat | Mécanisme dans `6a35a82` | Faux PASS démontrés |
+|---|---|---|
+| **B1** | Les utilitaires de texte appliqués **après** la collecte gardaient la faiblesse des pipelines. Dans `$(tr -s ' ' '\n' <<<"$od" \| grep -ci …)`, un `tr` en panne donne 0. Dans `if grep …; then bad; else pass; fi`, une erreur de `grep` (statut 2) est lue comme « aucune correspondance » | N7 et N7b (X5), N8, N9 et N10 (X11), image de test en production (X10) |
+| **B2** | `is_hex` acceptait le préfixe `0x` facultatif, et les calculs supposaient l'un ou l'autre selon la règle. `$((0x0x…))` est une erreur arithmétique, qui abandonne la boucle. `$((0000…))` lit un segment sans préfixe en **octal** ; un chiffre 8 interrompt alors la boucle de X7. Une adresse `.bss` en `0x7ffffffffffff000` fait **déborder** `a + s` au-delà de 2^63 dans X12 | adresse de section préfixée et non alignée (X6) ; segment sans préfixe avec un 8 (X7) ; débordement (X12) |
+| **M1** | Une sortie tronquée avec le statut 0 était acceptée | `od` tronqué (X5), `objdump` tronqué (X11) |
+| **M3** | Mêmes causes que B2, avec un mauvais diagnostic : un vrai défaut (N5b) dont la règle X6 disparaît ; une image valide refusée par X7 (octal) ; 17 chiffres ou une colonne manquante lus comme un refus de règle (statut 1) au lieu d'une sortie illisible (statut 2) | — |
+| **M2** | Des images **invalides** ordinaires (tronquée, `e_shoff` hors du fichier, sans en-têtes de section) passaient du refus nommé (statut 1) à l'« erreur d'outil » (statut 2) | — |
+
+**Correction.**
+
+1. **Aucun utilitaire de texte (B1).** Après la collecte, l'analyse est écrite en **bash pur** : `read -a`, `mapfile`, `[[ =~ ]]` et développement de paramètres. Il n'y a donc plus aucun statut d'utilitaire à perdre. Les seuls outils externes sont `readelf`, `nm`, `objdump`, `od` et `stat` ; ce sont aussi les seuls dont la présence est contrôlée.
+   - La fonction `rx` distingue trois issues de `[[ =~ ]]` : correspondance (0), absence **légitime** de correspondance (1), et expression invalide (2, erreur interne).
+   - L'ancienne expression `grep -E '…\b…'` est traduite à l'identique : `\b` devient « fin du nom ou caractère hors `[A-Za-z0-9_]` », et `grep -w` est traduit de la même façon.
+   - `set -e` et `pipefail` ne sont **pas** utilisés comme preuve : ils ne couvrent ni `if`, ni `&&`/`||`, ni les sous-shells.
+2. **Contrat numérique par origine (B2, M3).** La fonction `num` applique le format exact de chaque outil :
+
+   | Origine | Contrat |
+   |---|---|
+   | `readelf -S` (Address, Off, Size, ES), `nm`, `objdump` (adresses) | `^[0-9a-f]{1,16}$`, **sans** préfixe |
+   | `readelf -l` (Offset … Align), point d'entrée | `^0x[0-9a-f]{1,16}$`, préfixe **obligatoire** |
+   | `readelf -h` (décalages, tailles, nombres), `readelf -S` (Lk, Inf, Al), `stat` | décimal, sans zéro initial, au plus 19 chiffres |
+
+   - La conversion est toujours explicite (`16#…`, `10#…`), donc jamais en octal.
+   - Le préfixe manquant ou en trop, les majuscules, une valeur vide ou trop longue sont des erreurs internes (statut 2).
+   - **Domaine :** une valeur bien formée mais ≥ 2^61 est hors du domaine analysable. C'est un refus X1 si c'est un décalage ou une taille dans le fichier (aucun fichier n'atteint 2^61 octets), et une erreur (statut 2) si c'est une adresse.
+   - Toutes les valeurs admises étant < 2^61, aucune expression évaluée ne dépasse 2^63 − 1. La plus grande est `a + s + 4095`, ou `décalage + n × taille d'entrée` avec n et la taille ≤ 65 535. L'arithmétique signée 64 bits de bash ne peut donc pas déborder.
+3. **Lignes tokenisées.** Une ligne de `readelf -S` a 8, 9 ou 10 champs : le nom et les drapeaux peuvent être vides. Avec 9 champs, la ligne est « sans nom » si le 2ᵉ champ est une adresse hexadécimale minuscule (un Type ne l'est jamais), sinon « sans drapeaux ». Tout autre nombre de champs est une erreur, et chaque champ est validé ; une colonne manquante est donc vue.
+4. **Complétude (M1)**, par des sources indépendantes quand il en existe :
+   - `readelf -S` : exactement `e_shnum` lignes numérotées 0…N−1, en-tête cohérent avec `readelf -h` ;
+   - `readelf -l` : exactement `e_phnum` entrées, et autant de lignes de correspondance ;
+   - `od` : exactement ⌈min(taille, 32 768)/4⌉ mots de 8 chiffres ;
+   - `objdump -d -w -z` : chaque section exécutable couverte de son adresse à adresse + taille, sans trou ni recouvrement. Avec `-z`, aucun bloc de zéros n'est sauté. X11 analyse le texte de **cette** sortie ;
+   - `nm` et `nm -u` : le même ensemble de symboles que `.symtab` lue par `readelf -sW`. Le nombre d'entrées est fixé par la taille de la section `SYMTAB` divisée par son ES.
+   - **Ce n'est pas une détection universelle des troncatures.** Une sortie tronquée **de façon cohérente** par plusieurs outils à la fois, ou un outil qui ment de façon cohérente, n'est pas détectable de l'intérieur.
+5. **Structure (M2).** Les tables de segments et de sections, le contenu de chaque segment (`p_offset + p_filesz`) et le contenu de chaque section non NOBITS doivent tenir dans le fichier (taille donnée par `stat`). Sinon : `[FAIL] elf64 X1: structure ELF invalide`, statut 1. Un ELF **sans** en-têtes de section est structurellement valide : il est refusé par les règles (X4, X6, X9, X11, X13), avec le statut 1.
+6. **Garde de terminaison.** Un piège `EXIT` convertit toute terminaison imprévue (variable non définie sous `set -u`, erreur de bash) en statut 2. Sans lui, `set -u` sortait avec le statut 1, confondu avec un refus. Les verdicts des règles sont mis en tampon et ne sont imprimés qu'à la fin normale : une erreur pendant les règles n'est jamais précédée de PASS.
+7. **Locale C** (`LC_ALL=C`) : le format analysé est celui des messages anglais de binutils, et les classes de caractères sont ASCII.
+
+**Différentiel** (41 images × 2 modes = 82 couples, les mêmes que l'audit) : 12 divergences avec l'ancien vérificateur `5f07d21`, toutes expliquées. Six sont voulues (M2) : images tronquées et `e_shoff` corrompu, refusées par X1 « structure invalide » au lieu d'une liste de règles, avec le statut 1 des deux côtés. Les six autres ne portent que sur le texte, avec les mêmes règles en échec et le même statut :
+- 2 décalent les numéros de ligne cités par X11 sur l'image E6, car `-z` désassemble un bloc de zéros que l'ancien `objdump` sautait (« ... ») ;
+- 4 sont un espace en moins dans le message X6 des images sans en-têtes de section.
+
+**Limites.**
+- Un format de sortie non reconnu (autre version de binutils, numérotation étendue des sections, attributs de visibilité supplémentaires dans `readelf -s`) donne le statut 2, jamais un PASS ; mais il **bloque** l'analyse.
+- Une image en moitié haute (adresses ≥ 2^61) n'est pas analysée (statut 2).
+- La complétude de `nm -u` n'est éprouvée que par le recoupement avec `readelf -s` : aucune image du banc n'a de symbole indéfini, car `ld` les refuse.
 
 **Reproductibilité.** Elle est démontrée sur une même machine, dans un même répertoire source. Entre deux répertoires, les images diffèrent **seulement** par `.debug_info` : NASM y écrit le répertoire de compilation absolu (`DW_AT_comp_dir`). Les images sans débogage sont identiques, et une construction locale dans le chemin de la CI reproduit exactement l'empreinte de la CI. C'est la même limite que pour l'i386.
 
